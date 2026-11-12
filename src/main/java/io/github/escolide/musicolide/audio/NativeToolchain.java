@@ -220,8 +220,11 @@ public final class NativeToolchain implements AutoCloseable {
             default -> "unsupported";
         };
         if (normalizedArch.equals("unsupported")) return "unsupported";
-        if (os.contains("win")) return normalizedArch.equals("x86_64") ? "windows-x86_64" : "unsupported";
+        // Check Darwin before Windows: the word "darwin" contains the substring "win".
         if (os.contains("mac") || os.contains("darwin")) return "macos-" + normalizedArch;
+        if (os.startsWith("windows") || os.equals("win")) {
+            return normalizedArch.equals("x86_64") ? "windows-x86_64" : "unsupported";
+        }
         if (os.contains("linux")) return "linux-" + normalizedArch;
         return "unsupported";
     }
