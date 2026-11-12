@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -42,6 +43,8 @@ public final class NativeToolchain implements AutoCloseable {
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
+    private volatile boolean initialized;
+    private volatile boolean closed;
 
     public NativeToolchain(JavaPlugin plugin) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
@@ -50,7 +53,24 @@ public final class NativeToolchain implements AutoCloseable {
         this.platform = platformKey(System.getProperty("os.name", ""), System.getProperty("os.arch", ""));
     }
 
+    /**
+     * Runs executable extraction and version probes away from the Bukkit main thread.
+     * The common pool uses daemon workers; close() prevents any later child process
+     * from being started if the plugin is disabled during initialization.
+     */
+    public CompletableFuture<List<ToolStatus>> initializeAsync() {
+        return CompletableFuture.supplyAsync(this::initialize);
+    }
+
+    public boolean isInitialized() {
+        return initialized;
+    }
+
     public synchronized List<ToolStatus> initialize() {
+        if (closed) {
+            initialized = true;
+            return List.of();
+        }
         try {
             Files.createDirectories(binaryDirectory);
             Files.createDirectories(dataDirectory.resolve("temp"));
@@ -82,6 +102,7 @@ public final class NativeToolchain implements AutoCloseable {
                         + "Audio importing that needs this tool will be disabled; playback of existing tracks remains available.");
             }
         }
+        initialized = true;
         return List.copyOf(statuses.values());
     }
 
@@ -101,6 +122,7 @@ public final class NativeToolchain implements AutoCloseable {
     }
 
     public Process start(ProcessBuilder builder) throws IOException {
+        if (closed) throw new IOException("Musicolide native toolchain is shutting down.");
         Process process = builder.start();
         processes.add(process);
         return process;
@@ -235,6 +257,7 @@ public final class NativeToolchain implements AutoCloseable {
 
     @Override
     public void close() {
+        closed = true;
         for (Process process : new ArrayList<>(processes)) terminate(process);
     }
 }
