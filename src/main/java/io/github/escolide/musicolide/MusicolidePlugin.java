@@ -14,6 +14,7 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerResourcePackStatusEvent;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -124,6 +125,11 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onResourcePackStatus(PlayerResourcePackStatusEvent event) {
         if (packManager != null) packManager.status(event.getPlayer().getUniqueId(), event.getID(), event.getStatus());
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        if (geyserBridge != null) geyserBridge.recordPlayerJoin(event.getPlayer().getUniqueId());
     }
 
     @EventHandler
