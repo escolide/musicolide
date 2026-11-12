@@ -49,7 +49,7 @@ The current Java playback engine and command system provide a baseline for sessi
 | Expiry cleanup of temporary URL-imported pack artifacts | Implemented with a configurable idle TTL; validate on a staging server |
 | Optional bundled native executables, extraction and startup diagnostics | Extraction/diagnostics implemented; binary payloads not included and host permissions unverified |
 | yt-dlp for administrator-authorized allowlisted source URLs | Implemented, disabled by default; common streaming platforms remain metadata/alias-only |
-| Temporary URL-import retention | Implemented: 15-minute idle expiry by default; active/queued/repeating sessions and in-flight Java pack downloads delay cleanup |
+| Temporary URL-import retention | Implemented: 15-minute expiry window from successful URL import by default; active/queued/repeating sessions and in-flight Java pack downloads delay deletion |
 | Verify MineStrator/native-process compatibility | Open investigation; do not assume ProcessBuilder is allowed |
 
 The audio worker remains independent from the server tick thread. It uses fixed argument arrays, path validation, input/duration/queue limits and process timeouts. The single worker awaits yt-dlp completion before starting FFprobe/FFmpeg. Bundled executables are supported by the extraction code, but the repository does not contain third-party native binaries; release packaging and platform permission tests remain necessary.
