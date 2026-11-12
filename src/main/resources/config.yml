@@ -22,9 +22,14 @@ audio:
   sample-rate: 44100
   segment-duration-ms: 1000
   stereo-quality: 5
-  mono-quality: 5
   max-track-duration-seconds: 1800
   max-input-mb: 100
+  delete-source-after-import: true
+  processing:
+    max-queued-jobs: 8
+    timeout-seconds: 1800
+    probe-timeout-seconds: 30
+    ffmpeg-threads: 1
 
 resource-packs:
   required-on-first-use: false

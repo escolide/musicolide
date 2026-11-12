@@ -24,8 +24,8 @@ public final class ResourcePackBuilder {
         for (int i = 0; i < segmentCount; i++) {
             String id = String.format("%05d", i);
             sounds.put("s_" + id, namespace + "/stereo/" + id);
-            sounds.put("m_" + id, namespace + "/mono/" + id);
         }
+
         StringBuilder soundsJson = new StringBuilder("{\n");
         int index = 0;
         for (Map.Entry<String, String> entry : sounds.entrySet()) {
@@ -37,7 +37,6 @@ public final class ResourcePackBuilder {
         soundsJson.append("}\n");
 
         String meta = format.toPackMcmeta();
-
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
             add(zip, "pack.mcmeta", meta.getBytes(StandardCharsets.UTF_8));
             add(zip, "assets/" + namespace + "/sounds.json", soundsJson.toString().getBytes(StandardCharsets.UTF_8));
@@ -45,8 +44,6 @@ public final class ResourcePackBuilder {
                 String id = String.format("%05d", i);
                 addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/stereo/" + id + ".ogg",
                         trackDirectory.resolve("stereo").resolve(id + ".ogg"));
-                addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/mono/" + id + ".ogg",
-                        trackDirectory.resolve("mono").resolve(id + ".ogg"));
             }
         }
         return output;

@@ -8,7 +8,7 @@ import java.util.UUID;
  */
 public final class MusicZone {
     public enum Shape { GLOBAL, CIRCLE, SQUARE, REGION }
-    public enum AudioMode { NONE, STEREO, MONO }
+    public enum AudioMode { NONE, STEREO, FADE }
 
     private final Shape shape;
     private final UUID worldId;
@@ -79,7 +79,7 @@ public final class MusicZone {
         if (shape == Shape.GLOBAL) return true;
         if (worldId == null || !worldId.equals(candidateWorld)) return false;
         if (verticalLimited && Math.abs(y - centerY) > verticalLimit) return false;
-        if (shape == Shape.REGION) return false; // Checked by WorldGuardBridge.
+        if (shape == Shape.REGION) return false;
         double dx = x - centerX;
         double dz = z - centerZ;
         if (shape == Shape.CIRCLE) {
@@ -99,8 +99,13 @@ public final class MusicZone {
 
     public AudioMode audioMode(UUID candidateWorld, double x, double y, double z) {
         if (containsBase(candidateWorld, x, y, z)) return AudioMode.STEREO;
-        if (fadeEnabled && containsActive(candidateWorld, x, y, z)) return AudioMode.MONO;
+        if (fadeEnabled && containsActive(candidateWorld, x, y, z)) return AudioMode.FADE;
         return AudioMode.NONE;
+    }
+
+    public double fadeFactor(double x, double z) {
+        if (!fadeEnabled || fadeDistance <= 0) return 1.0;
+        return Math.max(0.0, Math.min(1.0, 1.0 - distanceOutsideBase(x, z) / fadeDistance));
     }
 
     public double distanceOutsideBase(double x, double z) {
@@ -114,39 +119,6 @@ public final class MusicZone {
             return Math.hypot(dx, dz);
         }
         return Double.POSITIVE_INFINITY;
-    }
-
-    /**
-     * Returns the closest point on the zone boundary. Used as the virtual
-     * origin for positional mono audio in the fade band.
-     */
-    public double[] nearestBoundaryPoint(double x, double z) {
-        if (shape == Shape.CIRCLE) {
-            double dx = x - centerX;
-            double dz = z - centerZ;
-            double distance = Math.hypot(dx, dz);
-            if (distance < 1.0E-9) return new double[]{centerX + radius, centerZ};
-            double scale = radius / distance;
-            return new double[]{centerX + dx * scale, centerZ + dz * scale};
-        }
-        if (shape == Shape.SQUARE) {
-            double[] local = toLocal(x - centerX, z - centerZ);
-            double halfW = width / 2.0;
-            double halfL = length / 2.0;
-            double clampedX = Math.max(-halfW, Math.min(halfW, local[0]));
-            double clampedZ = Math.max(-halfL, Math.min(halfL, local[1]));
-            if (Math.abs(local[0]) <= halfW && Math.abs(local[1]) <= halfL) {
-                double left = halfW - Math.abs(local[0]);
-                double front = halfL - Math.abs(local[1]);
-                if (left < front) clampedX = Math.copySign(halfW, local[0] == 0 ? 1 : local[0]);
-                else clampedZ = Math.copySign(halfL, local[1] == 0 ? 1 : local[1]);
-            }
-            double c = Math.cos(rotationRadians);
-            double s = Math.sin(rotationRadians);
-            return new double[]{centerX + clampedX * c + clampedZ * s,
-                    centerZ - clampedX * s + clampedZ * c};
-        }
-        return new double[]{x, z};
     }
 
     private double[] toLocal(double dx, double dz) {

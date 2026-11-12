@@ -65,3 +65,8 @@ A conventional VM/container is needed for FFmpeg jobs. Serverless edge functions
 ## Current status
 
 This is the target contract only. The current plugin build still performs local conversion. Do not set cloud mode in a live config until the remote backend and service are implemented and released together.
+
+
+## Current local processing safeguards
+
+The plugin-side local processor uses a single worker, a bounded job queue, a configurable FFmpeg thread limit (one by default), and process timeouts for FFprobe and FFmpeg. OGG segments are temporary build intermediates; the generated resource-pack ZIP is the retained playback asset. Source files are removed after a successful import by default, with a configuration option to retain them.
