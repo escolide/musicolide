@@ -16,9 +16,14 @@ import org.bukkit.command.*;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final JavaPlugin plugin;
@@ -69,7 +74,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void importTrack(CommandSender sender, String[] args) {
         if (!admin(sender)) return;
-        if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music import <filename> [title]")); return; }
+        if (args.length < 2) {
+            sender.sendMessage(msg("&eUsage: /music import <filename> [title] or /music import all"));
+            return;
+        }
+        if (args.length == 2 && args[1].equalsIgnoreCase("all")) {
+            importAllTracks(sender);
+            return;
+        }
         String title = args.length >= 3 ? String.join(" ", Arrays.copyOfRange(args, 2, args.length)) : null;
         sender.sendMessage(msg("&aPreparing audio. Place the file in plugins/Musicolide/incoming/."));
         processor.importFile(args[1], title).whenComplete((track, error) ->
@@ -77,6 +89,68 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     if (error != null) sender.sendMessage(msg("&cImport failed: " + rootMessage(error)));
                     else sender.sendMessage(msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)"));
                 }));
+    }
+
+    /**
+     * Imports every supported audio file in the incoming directory sequentially.
+     * Sequential processing avoids launching an unbounded number of FFmpeg jobs
+     * and gives hosts with strict CPU/RAM limits a predictable workload.
+     */
+    private void importAllTracks(CommandSender sender) {
+        Path incoming = plugin.getDataFolder().toPath().resolve("incoming");
+        final List<String> files;
+        try {
+            Files.createDirectories(incoming);
+            try (var stream = Files.list(incoming)) {
+                files = stream.filter(Files::isRegularFile)
+                        .map(path -> path.getFileName().toString())
+                        .filter(MusicCommand::isSupportedAudioFile)
+                        .sorted(String.CASE_INSENSITIVE_ORDER)
+                        .toList();
+            }
+        } catch (IOException ex) {
+            sender.sendMessage(msg("&cCould not scan the incoming directory: " + ex.getMessage()));
+            return;
+        }
+
+        if (files.isEmpty()) {
+            sender.sendMessage(msg("&eNo supported audio files were found in plugins/Musicolide/incoming/."));
+            return;
+        }
+
+        sender.sendMessage(msg("&aBulk import started for &f" + files.size()
+                + " &aaudio file(s). Files are processed one at a time."));
+        AtomicInteger imported = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+
+        for (String file : files) {
+            chain = chain.thenCompose(ignored -> processor.importFile(file, null).handle((track, error) -> {
+                if (error == null) {
+                    imported.incrementAndGet();
+                    Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
+                            msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)")));
+                } else {
+                    failed.incrementAndGet();
+                    String reason = rootMessage(error);
+                    Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
+                            msg("&cSkipped &f" + file + "&c: " + reason)));
+                }
+                return (Void) null;
+            }));
+        }
+
+        chain.whenComplete((ignored, error) -> Bukkit.getScheduler().runTask(plugin, () ->
+                sender.sendMessage(msg("&bBulk import finished. &aSuccessful: &f" + imported.get()
+                        + " &7| &cFailed: &f" + failed.get() + " &7| &bScanned: &f" + files.size()))));
+    }
+
+    private static boolean isSupportedAudioFile(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot < 1 || dot == fileName.length() - 1) return false;
+        String extension = fileName.substring(dot + 1).toLowerCase(Locale.ROOT);
+        return Set.of("mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "wma", "aiff", "aif")
+                .contains(extension);
     }
 
     private void listTracks(CommandSender sender, String[] args) throws SQLException {
@@ -377,7 +451,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void help(CommandSender sender) {
         sender.sendMessage(msg("&bMusicolide commands:"));
-        sender.sendMessage(msg("&f/music import <file> [title] &7- import authorized local audio"));
+        sender.sendMessage(msg("&f/music import <file> [title] &7- import one authorized audio file"));
+        sender.sendMessage(msg("&f/music import all &7- import every supported file in incoming/"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
         sender.sendMessage(msg("&f/music play <track-or-url> [--all|--player name|--circle r|--square WxL] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
@@ -408,6 +483,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) return partial(List.of("help", "import", "list", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "reload"), args[0]);
+        if (args.length == 2 && args[0].equalsIgnoreCase("import"))
+            return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
             return partial(List.of("create", "add", "list", "play"), args[1]);
         return List.of();
