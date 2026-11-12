@@ -50,7 +50,7 @@ public final class BedrockResourcePackBuilder {
             String manifest = createManifest();
             try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(temporary))) {
                 add(zip, "manifest.json", manifest.getBytes(StandardCharsets.UTF_8));
-                add(zip, "sound_definitions.json", definitions.getBytes(StandardCharsets.UTF_8));
+                add(zip, "sounds/sound_definitions.json", definitions.getBytes(StandardCharsets.UTF_8));
                 for (SoundAsset asset : assets) {
                     try (ZipFile sourceZip = new ZipFile(asset.archive().toFile())) {
                         ZipEntry sourceEntry = sourceZip.getEntry(asset.entryName());
