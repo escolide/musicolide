@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.playback;
 
+import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
@@ -27,13 +28,17 @@ public final class PlaybackEngine {
     private final Map<UUID, Long> warningTimes = new HashMap<>();
     private final Map<UUID, Long> declinedWarnings = new HashMap<>();
     private final WorldGuardBridge worldGuard;
+    private final GeyserBridge geyser;
+    private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
     private BukkitTask task;
 
-    public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs, WorldGuardBridge worldGuard) {
+    public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs,
+                          WorldGuardBridge worldGuard, GeyserBridge geyser) {
         this.plugin = plugin;
         this.repository = repository;
         this.packs = packs;
         this.worldGuard = worldGuard;
+        this.geyser = geyser;
     }
 
     public void start() {
@@ -135,6 +140,17 @@ public final class PlaybackEngine {
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
+            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                stopPlayer(player);
+                packs.releaseAll(player);
+                long now = System.currentTimeMillis();
+                long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
+                if (now - lastWarning > 300000L) {
+                    player.sendMessage(message("messages.bedrock-not-supported"));
+                    bedrockWarnings.put(player.getUniqueId(), now);
+                }
+                continue;
+            }
             Candidate winner = null;
             for (PlaybackSession session : active) {
                 if (!session.targets(player.getUniqueId()) || session.current() == null) continue;
@@ -278,6 +294,8 @@ public final class PlaybackEngine {
         stopPlayer(player);
         packs.removePlayer(player.getUniqueId());
         preferences.remove(player.getUniqueId());
+        bedrockWarnings.remove(player.getUniqueId());
+        if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }
 
     public void stopAll() {
@@ -287,6 +305,7 @@ public final class PlaybackEngine {
             packs.releaseAll(player);
         }
         synchronized (this) { sessions.clear(); }
+        bedrockWarnings.clear();
     }
 
     private record Candidate(PlaybackSession session, MusicZone.AudioMode mode) {}
