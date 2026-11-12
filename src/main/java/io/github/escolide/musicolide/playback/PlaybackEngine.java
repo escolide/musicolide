@@ -212,7 +212,12 @@ public final class PlaybackEngine {
             // Never send Java Edition packs to a Bedrock client.
             packs.releaseAll(player);
             if (!geyser.isBedrockPackAvailable()) {
-                warnBedrockUnavailable(player);
+                warnBedrockUnavailable(player, "messages.bedrock-not-supported");
+                stopPlayer(player);
+                return;
+            }
+            if (!geyser.hasCurrentPackFor(player.getUniqueId())) {
+                warnBedrockUnavailable(player, "messages.bedrock-pack-reconnect");
                 stopPlayer(player);
                 return;
             }
@@ -268,11 +273,11 @@ public final class PlaybackEngine {
         }
     }
 
-    private void warnBedrockUnavailable(Player player) {
+    private void warnBedrockUnavailable(Player player, String messagePath) {
         long now = System.currentTimeMillis();
         long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
         if (now - lastWarning > 300000L) {
-            player.sendMessage(message("messages.bedrock-not-supported"));
+            player.sendMessage(message(messagePath));
             bedrockWarnings.put(player.getUniqueId(), now);
         }
     }
