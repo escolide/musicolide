@@ -1,4 +1,4 @@
-# Musicolide configuration. Target: Paper 1.21.11+ / Java 21.
+# Musicolide configuration. Target: Paper 26.3+ / Java 25.
 general:
   debug: false
   language: en
@@ -24,7 +24,10 @@ audio:
   mono-quality: 5
   max-track-duration-seconds: 1800
   max-input-mb: 100
-  resource-pack-format: 75
+  # Java Edition 26.3 resource-pack format is 97.1.
+  # Resource-pack metadata uses min_format / max_format, not legacy pack_format.
+  resource-pack-format-major: 97
+  resource-pack-format-minor: 1
 
 resource-packs:
   required-on-first-use: false

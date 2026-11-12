@@ -10,11 +10,16 @@ import java.util.zip.ZipOutputStream;
 
 public final class ResourcePackBuilder {
     private final Path packsDirectory;
-    private final int packFormat;
+    private final int formatMajor;
+    private final int formatMinor;
 
-    public ResourcePackBuilder(Path dataFolder, int packFormat) throws IOException {
+    public ResourcePackBuilder(Path dataFolder, int formatMajor, int formatMinor) throws IOException {
+        if (formatMajor < 1 || formatMinor < 0) {
+            throw new IllegalArgumentException("Resource pack format must have a positive major and non-negative minor version.");
+        }
         this.packsDirectory = dataFolder.resolve("packs");
-        this.packFormat = packFormat;
+        this.formatMajor = formatMajor;
+        this.formatMinor = formatMinor;
         Files.createDirectories(packsDirectory);
     }
 
@@ -35,8 +40,13 @@ public final class ResourcePackBuilder {
             soundsJson.append('\n');
         }
         soundsJson.append("}\n");
-        String meta = "{\"pack\":{\"pack_format\":" + packFormat
+
+        // 26.3 uses pack format 97.1. Since 1.21.9, min_format and max_format
+        // are required and pack_format is not used for packs targeting only new formats.
+        String meta = "{\"pack\":{\"min_format\":[" + formatMajor + "," + formatMinor
+                + "],\"max_format\":" + formatMajor
                 + ",\"description\":\"Musicolide track pack\"}}";
+
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
             add(zip, "pack.mcmeta", meta.getBytes(StandardCharsets.UTF_8));
             add(zip, "assets/" + namespace + "/sounds.json", soundsJson.toString().getBytes(StandardCharsets.UTF_8));

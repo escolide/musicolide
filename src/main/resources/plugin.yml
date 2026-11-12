@@ -1,7 +1,7 @@
 name: Musicolide
 version: 0.1.0
 main: io.github.escolide.musicolide.MusicolidePlugin
-api-version: '1.21.11'
+api-version: '26.3'
 description: Server-side music playback using dynamically generated Minecraft resource packs.
 author: escolide
 softdepend:

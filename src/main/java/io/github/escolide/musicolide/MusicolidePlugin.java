@@ -34,7 +34,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             Files.createDirectories(data.resolve("tracks"));
             Files.createDirectories(data.resolve("packs"));
             repository = new TrackRepository(data.resolve("musicolide.db"));
-            ResourcePackBuilder builder = new ResourcePackBuilder(data, getConfig().getInt("audio.resource-pack-format", 75));
+            ResourcePackBuilder builder = new ResourcePackBuilder(data, getConfig().getInt("audio.resource-pack-format-major", 97),\n                    getConfig().getInt("audio.resource-pack-format-minor", 1));
             processor = new AudioProcessor(this, repository, builder);
             packManager = new PackManager(this);
             String bind = getConfig().getString("server.bind-address", "0.0.0.0");

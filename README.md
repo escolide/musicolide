@@ -27,7 +27,7 @@ Import only audio that you own or are authorized to distribute to your players. 
 
 ## Build
 
-1. Install JDK 21.
+1. Install JDK 25 or newer.
 2. Install FFmpeg and FFprobe on the server machine and ensure both executables are on your PATH (or configure their paths).
 3. Run:
 
@@ -85,7 +85,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 ## Configuration
 
-See the fully commented `config.yml`. Use `/music reload` after editing it. Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages.
+See the fully commented `config.yml`. Musicolide generates Minecraft 26.3 resource packs using format 97.1 (`min_format: [97, 1]`, `max_format: 97`). Use `/music reload` after editing it. Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages.
 
 ## Status
 
