@@ -30,8 +30,8 @@ public record MusicTrack(
         return bytes;
     }
 
-    public String soundKey(int segmentIndex, boolean mono) {
-        return namespace + ":" + (mono ? "m_" : "s_") + String.format("%05d", segmentIndex);
+    public String soundKey(int segmentIndex) {
+        return namespace + ":s_" + String.format("%05d", segmentIndex);
     }
 
     public long segmentDurationMs(int segmentIndex) {

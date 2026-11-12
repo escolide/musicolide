@@ -9,127 +9,194 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
-import java.sql.SQLException;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.regex.Pattern;
 
 public final class AudioProcessor implements AutoCloseable {
     private static final Pattern SAFE_ID = Pattern.compile("[a-z0-9_]{1,48}");
+
     private final JavaPlugin plugin;
     private final TrackRepository repository;
     private final ResourcePackBuilder packBuilder;
-    private final ExecutorService worker = Executors.newFixedThreadPool(2, r -> {
-        Thread thread = new Thread(r, "Musicolide-AudioWorker");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ThreadPoolExecutor worker;
 
     public AudioProcessor(JavaPlugin plugin, TrackRepository repository, ResourcePackBuilder packBuilder) {
         this.plugin = plugin;
         this.repository = repository;
         this.packBuilder = packBuilder;
+        int maxQueued = bounded(plugin.getConfig().getInt("audio.processing.max-queued-jobs", 8), 1, 64);
+        this.worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(maxQueued), runnable -> {
+                    Thread thread = new Thread(runnable, "Musicolide-AudioWorker");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                Path incoming = plugin.getDataFolder().toPath().resolve("incoming").toAbsolutePath().normalize();
-                Path source = incoming.resolve(fileName).normalize();
-                if (!source.startsWith(incoming) || !Files.isRegularFile(source)) {
-                    throw new IOException("File not found in plugins/Musicolide/incoming.");
-                }
-                Path realIncoming = incoming.toRealPath();
-                source = source.toRealPath();
-                if (!source.startsWith(realIncoming)) {
-                    throw new IOException("The selected file must remain inside the incoming directory.");
-                }
-                long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
-                if (Files.size(source) > maxBytes) throw new IOException("Input exceeds configured size limit.");
-                String ffmpeg = plugin.getConfig().getString("audio.ffmpeg.executable", "ffmpeg");
-                String ffprobe = plugin.getConfig().getString("audio.ffmpeg.ffprobe-executable", "ffprobe");
-                long durationMs = probeDuration(ffprobe, source);
-                long maxDuration = plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800);
-                if (durationMs <= 0 || durationMs > maxDuration * 1000L) {
-                    throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
-                }
-                String rawTitle = requestedTitle == null || requestedTitle.isBlank()
-                        ? stripExtension(source.getFileName().toString()) : requestedTitle.trim();
-                String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
-                String namespace = "mc_" + id.replace('-', '_');
-                if (!SAFE_ID.matcher(namespace).matches()) throw new IOException("Generated track identifier is invalid.");
-                int segmentMs = Math.max(500, plugin.getConfig().getInt("audio.segment-duration-ms", 1000));
-                int count = (int) Math.ceil(durationMs / (double) segmentMs);
-                Path trackDir = plugin.getDataFolder().toPath().resolve("tracks").resolve(id);
-                Path stereoDir = trackDir.resolve("stereo");
-                Path monoDir = trackDir.resolve("mono");
-                Files.createDirectories(stereoDir);
-                Files.createDirectories(monoDir);
-                int stereoQuality = plugin.getConfig().getInt("audio.stereo-quality", 5);
-                int monoQuality = plugin.getConfig().getInt("audio.mono-quality", 5);
-                for (int i = 0; i < count; i++) {
-                    double start = i * segmentMs / 1000.0;
-                    double length = Math.min(segmentMs, durationMs - (long) i * segmentMs) / 1000.0;
-                    String name = String.format(Locale.ROOT, "%05d.ogg", i);
-                    runFfmpeg(ffmpeg, source, stereoDir.resolve(name), start, length, 2, stereoQuality);
-                    runFfmpeg(ffmpeg, source, monoDir.resolve(name), start, length, 1, monoQuality);
-                }
-                Path pack = packBuilder.build(namespace, trackDir, count, segmentMs);
-                long libraryLimit = plugin.getConfig().getLong("limits.max-track-library-gb", 10) * 1024L * 1024L * 1024L;
-                long currentBytes = 0;
-                Path tracksRoot = plugin.getDataFolder().toPath().resolve("tracks");
-                try (var walk = Files.walk(tracksRoot)) {
-                    currentBytes = walk.filter(Files::isRegularFile).mapToLong(path -> {
-                        try { return Files.size(path); } catch (IOException ignored) { return 0L; }
-                    }).sum();
-                }
-                Path packsRoot = plugin.getDataFolder().toPath().resolve("packs");
-                try (var walk = Files.walk(packsRoot)) {
-                    currentBytes += walk.filter(Files::isRegularFile).mapToLong(path -> {
-                        try { return Files.size(path); } catch (IOException ignored) { return 0L; }
-                    }).sum();
-                }
-                if (currentBytes > libraryLimit) {
-                    deleteTree(trackDir);
-                    Files.deleteIfExists(pack);
-                    throw new IOException("The configured Musicolide audio-library size limit would be exceeded.");
-                }
-                String sha1 = sha1(pack);
-                MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, pack.getFileName().toString(),
-                        sha1, durationMs, segmentMs, count, Files.size(pack));
-                repository.saveTrack(track);
-                return track;
-            } catch (Exception ex) {
-                throw new java.util.concurrent.CompletionException(ex);
+        try {
+            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle), worker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
+        }
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle) {
+        Path trackDirectory = null;
+        Path generatedPack = null;
+        Path source = null;
+        try {
+            Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+            Path incoming = data.resolve("incoming");
+            Files.createDirectories(incoming);
+            source = incoming.resolve(fileName).normalize();
+            if (!source.startsWith(incoming) || !Files.isRegularFile(source)) {
+                throw new IOException("File not found in plugins/Musicolide/incoming.");
             }
-        }, worker);
+            Path realIncoming = incoming.toRealPath();
+            source = source.toRealPath();
+            if (!source.startsWith(realIncoming)) {
+                throw new IOException("The selected file must remain inside the incoming directory.");
+            }
+
+            long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+            if (Files.size(source) > maxBytes) throw new IOException("Input exceeds configured size limit.");
+
+            String ffmpeg = plugin.getConfig().getString("audio.ffmpeg.executable", "ffmpeg");
+            String ffprobe = plugin.getConfig().getString("audio.ffmpeg.ffprobe-executable", "ffprobe");
+            long durationMs = probeDuration(ffprobe, source, data);
+            long maxDuration = plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800);
+            if (durationMs <= 0 || durationMs > maxDuration * 1000L) {
+                throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
+            }
+
+            String rawTitle = requestedTitle == null || requestedTitle.isBlank()
+                    ? stripExtension(source.getFileName().toString()) : requestedTitle.trim();
+            String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
+            String namespace = "mc_" + id.replace('-', '_');
+            if (!SAFE_ID.matcher(namespace).matches()) throw new IOException("Generated track identifier is invalid.");
+
+            int segmentMs = Math.max(500, plugin.getConfig().getInt("audio.segment-duration-ms", 1000));
+            int count = (int) Math.ceil(durationMs / (double) segmentMs);
+            trackDirectory = data.resolve("tracks").resolve(id);
+            Path stereoDirectory = trackDirectory.resolve("stereo");
+            Files.createDirectories(stereoDirectory);
+
+            int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            for (int i = 0; i < count; i++) {
+                double start = i * segmentMs / 1000.0;
+                double length = Math.min(segmentMs, durationMs - (long) i * segmentMs) / 1000.0;
+                String name = String.format(Locale.ROOT, "%05d.ogg", i);
+                runFfmpeg(ffmpeg, source, stereoDirectory.resolve(name), start, length, quality);
+            }
+
+            generatedPack = packBuilder.build(namespace, trackDirectory, count, segmentMs);
+            long libraryLimit = plugin.getConfig().getLong("limits.max-track-library-gb", 10)
+                    * 1024L * 1024L * 1024L;
+            long currentBytes = directorySize(data.resolve("tracks")) + directorySize(data.resolve("packs"));
+            if (currentBytes > libraryLimit) {
+                throw new IOException("The configured Musicolide audio-library size limit would be exceeded.");
+            }
+
+            String sha1 = sha1(generatedPack);
+            MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
+                    sha1, durationMs, segmentMs, count, Files.size(generatedPack));
+
+            // OGG segments are build intermediates; the generated pack is the retained playback asset.
+            deleteTree(trackDirectory);
+            trackDirectory = null;
+            repository.saveTrack(track);
+
+            // Keep the original input if processing or catalogue persistence failed.
+            if (plugin.getConfig().getBoolean("audio.delete-source-after-import", true)) {
+                try {
+                    Files.deleteIfExists(source);
+                } catch (IOException ex) {
+                    plugin.getLogger().warning("Imported " + rawTitle
+                            + " but could not remove its source file: " + ex.getMessage());
+                }
+            }
+            return track;
+        } catch (Exception ex) {
+            deleteQuietly(trackDirectory);
+            deleteQuietly(generatedPack);
+            throw new CompletionException(ex);
+        }
     }
 
-    private long probeDuration(String executable, Path source) throws IOException, InterruptedException {
-        Process process = new ProcessBuilder(executable, "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", source.toString())
-                .redirectErrorStream(true).start();
-        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-        if (process.waitFor() != 0) throw new IOException("FFprobe failed: " + output);
-        try { return Math.round(Double.parseDouble(output) * 1000.0); }
-        catch (NumberFormatException ex) { throw new IOException("FFprobe returned an invalid duration: " + output, ex); }
+    private long probeDuration(String executable, Path source, Path dataDirectory)
+            throws IOException, InterruptedException {
+        Path output = Files.createTempFile(dataDirectory, ".musicolide-probe-", ".txt");
+        try {
+            Process process = new ProcessBuilder(executable, "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", source.toString())
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .redirectOutput(output.toFile()).start();
+            waitForProcess(process, bounded(plugin.getConfig().getInt(
+                    "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFprobe");
+            String result = Files.readString(output, StandardCharsets.UTF_8).trim();
+            try {
+                return Math.round(Double.parseDouble(result) * 1000.0);
+            } catch (NumberFormatException ex) {
+                throw new IOException("FFprobe returned an invalid duration.", ex);
+            }
+        } finally {
+            Files.deleteIfExists(output);
+        }
     }
 
-    private void runFfmpeg(String executable, Path source, Path output, double start, double length,
-                           int channels, int quality) throws IOException, InterruptedException {
+    private void runFfmpeg(String executable, Path source, Path output, double start,
+                           double length, int quality) throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
         Process process = new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
-                "-ss", String.format(Locale.ROOT, "%.3f", start), "-t", String.format(Locale.ROOT, "%.3f", length),
-                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", Integer.toString(channels),
-                "-ar", Integer.toString(plugin.getConfig().getInt("audio.sample-rate", 44100)),
-                "-c:a", "libvorbis", "-q:a", Integer.toString(Math.max(0, Math.min(10, quality))),
-                output.toString()).redirectErrorStream(true).start();
-        String outputText = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-        if (process.waitFor() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
-            throw new IOException("FFmpeg failed: " + outputText);
+                "-ss", String.format(Locale.ROOT, "%.3f", start),
+                "-t", String.format(Locale.ROOT, "%.3f", length),
+                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
+                "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
+                output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .start();
+
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        waitForProcess(process, timeout, "FFmpeg");
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing a valid OGG segment.");
+        }
+    }
+
+    private void waitForProcess(Process process, int timeoutSeconds, String label)
+            throws IOException, InterruptedException {
+        final boolean finished;
+        try {
+            finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw ex;
+        }
+        if (!finished) {
+            process.destroyForcibly();
+            throw new IOException(label + " exceeded its " + timeoutSeconds + " second timeout.");
+        }
+        if (process.exitValue() != 0) {
+            throw new IOException(label + " exited with code " + process.exitValue() + ".");
+        }
+    }
+
+    private long directorySize(Path directory) throws IOException {
+        if (!Files.exists(directory)) return 0L;
+        try (var walk = Files.walk(directory)) {
+            return walk.filter(Files::isRegularFile).mapToLong(path -> {
+                try { return Files.size(path); }
+                catch (IOException ex) { return 0L; }
+            }).sum();
         }
     }
 
@@ -150,9 +217,17 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private void deleteTree(Path root) throws IOException {
-        if (!Files.exists(root)) return;
+        if (root == null || !Files.exists(root)) return;
         try (var walk = Files.walk(root)) {
             for (Path path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        }
+    }
+
+    private void deleteQuietly(Path path) {
+        if (path == null) return;
+        try { deleteTree(path); }
+        catch (IOException ex) {
+            plugin.getLogger().warning("Could not clean temporary audio data at " + path + ": " + ex.getMessage());
         }
     }
 
@@ -161,5 +236,12 @@ public final class AudioProcessor implements AutoCloseable {
         return dot > 0 ? value.substring(0, dot) : value;
     }
 
-    @Override public void close() { worker.shutdownNow(); }
+    private static int bounded(int value, int minimum, int maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    @Override
+    public void close() {
+        worker.shutdownNow();
+    }
 }
