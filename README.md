@@ -50,8 +50,10 @@ Import only audio that you own or are authorized to distribute to your players. 
 ## Build
 
 1. Install JDK 21 or newer.
-2. Install FFmpeg and FFprobe on the server machine and ensure both executables are on your PATH (or configure their paths).
+2. Install FFmpeg and FFprobe on the server machine and ensure both executables are on your PATH (or configure their paths). Optional binaries can be packaged under src/main/native/<platform>/; see src/main/native/README.md for the platform layout and redistribution/licensing requirements.
 3. Run: ./gradlew clean test shadowJar
+
+The native extraction system does not include binary payloads in this source repository. Release packagers must add and license-check their own pinned builds.
 
 The deployable plugin is build/libs/musicolide-0.1.0.jar.
 
@@ -69,6 +71,8 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 - /music help
 - /music import <filename> [title] (admin)
 - /music import all (admin; imports supported files from incoming/ one at a time)
+- /music import-url <url> --rights-confirmed [title] (admin; requires yt-dlp and an allowlisted source host)
+- /music diagnostics (admin; reports native audio-tool availability)
 - /music list [search]
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
 - /music playlist create <name>
@@ -94,11 +98,13 @@ For example, an administrator can map a Spotify or YouTube Music URL to a locall
 
 Musicolide warns that an alias may point to a different recording and can require confirmation. It does not fetch the stream from the external platform.
 
-## Geyser and Bedrock roadmap
+## Geyser and Bedrock
 
-Geyser is an explicit compatibility target, but this Java Edition build does not yet claim Bedrock playback. Geyser can deliver Bedrock-format resource packs to Bedrock clients, but it does not translate Java resource packs. Bedrock packs need their own manifest and sound definitions, and pack registration follows the Bedrock connection lifecycle. Newly imported tracks may require a reconnect before they are available to a Bedrock player. The custom sound-trigger path must also be verified against the supported Geyser API before Bedrock playback is enabled.
+The Geyser integration in this branch is experimental. When Geyser-Spigot is installed on the same Paper server, Musicolide builds one aggregate Bedrock mcpack from imported track archives and registers it for Bedrock sessions through Geyser's public resource-pack event. Bedrock players use the same Musicolide session and custom sound identifiers, but they do not receive Java Edition resource packs.
 
-See docs/GEYSER.md for the integration plan and current limitations.
+Geyser's current custom-sound translator forwards unmapped custom Java sound identifiers. That is the basis of the shared playback trigger, but it has not yet been validated with a live Bedrock client. The Bedrock library is delivered when a player connects; when a new track changes the pack version, already-connected Bedrock players must reconnect to receive it. A player who has not received the current pack is held out of playback rather than sent silent audio.
+
+This branch does not currently support a separately hosted Geyser proxy without the Geyser plugin/API being available on the Paper server. See docs/GEYSER.md for requirements and the remaining client acceptance tests.
 
 ## Client behavior
 
@@ -110,7 +116,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
 
-Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. Cloud processing is being designed as a separate deployable service; this branch adds the bulk-import command but does not yet enable cloud mode.
+Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL import is off by default and restricted to administrator-allowlisted hosts; YouTube, Spotify and SoundCloud are blocked as audio sources. Cloud processing remains a design only and is not implemented.
 
 ## Status
 
