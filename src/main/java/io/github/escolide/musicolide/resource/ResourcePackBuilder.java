@@ -11,10 +11,12 @@ import java.util.zip.ZipOutputStream;
 public final class ResourcePackBuilder {
     private final Path packsDirectory;
     private final ResourcePackFormat format;
+    private final BedrockResourcePackBuilder bedrockBuilder;
 
     public ResourcePackBuilder(Path dataFolder, ResourcePackFormat format) throws IOException {
         this.packsDirectory = dataFolder.resolve("packs");
         this.format = format;
+        this.bedrockBuilder = new BedrockResourcePackBuilder(dataFolder);
         Files.createDirectories(packsDirectory);
     }
 
@@ -47,6 +49,14 @@ public final class ResourcePackBuilder {
             }
         }
         return output;
+    }
+
+    public Path rebuildBedrockLibrary() throws IOException {
+        return bedrockBuilder.rebuild(packsDirectory);
+    }
+
+    public Path bedrockPackPath() {
+        return bedrockBuilder.outputFile();
     }
 
     private void addFile(ZipOutputStream zip, String name, Path file) throws IOException {
