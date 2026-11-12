@@ -62,6 +62,14 @@ public final class PlaybackEngine {
 
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
 
+    /**
+     * Used by retention cleanup to avoid deleting a temporary pack while a
+     * session still references it as the current, queued, or repeating track.
+     */
+    public synchronized boolean isTrackInUse(String trackId) {
+        return sessions.stream().anyMatch(session -> session.referencesTrack(trackId));
+    }
+
     public synchronized boolean control(UUID actor, boolean admin, String action) {
         PlaybackSession session = findOwned(actor).orElseGet(() -> admin && !sessions.isEmpty()
                 ? sessions.get(sessions.size() - 1) : null);
