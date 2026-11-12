@@ -87,38 +87,45 @@ public final class TrackRepository implements AutoCloseable {
                 """;
         try (Connection c = open()) {
             c.setAutoCommit(false);
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setString(1, track.id());
-                ps.setString(2, track.title());
-                ps.setString(3, track.artist() == null ? "" : track.artist());
-                ps.setString(4, track.namespace());
-                ps.setString(5, track.packFileName());
-                ps.setString(6, track.sha1Hex());
-                ps.setLong(7, track.durationMs());
-                ps.setInt(8, track.segmentMs());
-                ps.setInt(9, track.segmentCount());
-                ps.setLong(10, track.packSizeBytes());
-                ps.setLong(11, System.currentTimeMillis());
-                ps.executeUpdate();
-            }
-            if (expiresAtMillis == null) {
-                try (PreparedStatement ps = c.prepareStatement("DELETE FROM ephemeral_tracks WHERE track_id=?")) {
+            try {
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
                     ps.setString(1, track.id());
+                    ps.setString(2, track.title());
+                    ps.setString(3, track.artist() == null ? "" : track.artist());
+                    ps.setString(4, track.namespace());
+                    ps.setString(5, track.packFileName());
+                    ps.setString(6, track.sha1Hex());
+                    ps.setLong(7, track.durationMs());
+                    ps.setInt(8, track.segmentMs());
+                    ps.setInt(9, track.segmentCount());
+                    ps.setLong(10, track.packSizeBytes());
+                    ps.setLong(11, System.currentTimeMillis());
                     ps.executeUpdate();
                 }
-            } else {
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO ephemeral_tracks(track_id,expires_at) VALUES(?,?)
-                        ON CONFLICT(track_id) DO UPDATE SET expires_at=excluded.expires_at
-                        """)) {
-                    ps.setString(1, track.id());
-                    ps.setLong(2, expiresAtMillis);
-                    ps.executeUpdate();
+                if (expiresAtMillis == null) {
+                    try (PreparedStatement ps = c.prepareStatement("DELETE FROM ephemeral_tracks WHERE track_id=?")) {
+                        ps.setString(1, track.id());
+                        ps.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            INSERT INTO ephemeral_tracks(track_id,expires_at) VALUES(?,?)
+                            ON CONFLICT(track_id) DO UPDATE SET expires_at=excluded.expires_at
+                            """)) {
+                        ps.setString(1, track.id());
+                        ps.setLong(2, expiresAtMillis);
+                        ps.executeUpdate();
+                    }
                 }
+                c.commit();
+            } catch (SQLException ex) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                }
+                throw ex;
             }
-            c.commit();
-        } catch (SQLException ex) {
-            throw ex;
         }
     }
 
