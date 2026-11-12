@@ -41,6 +41,14 @@ tasks.named('shadowJar') {
     relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
 }
 
+// Optional license-cleared native builds can be supplied under src/main/native/<platform>/.
+tasks.named('processResources') {
+    from('src/main/native') {
+        into 'native'
+        exclude '**/README.md', '**/LICENSE*', '**/COPYING*', '**/NOTICE*'
+    }
+}
+
 tasks.named('jar') {
     enabled = false
 }
