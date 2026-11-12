@@ -225,6 +225,15 @@ public final class PlaybackEngine {
             int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
             packs.prefetch(player, track, session.upcoming(prefetch),
                     plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
+            if (packs.isBaseDeclined(player)) {
+                long now = System.currentTimeMillis();
+                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+                    player.sendMessage(message("messages.pack-declined"));
+                    declinedWarnings.put(player.getUniqueId(), now);
+                }
+                stopPlayer(player);
+                return;
+            }
             if (packs.isDeclined(player, track)) {
                 long now = System.currentTimeMillis();
                 if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
