@@ -47,6 +47,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getLogger().info("Detected Minecraft " + serverVersion + "; using resource-pack format "
                     + packFormat.displayName() + ".");
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
+            ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
                 if (bedrockPack != null) getLogger().info("Rebuilt the Bedrock music library from imported tracks.");
@@ -61,7 +62,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 getLogger().warning("URL importing is enabled in config, but yt-dlp did not pass its startup check.");
             }
             processor = new AudioProcessor(this, repository, builder, nativeToolchain);
-            packManager = new PackManager(this);
+            packManager = new PackManager(this, basePack);
             geyserBridge = new GeyserBridge(this, builder.bedrockPackPath());
             initializeGeyserPackIntegration(builder.bedrockPackPath());
             String bind = getConfig().getString("server.bind-address", "0.0.0.0");
