@@ -1,20 +1,50 @@
 plugins {
     id 'java'
+    id 'com.gradleup.shadow' version '9.2.2'
 }
 
-group = 'org.example'
-version = '1.0-SNAPSHOT'
+group = 'io.github.escolide'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
 
 repositories {
     mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
 }
 
 dependencies {
-    testImplementation platform('org.junit:junit-bom:6.0.0')
+    // Paper's post-26.1 version scheme. Keep the API as compile-only.
+    compileOnly 'io.papermc.paper:paper-api:26.3.build.+'
+    implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
+    testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-test {
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+tasks.named('test') {
     useJUnitPlatform()
+}
+
+tasks.named('shadowJar') {
+    archiveClassifier = ''
+    mergeServiceFiles()
+    relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
+}
+
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('shadowJar')
 }

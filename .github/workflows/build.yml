@@ -1,0 +1,27 @@
+name: Build
+
+on:
+  push:
+    branches: ["master", "implementation/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+      - name: Install FFmpeg for integration checks
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Run tests and build plugin
+        run: bash ./gradlew --no-daemon clean test shadowJar
+      - name: Upload plugin JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: musicolide-plugin
+          path: build/libs/musicolide-*.jar

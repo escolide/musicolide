@@ -1,0 +1,27 @@
+name: Musicolide
+version: 0.1.0
+main: io.github.escolide.musicolide.MusicolidePlugin
+api-version: '26.3'
+description: Server-side music playback using dynamically generated Minecraft resource packs.
+author: escolide
+softdepend:
+  - WorldGuard
+commands:
+  music:
+    description: Control Musicolide playback, playlists and the local music catalogue.
+    usage: /music help
+    aliases: [musicolide, m]
+permissions:
+  musicolide.use:
+    description: Allows use of Musicolide playback commands.
+    default: true
+  musicolide.dj:
+    description: Allows starting and controlling music sessions.
+    default: op
+    children:
+      musicolide.use: true
+  musicolide.admin:
+    description: Allows importing tracks and changing Musicolide configuration.
+    default: op
+    children:
+      musicolide.dj: true
