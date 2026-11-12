@@ -60,8 +60,10 @@ class BedrockResourcePackBuilderTest {
     void removesOldPackWhenThereAreNoTrackArchives() throws Exception {
         Path packs = Files.createDirectories(temporary.resolve("empty-packs"));
         BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
-        Path oldPack = builder.rebuild(packs.resolveSibling("populated-packs"));
-        assertNull(oldPack);
+        Files.createDirectories(builder.outputFile().getParent());
+        Files.writeString(builder.outputFile(), "previous pack");
+        Path newPack = builder.rebuild(packs);
+        assertNull(newPack);
         assertFalse(Files.exists(builder.outputFile()));
     }
 }
