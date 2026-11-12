@@ -35,10 +35,10 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
-- FFmpeg/FFprobe prepare imported audio into stereo and mono OGG segments.
+- FFmpeg/FFprobe prepare imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
 - A small built-in HTTP server serves generated per-track resource packs. Put HTTPS in front of it for production.
 - Resource packs are requested only for the current track and a rolling prefetch window (four upcoming tracks by default). Client-side pack hashes allow cached packs to be reused.
-- Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional mono fade outside the main zone.
+- Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional volume-based stereo fade outside the main zone.
 - Overlap is resolved per player. The default policy is first-started session wins; lower-priority music continues in the exclusive part of its zone.
 
 ## Audio source and rights
@@ -50,8 +50,10 @@ Import only audio that you own or are authorized to distribute to your players. 
 ## Build
 
 1. Install JDK 21 or newer.
-2. Install FFmpeg and FFprobe on the server machine and ensure both executables are on your PATH (or configure their paths).
+2. Install FFmpeg and FFprobe on the server machine and ensure both executables are on your PATH (or configure their paths). Optional binaries can be packaged under src/main/native/<platform>/; see src/main/native/README.md for the platform layout and redistribution/licensing requirements.
 3. Run: ./gradlew clean test shadowJar
+
+The native extraction system does not include binary payloads in this source repository. Release packagers must add and license-check their own pinned builds.
 
 The deployable plugin is build/libs/musicolide-0.1.0.jar.
 
@@ -60,7 +62,7 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 1. Install the JAR in plugins/ and start Paper once.
 2. Put authorized source files in plugins/Musicolide/incoming/.
 3. Configure server.public-base-url to an address your players can reach. The built-in HTTP server binds to server.bind-address:server.port. For public servers, use an HTTPS reverse proxy and expose only the configured pack path.
-4. Run /music import <filename> [title] as an administrator.
+4. Run /music import <filename> [title] as an administrator, or use /music import all to process every supported file in incoming/ sequentially.
 5. Use /music list to see imported tracks.
 6. Start playback with /music play <id-or-title>.
 
@@ -68,6 +70,9 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 
 - /music help
 - /music import <filename> [title] (admin)
+- /music import all (admin; imports supported files from incoming/ one at a time)
+- /music import-url <url> --rights-confirmed [title] (admin; requires yt-dlp and an allowlisted source host)
+- /music diagnostics (admin; reports native audio-tool availability)
 - /music list [search]
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
 - /music playlist create <name>
@@ -93,9 +98,17 @@ For example, an administrator can map a Spotify or YouTube Music URL to a locall
 
 Musicolide warns that an alias may point to a different recording and can require confirmation. It does not fetch the stream from the external platform.
 
+## Geyser and Bedrock
+
+The Geyser integration in this branch is experimental. When Geyser-Spigot is installed on the same Paper server, Musicolide builds one aggregate Bedrock mcpack from imported track archives and registers it for Bedrock sessions through Geyser's public resource-pack event. Bedrock players use the same Musicolide session and custom sound identifiers, but they do not receive Java Edition resource packs.
+
+Geyser's current custom-sound translator forwards unmapped custom Java sound identifiers. That is the basis of the shared playback trigger, but it has not yet been validated with a live Bedrock client. The Bedrock library is delivered when a player connects; when a new track changes the pack version, already-connected Bedrock players must reconnect to receive it. A player who has not received the current pack is held out of playback rather than sent silent audio.
+
+This branch does not currently support a separately hosted Geyser proxy without the Geyser plugin/API being available on the Paper server. See docs/GEYSER.md for requirements and the remaining client acceptance tests.
+
 ## Client behavior
 
-The first time a player needs a track, Minecraft may show a resource-pack prompt and download it. Declining the pack prevents custom audio playback. Later uses can be served from the client's resource-pack cache.
+The first time a Java player needs music, Musicolide sends a tiny stable metadata-only base pack with the consent prompt. After it is accepted, per-track packs are requested without another prompt and use the client's background download path where supported. Unused packs are removed from the active stack, including deferred removal after an in-flight download completes. Declining the base pack prevents custom audio playback. Minecraft controls the actual downloaded ZIP cache on the player's device; the server cannot remotely delete those files.
 
 Minecraft's vanilla sound API does not expose a true pause/seek operation for an already-playing sound. Musicolide uses short segments, so pause/resume and seeking are segment-accurate rather than sample-accurate. This is an inherent vanilla-client limitation; no client mod is installed.
 
@@ -103,7 +116,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
 
-Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages.
+Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL import is off by default and restricted to administrator-allowlisted hosts; YouTube, Spotify and SoundCloud are blocked as audio sources. Cloud processing remains a design only and is not implemented.
 
 ## Status
 

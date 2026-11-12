@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.playback;
 
+import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
@@ -8,7 +9,6 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
-import org.bukkit.Location;
 import org.bukkit.SoundCategory;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -28,13 +28,17 @@ public final class PlaybackEngine {
     private final Map<UUID, Long> warningTimes = new HashMap<>();
     private final Map<UUID, Long> declinedWarnings = new HashMap<>();
     private final WorldGuardBridge worldGuard;
+    private final GeyserBridge geyser;
+    private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
     private BukkitTask task;
 
-    public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs, WorldGuardBridge worldGuard) {
+    public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs,
+                          WorldGuardBridge worldGuard, GeyserBridge geyser) {
         this.plugin = plugin;
         this.repository = repository;
         this.packs = packs;
         this.worldGuard = worldGuard;
+        this.geyser = geyser;
     }
 
     public void start() {
@@ -202,37 +206,58 @@ public final class PlaybackEngine {
             stopPlayer(player);
             return;
         }
-        int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
-        packs.prefetch(player, track, session.upcoming(prefetch),
-                plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
-        if (packs.isDeclined(player, track)) {
-            long now = System.currentTimeMillis();
-            if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
-                player.sendMessage(message("messages.pack-declined"));
-                declinedWarnings.put(player.getUniqueId(), now);
+        boolean bedrock = geyser != null && geyser.isBedrockPlayer(player.getUniqueId());
+        if (bedrock) {
+            // Bedrock receives the aggregate mcpack at Geyser connection time.
+            // Never send Java Edition packs to a Bedrock client.
+            packs.releaseAll(player);
+            if (!geyser.isBedrockPackAvailable()) {
+                warnBedrockUnavailable(player, "messages.bedrock-not-supported");
+                stopPlayer(player);
+                return;
             }
-            stopPlayer(player);
-            return;
-        }
-        if (!packs.isReady(player, track)) {
-            stopPlayer(player);
-            player.sendActionBar(message("messages.pack-not-ready"));
-            return;
+            if (!geyser.hasCurrentPackFor(player.getUniqueId())) {
+                warnBedrockUnavailable(player, "messages.bedrock-pack-reconnect");
+                stopPlayer(player);
+                return;
+            }
+        } else {
+            int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
+            packs.prefetch(player, track, session.upcoming(prefetch),
+                    plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
+            if (packs.isBaseDeclined(player)) {
+                long now = System.currentTimeMillis();
+                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+                    player.sendMessage(message("messages.pack-declined"));
+                    declinedWarnings.put(player.getUniqueId(), now);
+                }
+                stopPlayer(player);
+                return;
+            }
+            if (packs.isDeclined(player, track)) {
+                long now = System.currentTimeMillis();
+                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+                    player.sendMessage(message("messages.pack-declined"));
+                    declinedWarnings.put(player.getUniqueId(), now);
+                }
+                stopPlayer(player);
+                return;
+            }
+            if (!packs.isReady(player, track)) {
+                stopPlayer(player);
+                player.sendActionBar(message("messages.pack-not-ready"));
+                return;
+            }
         }
         session.startClockIfNeeded();
         int segment = session.segmentIndex();
-        boolean mono = candidate.mode == MusicZone.AudioMode.MONO;
-        String sound = track.soundKey(segment, mono);
+        boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
+        String sound = track.soundKey(segment);
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         float volume = (pref.volume() / 100.0f)
                 * (plugin.getConfig().getInt("playback.default-volume", 100) / 100.0f);
-        Location soundLocation = player.getLocation();
-        if (mono) {
-            double[] boundary = session.zone().nearestBoundaryPoint(player.getX(), player.getZ());
-            soundLocation = new Location(player.getWorld(), boundary[0], player.getY(), boundary[1]);
-            double distance = session.zone().distanceOutsideBase(player.getX(), player.getZ());
-            double fade = Math.max(0, Math.min(1, 1.0 - distance / Math.max(0.1, session.zone().fadeDistance())));
-            volume *= (float) fade;
+        if (fading) {
+            volume *= (float) session.zone().fadeFactor(player.getX(), player.getZ());
         }
         volume = Math.max(0, Math.min(1, volume));
         if (volume <= 0) {
@@ -240,21 +265,29 @@ public final class PlaybackEngine {
             return;
         }
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
-                || state.segment != segment || state.mono != mono;
+                || state.segment != segment || state.fading != fading;
         if (changed) {
             stopPlayer(player);
-            if (mono) player.playSound(soundLocation, sound, SoundCategory.MUSIC, volume, 1.0f);
-            else player.playSound(player.getLocation(), sound, SoundCategory.MUSIC, volume, 1.0f);
+            player.playSound(player.getLocation(), sound, SoundCategory.MUSIC, volume, 1.0f);
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
-            state.mono = mono;
+            state.fading = fading;
             state.sound = sound;
             playerPlayback.put(player.getUniqueId(), state);
         }
         if (plugin.getConfig().getBoolean("playback.synchronization.action-bar-now-playing", true)) {
             player.sendActionBar(Component.text("♫ " + track.title() + "  •  " + formatTime(session.elapsedMs())
                     + " / " + formatTime(track.durationMs())));
+        }
+    }
+
+    private void warnBedrockUnavailable(Player player, String messagePath) {
+        long now = System.currentTimeMillis();
+        long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
+        if (now - lastWarning > 300000L) {
+            player.sendMessage(message(messagePath));
+            bedrockWarnings.put(player.getUniqueId(), now);
         }
     }
 
@@ -285,6 +318,8 @@ public final class PlaybackEngine {
         stopPlayer(player);
         packs.removePlayer(player.getUniqueId());
         preferences.remove(player.getUniqueId());
+        bedrockWarnings.remove(player.getUniqueId());
+        if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }
 
     public void stopAll() {
@@ -294,6 +329,7 @@ public final class PlaybackEngine {
             packs.releaseAll(player);
         }
         synchronized (this) { sessions.clear(); }
+        bedrockWarnings.clear();
     }
 
     private record Candidate(PlaybackSession session, MusicZone.AudioMode mode) {}
@@ -301,7 +337,7 @@ public final class PlaybackEngine {
         UUID sessionId;
         String trackId;
         int segment = -1;
-        boolean mono;
+        boolean fading;
         String sound;
     }
 }

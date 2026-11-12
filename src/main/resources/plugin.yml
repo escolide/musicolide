@@ -6,6 +6,7 @@ description: Server-side music playback using dynamically generated Minecraft re
 author: escolide
 softdepend:
   - WorldGuard
+  - Geyser-Spigot
 commands:
   music:
     description: Control Musicolide playback, playlists and the local music catalogue.

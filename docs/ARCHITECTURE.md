@@ -3,7 +3,7 @@
 ## Runtime flow
 
 1. An administrator imports an audio file that they are authorized to distribute.
-2. The audio worker validates input size/duration and uses FFmpeg to create stereo and mono OGG segments.
+2. The audio worker validates input size/duration and uses FFmpeg to create stereo OGG segments only.
 3. The pack builder creates a per-track ZIP with a unique namespace, sound definitions and the segments.
 4. The built-in HTTP server exposes the ZIP through the configured public base URL.
 5. A playback session requests the current track and a bounded number of upcoming tracks from each listener.
@@ -17,7 +17,7 @@
 - Playback therefore advances through short OGG segments; seeking resumes at the segment containing the requested time.
 - Segment duration trades control responsiveness against resource-pack event count and network/client overhead.
 - Resource-pack acceptance is client-controlled. A declined pack means the client cannot hear the track.
-- Stereo and mono assets are prepared separately because vanilla clients infer positional attenuation from audio channel layout.
+- All music assets are stereo. The optional fade band applies a per-player volume multiplier to the stereo sound; it does not create duplicate mono assets.
 
 ## Spatial arbitration
 
@@ -26,3 +26,27 @@ Each tick refresh computes candidate sessions for each online player. A candidat
 ## Source adapters
 
 The repository stores local, rights-cleared audio. External source adapters are intentionally not implemented as extractors. URL aliases only resolve an external identifier to an already imported local track. Future adapters must independently satisfy the source provider's current API terms and grant rights for server-side distribution.
+
+
+## Processing backends (planned)
+
+The intended backend abstraction has three administrator-selectable modes:
+
+- `local`: run FFmpeg/FFprobe in the Minecraft server environment.
+- `cloud`: upload an authorized source file to a separately deployed Musicolide processing service; the service performs probing, segmentation, OGG encoding and pack generation.
+- `auto`: prefer local processing when the configured executables are available, then fall back to the configured cloud service when local processing is unavailable.
+
+The cloud service should also host the generated pack artifacts and return stable HTTPS pack URLs, because some managed Minecraft hosts do not expose a usable inbound port for the plugin's built-in HTTP server. The plugin must retain the local playback catalogue and playback/session logic.
+
+The remote API must use per-server credentials, enforce configured upload and duration limits, validate file types and job ownership, return structured job status, and support idempotency keys. Source audio and generated assets must be retained only according to an explicit storage policy. The plugin must never send audio to a third party without the administrator explicitly configuring cloud mode.
+
+**Implementation status:** the existing importer still uses the local FFmpeg processor. The cloud mode/API is an architectural target, not an active configuration option yet. The bulk import command is implemented separately and processes one file at a time to avoid resource spikes on shared hosts.
+
+
+## Bedrock / Geyser compatibility boundary
+
+Bedrock support is a separate output and transport adapter, not a conversion of the Java resource pack. The shared catalogue, playlists, zones, arbitration and session clock should remain edition-neutral. The Java adapter emits Java resource packs and Java custom sounds; a Bedrock adapter must generate a Bedrock manifest and Bedrock sound definitions and must use a verified Geyser-compatible sound trigger.
+
+The Bedrock pack lifecycle differs from Java: packs are supplied when a Bedrock client connects. Musicolide must not assume that a new per-track pack can be appended to an already-connected Bedrock client. The first supported Geyser milestone should use a stable Bedrock library pack that is available before a Bedrock player connects, or a documented reconnect/repack workflow. Dynamically adding a newly imported track to online Bedrock clients remains blocked until a supported pack-refresh path is demonstrated.
+
+Geyser detection, Bedrock pack generation, and Bedrock sound emission must be separate capabilities so that a server without Geyser does not load Geyser classes or depend on Geyser being installed.
