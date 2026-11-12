@@ -42,6 +42,10 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle) {
+        if (!toolchain.isInitialized()) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Native audio tools are still being checked during startup. Try again in a moment."));
+        }
         if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
                 || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -61,6 +65,10 @@ public final class AudioProcessor implements AutoCloseable {
      * before FFprobe or FFmpeg is launched.
      */
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
+        if (!toolchain.isInitialized()) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Native audio tools are still being checked during startup. Try again in a moment."));
+        }
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "URL importing is disabled. Enable audio.yt-dlp and configure allowed-hosts first."));
