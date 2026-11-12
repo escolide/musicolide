@@ -5,6 +5,8 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,19 +15,21 @@ import java.util.concurrent.ConcurrentHashMap;
  * Optional reflective bridge to the public Geyser API. No Geyser classes are
  * linked by Musicolide, so Java-only servers never need Geyser installed.
  *
- * This adapter only identifies Bedrock connections. It deliberately does not
- * claim to emit Bedrock custom sounds; that needs a tested Geyser sound adapter.
+ * Identifies Bedrock connections and reports whether the generated Bedrock
+ * library pack is available for Geyser's separate connection-time delivery path.
  */
 public final class GeyserBridge {
     private final JavaPlugin plugin;
+    private final Path bedrockPack;
     private final Map<UUID, Boolean> bedrockPlayers = new ConcurrentHashMap<>();
     private volatile boolean present;
     private volatile boolean unavailableLogged;
     private Method apiMethod;
     private Method isBedrockPlayerMethod;
 
-    public GeyserBridge(JavaPlugin plugin) {
+    public GeyserBridge(JavaPlugin plugin, Path bedrockPack) {
         this.plugin = plugin;
+        this.bedrockPack = bedrockPack == null ? null : bedrockPack.toAbsolutePath().normalize();
         initialize();
     }
 
@@ -58,6 +62,10 @@ public final class GeyserBridge {
         return present;
     }
 
+    public boolean isBedrockPackAvailable() {
+        return bedrockPack != null && Files.isRegularFile(bedrockPack);
+    }
+
     public boolean isBedrockPlayer(UUID uuid) {
         if (!present || uuid == null) return false;
         Boolean cached = bedrockPlayers.get(uuid);
@@ -66,7 +74,9 @@ public final class GeyserBridge {
             Object api = apiMethod.invoke(null);
             if (api == null) return false;
             boolean result = Boolean.TRUE.equals(isBedrockPlayerMethod.invoke(api, uuid));
-            bedrockPlayers.put(uuid, result);
+            // Do not cache false: Geyser may not have completed its connection mapping
+            // on the first server tick after the Java player joins.
+            if (result) bedrockPlayers.put(uuid, true);
             return result;
         } catch (ReflectiveOperationException | LinkageError ex) {
             if (!unavailableLogged) {
