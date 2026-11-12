@@ -25,7 +25,7 @@ audio:
   yt-dlp:
     enabled: false
     executable: "yt-dlp"
-    # Temporary URL-imported packs expire after this many minutes of inactivity.
+    # URL-imported packs become eligible for expiry this many minutes after import.
     # Active playback sessions and in-flight Java pack downloads delay deletion.
     url-import-retention-minutes: 15
     # Add only domains from which you are authorized to download and redistribute audio.
