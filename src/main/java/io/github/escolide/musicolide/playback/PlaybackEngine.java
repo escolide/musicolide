@@ -140,17 +140,6 @@ public final class PlaybackEngine {
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
-            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-                stopPlayer(player);
-                packs.releaseAll(player);
-                long now = System.currentTimeMillis();
-                long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
-                if (now - lastWarning > 300000L) {
-                    player.sendMessage(message("messages.bedrock-not-supported"));
-                    bedrockWarnings.put(player.getUniqueId(), now);
-                }
-                continue;
-            }
             Candidate winner = null;
             for (PlaybackSession session : active) {
                 if (!session.targets(player.getUniqueId()) || session.current() == null) continue;
@@ -217,22 +206,34 @@ public final class PlaybackEngine {
             stopPlayer(player);
             return;
         }
-        int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
-        packs.prefetch(player, track, session.upcoming(prefetch),
-                plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
-        if (packs.isDeclined(player, track)) {
-            long now = System.currentTimeMillis();
-            if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
-                player.sendMessage(message("messages.pack-declined"));
-                declinedWarnings.put(player.getUniqueId(), now);
+        boolean bedrock = geyser != null && geyser.isBedrockPlayer(player.getUniqueId());
+        if (bedrock) {
+            // Bedrock receives the aggregate mcpack at Geyser connection time.
+            // Never send Java Edition packs to a Bedrock client.
+            packs.releaseAll(player);
+            if (!geyser.isBedrockPackAvailable()) {
+                warnBedrockUnavailable(player);
+                stopPlayer(player);
+                return;
             }
-            stopPlayer(player);
-            return;
-        }
-        if (!packs.isReady(player, track)) {
-            stopPlayer(player);
-            player.sendActionBar(message("messages.pack-not-ready"));
-            return;
+        } else {
+            int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
+            packs.prefetch(player, track, session.upcoming(prefetch),
+                    plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
+            if (packs.isDeclined(player, track)) {
+                long now = System.currentTimeMillis();
+                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+                    player.sendMessage(message("messages.pack-declined"));
+                    declinedWarnings.put(player.getUniqueId(), now);
+                }
+                stopPlayer(player);
+                return;
+            }
+            if (!packs.isReady(player, track)) {
+                stopPlayer(player);
+                player.sendActionBar(message("messages.pack-not-ready"));
+                return;
+            }
         }
         session.startClockIfNeeded();
         int segment = session.segmentIndex();
@@ -264,6 +265,15 @@ public final class PlaybackEngine {
         if (plugin.getConfig().getBoolean("playback.synchronization.action-bar-now-playing", true)) {
             player.sendActionBar(Component.text("♫ " + track.title() + "  •  " + formatTime(session.elapsedMs())
                     + " / " + formatTime(track.durationMs())));
+        }
+    }
+
+    private void warnBedrockUnavailable(Player player) {
+        long now = System.currentTimeMillis();
+        long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
+        if (now - lastWarning > 300000L) {
+            player.sendMessage(message("messages.bedrock-not-supported"));
+            bedrockWarnings.put(player.getUniqueId(), now);
         }
     }
 
