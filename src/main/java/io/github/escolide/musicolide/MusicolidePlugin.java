@@ -4,6 +4,7 @@ import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.command.MusicCommand;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
+import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
 import io.github.escolide.musicolide.resource.PackHttpServer;
@@ -18,9 +19,13 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerResourcePackStatusEvent;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private TrackRepository repository;
@@ -31,6 +36,8 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private GeyserBridge geyserBridge;
     private Object geyserPackIntegration;
     private PackHttpServer packServer;
+    private ResourcePackBuilder resourcePackBuilder;
+    private BukkitTask temporaryTrackCleanupTask;
 
     @Override
     public void onEnable() {
@@ -47,6 +54,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getLogger().info("Detected Minecraft " + serverVersion + "; using resource-pack format "
                     + packFormat.displayName() + ".");
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
+            resourcePackBuilder = builder;
             ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
@@ -88,6 +96,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             }
             playback = new PlaybackEngine(this, repository, packManager, worldGuard, geyserBridge);
             playback.start();
+            scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);
             if (getCommand("music") != null) {
                 getCommand("music").setExecutor(command);
@@ -100,6 +109,68 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             ex.printStackTrace();
             Bukkit.getPluginManager().disablePlugin(this);
         }
+    }
+
+    private void scheduleTemporaryTrackCleanup() {
+        long periodTicks = 20L * 60L;
+        temporaryTrackCleanupTask = Bukkit.getScheduler().runTaskTimer(
+                this, this::cleanupExpiredTemporaryTracks, periodTicks, periodTicks);
+    }
+
+    /**
+     * URL-imported tracks are temporary by default. Cleanup runs on the server
+     * thread so it cannot race a command that is starting a session. Tracks
+     * remain until no active/queued/repeating session references them and no
+     * Java player is still downloading their pack. File deletion and Bedrock
+     * library rebuilding are then performed asynchronously.
+     */
+    private void cleanupExpiredTemporaryTracks() {
+        if (repository == null || playback == null || packManager == null || resourcePackBuilder == null) return;
+
+        final List<MusicTrack> expired;
+        try {
+            expired = repository.expiredTemporaryTracks(System.currentTimeMillis());
+        } catch (SQLException ex) {
+            getLogger().warning("Could not query expired temporary tracks: " + ex.getMessage());
+            return;
+        }
+        if (expired.isEmpty()) return;
+
+        Path packsDirectory = getDataFolder().toPath().resolve("packs").toAbsolutePath().normalize();
+        List<MusicTrack> removed = new ArrayList<>();
+        for (MusicTrack track : expired) {
+            if (playback.isTrackInUse(track.id()) || packManager.isDownloadInProgress(track.packId())) continue;
+
+            Path packFile = packsDirectory.resolve(track.packFileName()).normalize();
+            if (!packFile.startsWith(packsDirectory)) {
+                getLogger().warning("Skipped temporary track with unsafe pack path: " + track.id());
+                continue;
+            }
+            try {
+                if (repository.deleteTrack(track.id())) removed.add(track);
+            } catch (SQLException ex) {
+                getLogger().warning("Could not expire temporary track " + track.id() + ": " + ex.getMessage());
+            }
+        }
+        if (removed.isEmpty()) return;
+
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            for (MusicTrack track : removed) {
+                Path packFile = packsDirectory.resolve(track.packFileName()).normalize();
+                try {
+                    if (packFile.startsWith(packsDirectory)) Files.deleteIfExists(packFile);
+                } catch (Exception ex) {
+                    getLogger().warning("Could not delete expired resource pack for " + track.id() + ": " + ex.getMessage());
+                }
+            }
+            try {
+                resourcePackBuilder.rebuildBedrockLibrary();
+            } catch (Exception ex) {
+                getLogger().warning("Could not refresh the Bedrock library after temporary-track cleanup: "
+                        + ex.getMessage());
+            }
+        });
+        getLogger().info("Expired " + removed.size() + " temporary URL-imported track(s).");
     }
 
     private void initializeGeyserPackIntegration(Path bedrockPack) {
@@ -144,6 +215,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        if (temporaryTrackCleanupTask != null) temporaryTrackCleanupTask.cancel();
         closeGeyserPackIntegration();
         if (playback != null) playback.stopAll();
         if (processor != null) processor.close();
