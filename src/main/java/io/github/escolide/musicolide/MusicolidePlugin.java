@@ -2,6 +2,7 @@ package io.github.escolide.musicolide;
 
 import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.audio.NativeToolchain;
+import io.github.escolide.musicolide.audio.TemporaryStorageCleaner;
 import io.github.escolide.musicolide.command.MusicCommand;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
@@ -47,6 +48,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             Files.createDirectories(data.resolve("incoming"));
             Files.createDirectories(data.resolve("tracks"));
             Files.createDirectories(data.resolve("packs"));
+            TemporaryStorageCleaner.Report cleanup = TemporaryStorageCleaner.clean(data);
+            if (cleanup.removedEntries() > 0) {
+                getLogger().info("Removed " + cleanup.removedEntries()
+                        + " abandoned audio-processing temporary entr" + (cleanup.removedEntries() == 1 ? "y." : "ies."));
+            }
+            cleanup.failures().forEach(failure ->
+                    getLogger().warning("Could not clean an abandoned temporary entry: " + failure));
             repository = new TrackRepository(data.resolve("musicolide.db"));
 
             String serverVersion = Bukkit.getBukkitVersion();
