@@ -66,9 +66,7 @@ class ResourcePackBuilderTest {
     private Path buildPack(String serverVersion) throws Exception {
         Path track = tempDir.resolve("track-" + serverVersion.replaceAll("[^A-Za-z0-9]", "_"));
         Files.createDirectories(track.resolve("stereo"));
-        Files.createDirectories(track.resolve("mono"));
         Files.write(track.resolve("stereo/00000.ogg"), new byte[]{1, 2, 3});
-        Files.write(track.resolve("mono/00000.ogg"), new byte[]{1, 2, 3});
         ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
                 ResourcePackFormat.forMinecraftVersion(serverVersion));
         return builder.build("mc_demo", track, 1, 1000);
@@ -82,9 +80,20 @@ class ResourcePackBuilderTest {
         }
     }
 
-    private void assertSoundEntries(ZipFile zip) {
+    private void assertSoundEntries(ZipFile zip) throws Exception {
         assertNotNull(zip.getEntry("assets/mc_demo/sounds.json"));
         assertNotNull(zip.getEntry("assets/mc_demo/sounds/mc_demo/stereo/00000.ogg"));
-        assertNotNull(zip.getEntry("assets/mc_demo/sounds/mc_demo/mono/00000.ogg"));
+        assertNull(zip.getEntry("assets/mc_demo/sounds/mc_demo/mono/00000.ogg"));
+        String sounds = readSoundDefinitions(zip);
+        assertTrue(sounds.contains("\"s_00000\""), sounds);
+        assertFalse(sounds.contains("\"m_00000\""), sounds);
+    }
+
+    private String readSoundDefinitions(ZipFile zip) throws Exception {
+        ZipEntry entry = zip.getEntry("assets/mc_demo/sounds.json");
+        assertNotNull(entry);
+        try (InputStream input = zip.getInputStream(entry)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 }

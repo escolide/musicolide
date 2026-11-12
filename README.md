@@ -35,10 +35,10 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
-- FFmpeg/FFprobe prepare imported audio into stereo and mono OGG segments.
+- FFmpeg/FFprobe prepare imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
 - A small built-in HTTP server serves generated per-track resource packs. Put HTTPS in front of it for production.
 - Resource packs are requested only for the current track and a rolling prefetch window (four upcoming tracks by default). Client-side pack hashes allow cached packs to be reused.
-- Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional mono fade outside the main zone.
+- Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional volume-based stereo fade outside the main zone.
 - Overlap is resolved per player. The default policy is first-started session wins; lower-priority music continues in the exclusive part of its zone.
 
 ## Audio source and rights
@@ -93,6 +93,12 @@ For example, an administrator can map a Spotify or YouTube Music URL to a locall
     /music play https://open.spotify.com/track/EXAMPLE
 
 Musicolide warns that an alias may point to a different recording and can require confirmation. It does not fetch the stream from the external platform.
+
+## Geyser and Bedrock roadmap
+
+Geyser is an explicit compatibility target, but this Java Edition build does not yet claim Bedrock playback. Geyser can deliver Bedrock-format resource packs to Bedrock clients, but it does not translate Java resource packs. Bedrock packs need their own manifest and sound definitions, and pack registration follows the Bedrock connection lifecycle. Newly imported tracks may require a reconnect before they are available to a Bedrock player. The custom sound-trigger path must also be verified against the supported Geyser API before Bedrock playback is enabled.
+
+See docs/GEYSER.md for the integration plan and current limitations.
 
 ## Client behavior
 

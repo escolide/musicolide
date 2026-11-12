@@ -24,19 +24,23 @@ class MusicZoneTest {
     }
 
     @Test
-    void rotatedSquareStillContainsItsCenterAndUsesDistanceFade() {
+    void rotatedSquareUsesStereoVolumeFade() {
         MusicZone zone = MusicZone.square(world, 4, 64, 8, 20, 10, Math.PI / 4,
                 false, 0, true, 5);
         assertTrue(zone.containsBase(world, 4, 64, 8));
-        assertEquals(MusicZone.AudioMode.MONO, zone.audioMode(world, 18, 64, 8));
+        assertEquals(MusicZone.AudioMode.FADE, zone.audioMode(world, 18, 64, 8));
+        assertTrue(zone.fadeFactor(18, 8) > 0.0);
         assertEquals(MusicZone.AudioMode.NONE, zone.audioMode(world, 30, 64, 8));
     }
 
     @Test
-    void circleFadeTransitionsFromStereoToMono() {
+    void circleFadeTransitionsFromFullVolumeToZero() {
         MusicZone zone = MusicZone.circle(world, 0, 0, 0, 10, false, 0, true, 5);
         assertEquals(MusicZone.AudioMode.STEREO, zone.audioMode(world, 10, 0, 0));
-        assertEquals(MusicZone.AudioMode.MONO, zone.audioMode(world, 12, 0, 0));
+        assertEquals(1.0, zone.fadeFactor(10, 0), 0.0001);
+        assertEquals(MusicZone.AudioMode.FADE, zone.audioMode(world, 12, 0, 0));
+        assertEquals(0.6, zone.fadeFactor(12, 0), 0.0001);
+        assertEquals(0.0, zone.fadeFactor(15, 0), 0.0001);
         assertEquals(MusicZone.AudioMode.NONE, zone.audioMode(world, 15.1, 0, 0));
     }
 

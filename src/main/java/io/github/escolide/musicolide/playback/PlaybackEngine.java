@@ -8,7 +8,6 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
-import org.bukkit.Location;
 import org.bukkit.SoundCategory;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -221,18 +220,13 @@ public final class PlaybackEngine {
         }
         session.startClockIfNeeded();
         int segment = session.segmentIndex();
-        boolean mono = candidate.mode == MusicZone.AudioMode.MONO;
-        String sound = track.soundKey(segment, mono);
+        boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
+        String sound = track.soundKey(segment);
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         float volume = (pref.volume() / 100.0f)
                 * (plugin.getConfig().getInt("playback.default-volume", 100) / 100.0f);
-        Location soundLocation = player.getLocation();
-        if (mono) {
-            double[] boundary = session.zone().nearestBoundaryPoint(player.getX(), player.getZ());
-            soundLocation = new Location(player.getWorld(), boundary[0], player.getY(), boundary[1]);
-            double distance = session.zone().distanceOutsideBase(player.getX(), player.getZ());
-            double fade = Math.max(0, Math.min(1, 1.0 - distance / Math.max(0.1, session.zone().fadeDistance())));
-            volume *= (float) fade;
+        if (fading) {
+            volume *= (float) session.zone().fadeFactor(player.getX(), player.getZ());
         }
         volume = Math.max(0, Math.min(1, volume));
         if (volume <= 0) {
@@ -240,15 +234,14 @@ public final class PlaybackEngine {
             return;
         }
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
-                || state.segment != segment || state.mono != mono;
+                || state.segment != segment || state.fading != fading;
         if (changed) {
             stopPlayer(player);
-            if (mono) player.playSound(soundLocation, sound, SoundCategory.MUSIC, volume, 1.0f);
-            else player.playSound(player.getLocation(), sound, SoundCategory.MUSIC, volume, 1.0f);
+            player.playSound(player.getLocation(), sound, SoundCategory.MUSIC, volume, 1.0f);
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
-            state.mono = mono;
+            state.fading = fading;
             state.sound = sound;
             playerPlayback.put(player.getUniqueId(), state);
         }
@@ -301,7 +294,7 @@ public final class PlaybackEngine {
         UUID sessionId;
         String trackId;
         int segment = -1;
-        boolean mono;
+        boolean fading;
         String sound;
     }
 }
