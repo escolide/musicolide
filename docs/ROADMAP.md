@@ -46,10 +46,10 @@ The current Java playback engine and command system provide a baseline for sessi
 | Delete temporary OGG segments after pack creation | Implemented in this feature branch; CI pending |
 | Delete original input after successful import by default, with a retention option | Implemented in this feature branch; CI pending |
 | Crash cleanup of stale temporary files and pack retention/TTL | Planned |
-| Optional bundled native executables, extraction and startup diagnostics | Planned; hosting permissions must be tested |
+| Optional bundled native executables, extraction and startup diagnostics | Extraction/diagnostics implemented; binary payloads not included and host permissions unverified |
 | Verify MineStrator/native-process compatibility | Open investigation; do not assume ProcessBuilder is allowed |
 
-The audio worker must remain independent from the server tick thread. It must use fixed argument arrays, strict path validation, bounded input/duration/queue limits and timeouts. The plugin must not spawn overlapping yt-dlp and FFmpeg processes.
+The audio worker remains independent from the server tick thread. It uses fixed argument arrays, path validation, input/duration/queue limits and process timeouts. The single worker awaits yt-dlp completion before starting FFprobe/FFmpeg. Bundled executables are supported by the extraction code, but the repository does not contain third-party native binaries; release packaging and platform permission tests remain necessary.
 
 ## 4. Source links, rights and metadata
 
@@ -70,7 +70,7 @@ Target administrator-selectable modes:
 - cloud: opt in to a separately deployed Musicolide service for authorized uploads and pack generation.
 - auto: prefer local processing and fall back only when local tools are unavailable and cloud is explicitly configured.
 
-The cloud service is not implemented yet. The design must include per-server credentials, revocation, upload limits, job ownership, idempotency, bounded polling, output validation, HTTPS artifact hosting, quotas and explicit source/pack retention. No audio is uploaded to a third party unless the administrator deliberately enables cloud mode.
+The cloud service and local/cloud/auto selection are not implemented. The design must include per-server credentials, revocation, upload limits, job ownership, idempotency, bounded polling, output validation, HTTPS artifact hosting, quotas and explicit source/pack retention. No audio is uploaded to a third party.
 
 ## 6. Resource-pack delivery and storage
 
@@ -85,15 +85,15 @@ The cloud service is not implemented yet. The design must include per-server cre
 
 ## 7. Geyser and Bedrock Edition
 
-**Explicit project target; not yet implemented as a playback feature.**
+**Experimental implementation on this branch; live Bedrock client acceptance is still pending.**
 
 - Geyser remains optional. Java-only servers must not require Geyser classes, configuration or files.
 - Detect Bedrock players and select the correct edition-specific adapter.
 - Reuse the shared catalogue, sessions, queues, playlists, targeting and arbitration.
-- Generate a separate Bedrock resource pack with its own manifest, sound definitions and compatible assets. Java packs are not Bedrock packs and Geyser does not convert them.
-- Use documented Geyser APIs for player identification and pack lifecycle integration.
+- Generate one aggregate Bedrock resource pack with its own manifest, sound definitions and compatible OGG assets. Java packs are not Bedrock packs and Geyser does not convert them. (Implemented; test with clients.)
+- Use documented Geyser APIs for player identification and per-connection pack registration. (Implemented with optional Geyser-Spigot API integration.)
 - Bedrock pack registration is tied to the connection lifecycle. Do not assume a new per-track pack can be added to an already connected player. Initial support may require a stable library pack or an explicit reconnect/repack workflow.
-- Verify a supported Bedrock custom-sound trigger path before claiming sound playback works. If Geyser's public API cannot emit the required custom sound, investigate a maintained extension or documented protocol integration; do not depend on reflection or unstable internals.
+- Use the same namespaced custom sound identifiers through Geyser's custom-sound translation path. (Implemented at source level; live Bedrock playback remains unverified.)
 - Test start, stop, volume, fade, synchronization, player targeting, multiple sessions and Java/Bedrock coexistence with real clients.
 
 See GEYSER.md for the detailed integration boundary and acceptance tests.
