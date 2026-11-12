@@ -10,11 +10,11 @@ This file is the working scope for Musicolide. It separates the agreed product o
 | Purpur compatibility | Expected through Paper compatibility; staging verification required |
 | Spigot compatibility where feasible | Not currently supported |
 | No client mods, browser, voice-chat mod or external player | Core design |
-| Java client minimum of 1.20.3 for resource-pack stacking | Target; enforce and test before release |
-| One initial resource-pack consent flow, then background pack delivery where supported | Not yet verified end to end |
-| Small permanent base pack plus reusable/stacked track content | Planned refinement; current implementation is per-track packs |
-| Avoid repeated prompts and unnecessary downloads | Planned; must be tested on real clients |
-| Remove unused packs from the active stack | Partial Java implementation; does not erase client cache |
+| Java client minimum of 1.20.3 for resource-pack stacking | Target only; not currently enforced or tested |
+| One initial resource-pack consent flow, then background pack delivery where supported | Tiny stable base pack sends the initial prompt; later per-track requests omit prompts; real-client verification pending |
+| Small permanent base pack plus reusable/stacked track content | Metadata-only stable Java base pack implemented; per-track packs are stacked separately |
+| Avoid repeated prompts and unnecessary downloads | Prompt omitted on later pack requests; cache/hash reuse and real-client behavior still need verification |
+| Remove unused packs from the active stack | Java implementation includes deferred removal after in-flight downloads; does not erase client cache |
 | Never promise remote deletion of a downloaded pack from a player's device | Platform limitation |
 
 Minecraft's client owns its downloaded-pack cache. Removing a pack from the active stack is not the same as deleting the downloaded ZIP from the player's device. Musicolide must not claim it can enforce a hard client-side cache size.
@@ -77,7 +77,7 @@ The cloud service and local/cloud/auto selection are not implemented. The design
 
 - Java 1.20.3+ resource-pack stacking is the target for the one-time consent and subsequent background pack workflow.
 - Reuse identical pack content and hashes. Avoid creating unique packs when an existing immutable pack can be reused.
-- Keep the base pack small; group or reuse track assets where practical.
+- Keep the base pack small; group or reuse track assets where practical. (The Java base pack is metadata-only; track packs remain immutable per-track archives.)
 - Remove unused packs from the active stack after playback when the client API supports it.
 - Never assume unapplying a pack removes the downloaded file from client storage.
 - Keep generated packs available while a player may still be downloading or using them.
@@ -93,7 +93,7 @@ The cloud service and local/cloud/auto selection are not implemented. The design
 - Reuse the shared catalogue, sessions, queues, playlists, targeting and arbitration.
 - Generate one aggregate Bedrock resource pack with its own manifest, sound definitions and compatible OGG assets. Java packs are not Bedrock packs and Geyser does not convert them. (Implemented; test with clients.)
 - Use documented Geyser APIs for player identification and per-connection pack registration. (Implemented with optional Geyser-Spigot API integration.)
-- Bedrock pack registration is tied to the connection lifecycle. Do not assume a new per-track pack can be added to an already connected player. Initial support may require a stable library pack or an explicit reconnect/repack workflow.
+- Bedrock pack registration is tied to the connection lifecycle. The implementation uses one aggregate library pack; players must reconnect after imported tracks change the library.
 - Use the same namespaced custom sound identifiers through Geyser's custom-sound translation path. (Implemented at source level; live Bedrock playback remains unverified.)
 - Test start, stop, volume, fade, synchronization, player targeting, multiple sessions and Java/Bedrock coexistence with real clients.
 
