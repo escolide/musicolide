@@ -61,6 +61,12 @@ public final class PackManager {
             }
         }
         queue.keySet().removeIf(id -> !desired.contains(id));
+        // A pack can become desired again while its download is still in flight.
+        // Cancel a deferred removal in that case.
+        removeWhenReady.computeIfPresent(playerId, (id, pending) -> {
+            pending.removeIf(desired::contains);
+            return pending.isEmpty() ? null : pending;
+        });
         if (plugin.getConfig().getBoolean("resource-packs.cache.remove-pack-after-session", true)) {
             Set<UUID> activeSet = active.get(playerId);
             if (activeSet != null) {
