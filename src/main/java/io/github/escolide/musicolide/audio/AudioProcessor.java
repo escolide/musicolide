@@ -150,6 +150,12 @@ public final class AudioProcessor implements AutoCloseable {
             }
 
             generatedPack = packBuilder.build(namespace, trackDirectory, count, segmentMs);
+            try {
+                packBuilder.rebuildBedrockLibrary();
+            } catch (IOException bedrockError) {
+                plugin.getLogger().warning("Java track imported, but the Geyser Bedrock library could not be refreshed: "
+                        + bedrockError.getMessage());
+            }
 
             // Segment OGGs are build intermediates and must not count against retained library storage.
             deleteTree(trackDirectory);
