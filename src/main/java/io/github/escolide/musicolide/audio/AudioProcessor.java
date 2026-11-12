@@ -150,12 +150,6 @@ public final class AudioProcessor implements AutoCloseable {
             }
 
             generatedPack = packBuilder.build(namespace, trackDirectory, count, segmentMs);
-            try {
-                packBuilder.rebuildBedrockLibrary();
-            } catch (IOException bedrockError) {
-                plugin.getLogger().warning("Java track imported, but the Geyser Bedrock library could not be refreshed: "
-                        + bedrockError.getMessage());
-            }
 
             // Segment OGGs are build intermediates and must not count against retained library storage.
             deleteTree(trackDirectory);
@@ -172,6 +166,12 @@ public final class AudioProcessor implements AutoCloseable {
             MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
                     sha1, durationMs, segmentMs, count, Files.size(generatedPack));
             repository.saveTrack(track);
+            try {
+                packBuilder.rebuildBedrockLibrary();
+            } catch (IOException bedrockError) {
+                plugin.getLogger().warning("Track imported, but the Geyser Bedrock library could not be refreshed: "
+                        + bedrockError.getMessage());
+            }
 
             // Keep the original input if processing or catalogue persistence failed.
             if (plugin.getConfig().getBoolean("audio.delete-source-after-import", true)) {
