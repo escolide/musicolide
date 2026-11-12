@@ -1,0 +1,117 @@
+# Musicolide configuration. Target: Paper 1.21.11+ / Java 21.
+general:
+  debug: false
+  language: en
+  check-interval-ticks: 5
+  shutdown-stop-playback: true
+
+server:
+  bind-address: "0.0.0.0"
+  port: 8765
+  public-base-url: "http://127.0.0.1:8765"
+  path-prefix: "/packs"
+  max-download-mb: 100
+
+audio:
+  ffmpeg:
+    executable: "ffmpeg"
+    ffprobe-executable: "ffprobe"
+    required: true
+  format: "ogg"
+  sample-rate: 44100
+  segment-duration-ms: 1000
+  stereo-quality: 5
+  mono-quality: 5
+  max-track-duration-seconds: 1800
+  max-input-mb: 100
+  resource-pack-format: 75
+
+resource-packs:
+  required-on-first-use: false
+  prompt: "Musicolide needs a small music resource pack to play this track."
+  strategy: "per-track"
+  prefetch:
+    enabled: true
+    tracks-ahead: 4
+    max-concurrent-downloads: 2
+    max-prefetch-mb-per-player: 40
+  cache:
+    enabled: true
+    max-size-gb: 5
+    retain-unused-files-days: 30
+    remove-pack-after-session: true
+
+playback:
+  default-volume: 100
+  default-mode: "stereo"
+  category: "MUSIC"
+  overlap:
+    enabled: true
+    priority-policy: "first-started"
+    manual-priority-enabled: true
+    warn-session-owner: true
+    warning-cooldown-seconds: 60
+  range:
+    default-shape: "circle"
+    circle:
+      radius: 60
+    square:
+      width: 50
+      length: 50
+      rotation: "world"
+    vertical:
+      mode: "unlimited"
+      max-distance: 32
+  fade:
+    enabled-by-default: false
+    distance: 10
+    transition: true
+  synchronization:
+    action-bar-now-playing: true
+    progress-update-ticks: 20
+
+playlists:
+  enabled: true
+  shuffle: false
+  repeat: false
+  prefetch-next: true
+
+matching:
+  enabled: true
+  warn-when-approximate: true
+  require-confirmation-for-alias: true
+  metadata-lookup: true
+
+worldguard:
+  enabled: true
+  require-plugin: false
+
+limits:
+  max-sessions: 20
+  max-queue-length: 500
+  max-playlist-tracks: 500
+  max-track-library-gb: 10
+
+permissions:
+  use: "musicolide.use"
+  dj: "musicolide.dj"
+  admin: "musicolide.admin"
+
+messages:
+  prefix: "&8[&bMusicolide&8] &r"
+  no-permission: "&cYou do not have permission to do that."
+  player-only: "&cThis command must be run by a player."
+  track-not-found: "&cTrack not found. Import an authorized audio file first."
+  pack-not-ready: "&eThe resource pack is still loading. Playback will begin when it is ready."
+  pack-declined: "&cYou declined the Musicolide resource pack; music cannot be played."
+  overlap-warning: "&eYour music zone overlaps an earlier session. Your track is suppressed in the shared area."
+  approximate-match: "&eThis may be a different recording. Confirm before playback."
+  import-started: "&aPreparing audio."
+  import-complete: "&aImported &f{title}&a (&f{id}&a)."
+  import-failed: "&cAudio import failed: {reason}"
+  playback-started: "&aNow playing: &f{title}"
+  playback-paused: "&ePlayback paused."
+  playback-resumed: "&aPlayback resumed."
+  playback-stopped: "&cPlayback stopped."
+  queue-empty: "&eThe queue is empty."
+  reload-complete: "&aConfiguration reloaded."
