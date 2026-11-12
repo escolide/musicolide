@@ -95,6 +95,11 @@ public final class AudioProcessor implements AutoCloseable {
             }
 
             generatedPack = packBuilder.build(namespace, trackDirectory, count, segmentMs);
+
+            // Segment OGGs are build intermediates and must not count against retained library storage.
+            deleteTree(trackDirectory);
+            trackDirectory = null;
+
             long libraryLimit = plugin.getConfig().getLong("limits.max-track-library-gb", 10)
                     * 1024L * 1024L * 1024L;
             long currentBytes = directorySize(data.resolve("tracks")) + directorySize(data.resolve("packs"));
@@ -105,10 +110,6 @@ public final class AudioProcessor implements AutoCloseable {
             String sha1 = sha1(generatedPack);
             MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
                     sha1, durationMs, segmentMs, count, Files.size(generatedPack));
-
-            // OGG segments are build intermediates; the generated pack is the retained playback asset.
-            deleteTree(trackDirectory);
-            trackDirectory = null;
             repository.saveTrack(track);
 
             // Keep the original input if processing or catalogue persistence failed.
