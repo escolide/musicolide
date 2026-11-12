@@ -47,6 +47,7 @@ The current Java playback engine and command system provide a baseline for sessi
 | Delete original input after successful import by default, with a retention option | Implemented in this feature branch; CI pending |
 | Crash cleanup of stale temporary files and pack retention/TTL | Planned |
 | Optional bundled native executables, extraction and startup diagnostics | Extraction/diagnostics implemented; binary payloads not included and host permissions unverified |
+| yt-dlp for administrator-authorized allowlisted source URLs | Implemented, disabled by default; common streaming platforms blocked regardless of allowlist |
 | Verify MineStrator/native-process compatibility | Open investigation; do not assume ProcessBuilder is allowed |
 
 The audio worker remains independent from the server tick thread. It uses fixed argument arrays, path validation, input/duration/queue limits and process timeouts. The single worker awaits yt-dlp completion before starting FFprobe/FFmpeg. Bundled executables are supported by the extraction code, but the repository does not contain third-party native binaries; release packaging and platform permission tests remain necessary.
