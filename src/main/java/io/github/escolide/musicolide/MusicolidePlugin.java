@@ -22,6 +22,7 @@ import java.nio.file.Path;
 public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private TrackRepository repository;
     private AudioProcessor processor;
+    private NativeToolchain nativeToolchain;
     private PackManager packManager;
     private PlaybackEngine playback;
     private PackHttpServer packServer;
@@ -42,7 +43,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                     + packFormat.displayName() + ".");
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
 
-            processor = new AudioProcessor(this, repository, builder);
+            nativeToolchain = new NativeToolchain(this);
+            nativeToolchain.initialize();
+            if (getConfig().getBoolean("audio.yt-dlp.enabled", false)
+                    && !nativeToolchain.available(NativeToolchain.Tool.YT_DLP)) {
+                getLogger().warning("URL importing is enabled in config, but yt-dlp did not pass its startup check.");
+            }
+            processor = new AudioProcessor(this, repository, builder, nativeToolchain);
             packManager = new PackManager(this);
             String bind = getConfig().getString("server.bind-address", "0.0.0.0");
             int port = getConfig().getInt("server.port", 8765);
@@ -91,6 +98,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     public void onDisable() {
         if (playback != null) playback.stopAll();
         if (processor != null) processor.close();
+        else if (nativeToolchain != null) nativeToolchain.close();
         if (packServer != null) packServer.close();
         if (repository != null) {
             try { repository.close(); }
