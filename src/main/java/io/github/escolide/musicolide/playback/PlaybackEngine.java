@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.playback;
 
+import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
@@ -27,13 +28,17 @@ public final class PlaybackEngine {
     private final Map<UUID, Long> warningTimes = new HashMap<>();
     private final Map<UUID, Long> declinedWarnings = new HashMap<>();
     private final WorldGuardBridge worldGuard;
+    private final GeyserBridge geyser;
+    private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
     private BukkitTask task;
 
-    public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs, WorldGuardBridge worldGuard) {
+    public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs,
+                          WorldGuardBridge worldGuard, GeyserBridge geyser) {
         this.plugin = plugin;
         this.repository = repository;
         this.packs = packs;
         this.worldGuard = worldGuard;
+        this.geyser = geyser;
     }
 
     public void start() {
@@ -201,22 +206,48 @@ public final class PlaybackEngine {
             stopPlayer(player);
             return;
         }
-        int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
-        packs.prefetch(player, track, session.upcoming(prefetch),
-                plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
-        if (packs.isDeclined(player, track)) {
-            long now = System.currentTimeMillis();
-            if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
-                player.sendMessage(message("messages.pack-declined"));
-                declinedWarnings.put(player.getUniqueId(), now);
+        boolean bedrock = geyser != null && geyser.isBedrockPlayer(player.getUniqueId());
+        if (bedrock) {
+            // Bedrock receives the aggregate mcpack at Geyser connection time.
+            // Never send Java Edition packs to a Bedrock client.
+            packs.releaseAll(player);
+            if (!geyser.isBedrockPackAvailable()) {
+                warnBedrockUnavailable(player, "messages.bedrock-not-supported");
+                stopPlayer(player);
+                return;
             }
-            stopPlayer(player);
-            return;
-        }
-        if (!packs.isReady(player, track)) {
-            stopPlayer(player);
-            player.sendActionBar(message("messages.pack-not-ready"));
-            return;
+            if (!geyser.hasCurrentPackFor(player.getUniqueId())) {
+                warnBedrockUnavailable(player, "messages.bedrock-pack-reconnect");
+                stopPlayer(player);
+                return;
+            }
+        } else {
+            int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
+            packs.prefetch(player, track, session.upcoming(prefetch),
+                    plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
+            if (packs.isBaseDeclined(player)) {
+                long now = System.currentTimeMillis();
+                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+                    player.sendMessage(message("messages.pack-declined"));
+                    declinedWarnings.put(player.getUniqueId(), now);
+                }
+                stopPlayer(player);
+                return;
+            }
+            if (packs.isDeclined(player, track)) {
+                long now = System.currentTimeMillis();
+                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+                    player.sendMessage(message("messages.pack-declined"));
+                    declinedWarnings.put(player.getUniqueId(), now);
+                }
+                stopPlayer(player);
+                return;
+            }
+            if (!packs.isReady(player, track)) {
+                stopPlayer(player);
+                player.sendActionBar(message("messages.pack-not-ready"));
+                return;
+            }
         }
         session.startClockIfNeeded();
         int segment = session.segmentIndex();
@@ -251,6 +282,15 @@ public final class PlaybackEngine {
         }
     }
 
+    private void warnBedrockUnavailable(Player player, String messagePath) {
+        long now = System.currentTimeMillis();
+        long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
+        if (now - lastWarning > 300000L) {
+            player.sendMessage(message(messagePath));
+            bedrockWarnings.put(player.getUniqueId(), now);
+        }
+    }
+
     private String formatTime(long millis) {
         long seconds = Math.max(0, millis / 1000);
         return String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
@@ -278,6 +318,8 @@ public final class PlaybackEngine {
         stopPlayer(player);
         packs.removePlayer(player.getUniqueId());
         preferences.remove(player.getUniqueId());
+        bedrockWarnings.remove(player.getUniqueId());
+        if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }
 
     public void stopAll() {
@@ -287,6 +329,7 @@ public final class PlaybackEngine {
             packs.releaseAll(player);
         }
         synchronized (this) { sessions.clear(); }
+        bedrockWarnings.clear();
     }
 
     private record Candidate(PlaybackSession session, MusicZone.AudioMode mode) {}

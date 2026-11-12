@@ -47,6 +47,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         try {
             switch (sub) {
                 case "import" -> importTrack(sender, args);
+                case "import-url" -> importUrl(sender, args);
+                case "diagnostics" -> diagnostics(sender);
                 case "list" -> listTracks(sender, args);
                 case "play" -> play(sender, args);
                 case "confirm" -> confirm(sender);
@@ -89,6 +91,42 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     if (error != null) sender.sendMessage(msg("&cImport failed: " + rootMessage(error)));
                     else sender.sendMessage(msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)"));
                 }));
+    }
+
+    private void importUrl(CommandSender sender, String[] args) {
+        if (!admin(sender)) return;
+        if (args.length < 3 || !args[2].equalsIgnoreCase("--rights-confirmed")) {
+            sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> --rights-confirmed [title]"));
+            sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. "
+                    + "YouTube/Spotify links are metadata aliases only."));
+            return;
+        }
+        String title = args.length >= 4 ? String.join(" ", Arrays.copyOfRange(args, 3, args.length)) : null;
+        sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFprobe/FFmpeg start."));
+        processor.importUrl(args[1], title).whenComplete((track, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
+                    else sender.sendMessage(msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)"));
+                }));
+    }
+
+    private void diagnostics(CommandSender sender) {
+        if (!admin(sender)) return;
+        sender.sendMessage(msg("&bMusicolide native tool diagnostics:"));
+        if (processor.toolStatuses().isEmpty()) {
+            sender.sendMessage(msg("&eNative tools are still initializing. Run /music diagnostics again shortly."));
+            return;
+        }
+        for (var status : processor.toolStatuses()) {
+            if (status.available()) {
+                sender.sendMessage(msg("&a" + status.tool().name().toLowerCase(Locale.ROOT)
+                        + " &7- &f" + status.version() + " &8(" + status.executable() + ")"));
+            } else {
+                sender.sendMessage(msg("&c" + status.tool().name().toLowerCase(Locale.ROOT)
+                        + " unavailable &7- " + status.detail()));
+            }
+        }
+        sender.sendMessage(msg("&7Geyser detection is optional; Bedrock playback requires its separate pack adapter."));
     }
 
     /**
@@ -453,6 +491,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&bMusicolide commands:"));
         sender.sendMessage(msg("&f/music import <file> [title] &7- import one authorized audio file"));
         sender.sendMessage(msg("&f/music import all &7- import every supported file in incoming/"));
+        sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] &7- import an allowlisted source"));
+        sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
         sender.sendMessage(msg("&f/music play <track-or-url> [--all|--player name|--circle r|--square WxL] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
@@ -480,7 +520,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) return partial(List.of("help", "import", "list", "play", "confirm", "pause", "resume",
+        if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "list", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "reload"), args[0]);
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))

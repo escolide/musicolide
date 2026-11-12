@@ -10,18 +10,38 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class PackManager {
     private final JavaPlugin plugin;
+    private final ResourcePackBuilder.BasePackInfo basePack;
+    private final Set<UUID> baseReady = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> baseRequested = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> baseDeclined = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Set<UUID>> ready = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> requested = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> declined = new ConcurrentHashMap<>();
     private final Map<UUID, LinkedHashMap<UUID, MusicTrack>> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> active = new ConcurrentHashMap<>();
+    // Packs whose download is in flight when playback no longer needs them.
+    // Remove them from the active client stack as soon as the status event arrives.
+    private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
 
-    public PackManager(JavaPlugin plugin) { this.plugin = plugin; }
+    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack) {
+        this.plugin = plugin;
+        this.basePack = Objects.requireNonNull(basePack, "basePack");
+    }
+
+    public boolean isBaseDeclined(Player player) {
+        return baseDeclined.contains(player.getUniqueId());
+    }
+
     public boolean isReady(Player player, MusicTrack track) { return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId()); }
     public boolean isDeclined(Player player, MusicTrack track) { return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId()); }
 
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming, int tracksAhead) {
+        // Send the tiny stable pack first. Paper/Minecraft shows its one-time
+        // server consent prompt only for the first request; track packs follow
+        // after consent and are downloaded asynchronously in the background.
+        if (!ensureBasePack(player)) return;
+
         UUID playerId = player.getUniqueId();
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
         Set<UUID> desired = new HashSet<>();
@@ -41,22 +61,53 @@ public final class PackManager {
             }
         }
         queue.keySet().removeIf(id -> !desired.contains(id));
+        // A pack can become desired again while its download is still in flight.
+        // Cancel a deferred removal in that case.
+        removeWhenReady.computeIfPresent(playerId, (id, pending) -> {
+            pending.removeIf(desired::contains);
+            return pending.isEmpty() ? null : pending;
+        });
         if (plugin.getConfig().getBoolean("resource-packs.cache.remove-pack-after-session", true)) {
             Set<UUID> activeSet = active.get(playerId);
             if (activeSet != null) {
                 for (UUID packId : new HashSet<>(activeSet)) {
-                    if (!desired.contains(packId) && !requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                        try { player.removeResourcePack(packId); } catch (Exception ignored) {}
-                        activeSet.remove(packId);
-                        Set<UUID> readySet = ready.get(playerId);
-                        Set<UUID> declinedSet = declined.get(playerId);
-                        if (readySet != null) readySet.remove(packId);
-                        if (declinedSet != null) declinedSet.remove(packId);
+                    if (!desired.contains(packId)) {
+                        if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                            removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+                        } else {
+                            removePack(player, playerId, packId);
+                        }
                     }
                 }
             }
         }
         pump(player);
+    }
+
+    private boolean ensureBasePack(Player player) {
+        UUID playerId = player.getUniqueId();
+        if (baseReady.contains(playerId)) return true;
+        if (baseDeclined.contains(playerId) || baseRequested.contains(playerId)) return false;
+
+        try {
+            String url = packUrl(basePack.fileName());
+            byte[] hash = HexFormat.of().parseHex(basePack.sha1());
+            player.addResourcePack(basePack.id(), url, hash,
+                    plugin.getConfig().getString("resource-packs.prompt", "Musicolide music pack"),
+                    plugin.getConfig().getBoolean("resource-packs.required-on-first-use", false));
+            baseRequested.add(playerId);
+        } catch (Exception ex) {
+            baseDeclined.add(playerId);
+            plugin.getLogger().warning("Could not send the initial Musicolide base pack to "
+                    + player.getName() + ": " + ex.getMessage());
+        }
+        return false;
+    }
+
+    private String packUrl(String fileName) {
+        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1:8765");
+        String prefix = plugin.getConfig().getString("server.path-prefix", "/packs");
+        return base.replaceAll("/+$", "") + (prefix.startsWith("/") ? prefix : "/" + prefix) + "/" + fileName;
     }
 
     private void enqueueIfNeeded(UUID playerId, LinkedHashMap<UUID, MusicTrack> queue, MusicTrack track) {
@@ -83,13 +134,11 @@ public final class PackManager {
 
     private void send(Player player, MusicTrack track) {
         UUID playerId = player.getUniqueId();
-        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1:8765");
-        String prefix = plugin.getConfig().getString("server.path-prefix", "/packs");
-        String url = base.replaceAll("/+$", "") + (prefix.startsWith("/") ? prefix : "/" + prefix) + "/" + track.packFileName();
+        String url = packUrl(track.packFileName());
         try {
-            player.addResourcePack(track.packId(), url, track.sha1Bytes(),
-                    plugin.getConfig().getString("resource-packs.prompt", "Musicolide music pack"),
-                    plugin.getConfig().getBoolean("resource-packs.required-on-first-use", false));
+            // The base pack already received the one-time consent prompt.
+            // No prompt is sent with subsequent per-track background packs.
+            player.addResourcePack(track.packId(), url, track.sha1Bytes(), null, false);
             requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(track.packId());
             active.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(track.packId());
             inFlight.merge(playerId, 1, Integer::sum);
@@ -103,11 +152,10 @@ public final class PackManager {
         Set<UUID> activeSet = active.get(playerId);
         if (activeSet != null) {
             for (UUID packId : new HashSet<>(activeSet)) {
-                if (!requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                    try { player.removeResourcePack(packId); } catch (Exception ignored) {}
-                    activeSet.remove(packId);
-                    Set<UUID> readySet = ready.get(playerId);
-                    if (readySet != null) readySet.remove(packId);
+                if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                    removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+                } else {
+                    removePack(player, playerId, packId);
                 }
             }
         }
@@ -115,24 +163,59 @@ public final class PackManager {
         if (queue != null) queue.clear();
     }
 
+    private void removePack(Player player, UUID playerId, UUID packId) {
+        try { player.removeResourcePack(packId); } catch (Exception ignored) {}
+        Set<UUID> activeSet = active.get(playerId);
+        if (activeSet != null) activeSet.remove(packId);
+        Set<UUID> readySet = ready.get(playerId);
+        if (readySet != null) readySet.remove(packId);
+        Set<UUID> declinedSet = declined.get(playerId);
+        if (declinedSet != null) declinedSet.remove(packId);
+        Set<UUID> deferred = removeWhenReady.get(playerId);
+        if (deferred != null) deferred.remove(packId);
+    }
+
     public void status(UUID playerId, UUID packId, org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
+        if (basePack.id().equals(packId)) {
+            baseRequested.remove(playerId);
+            if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
+                baseDeclined.remove(playerId);
+                baseReady.add(playerId);
+            } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
+                    || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
+                baseReady.remove(playerId);
+                baseDeclined.add(playerId);
+            }
+            return;
+        }
+
         Set<UUID> requestedSet = requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet());
         boolean wasRequested = requestedSet.remove(packId);
         if (wasRequested) inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
-        boolean stillActive = active.getOrDefault(playerId, Set.of()).contains(packId);
+        Player player = Bukkit.getPlayer(playerId);
+        boolean removeAfterDownload = removeWhenReady.getOrDefault(playerId, Set.of()).contains(packId);
         if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
             declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
-            if (stillActive) ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            if (removeAfterDownload || !active.getOrDefault(playerId, Set.of()).contains(packId)) {
+                if (player != null) removePack(player, playerId, packId);
+            } else {
+                ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            }
         } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
                 || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
             ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
             declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            Set<UUID> activeSet = active.get(playerId);
+            if (activeSet != null) activeSet.remove(packId);
+            Set<UUID> deferred = removeWhenReady.get(playerId);
+            if (deferred != null) deferred.remove(packId);
         }
-        pump(Bukkit.getPlayer(playerId));
+        pump(player);
     }
 
     public void removePlayer(UUID playerId) {
+        baseReady.remove(playerId); baseRequested.remove(playerId); baseDeclined.remove(playerId);
         ready.remove(playerId); requested.remove(playerId); declined.remove(playerId);
-        waiting.remove(playerId); active.remove(playerId); inFlight.remove(playerId);
+        waiting.remove(playerId); active.remove(playerId); removeWhenReady.remove(playerId); inFlight.remove(playerId);
     }
 }

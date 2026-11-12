@@ -10,11 +10,11 @@ This file is the working scope for Musicolide. It separates the agreed product o
 | Purpur compatibility | Expected through Paper compatibility; staging verification required |
 | Spigot compatibility where feasible | Not currently supported |
 | No client mods, browser, voice-chat mod or external player | Core design |
-| Java client minimum of 1.20.3 for resource-pack stacking | Target; enforce and test before release |
-| One initial resource-pack consent flow, then background pack delivery where supported | Not yet verified end to end |
-| Small permanent base pack plus reusable/stacked track content | Planned refinement; current implementation is per-track packs |
-| Avoid repeated prompts and unnecessary downloads | Planned; must be tested on real clients |
-| Remove unused packs from the active stack | Partial Java implementation; does not erase client cache |
+| Java client minimum of 1.20.3 for resource-pack stacking | Target only; not currently enforced or tested |
+| One initial resource-pack consent flow, then background pack delivery where supported | Tiny stable base pack sends the initial prompt; later per-track requests omit prompts; real-client verification pending |
+| Small permanent base pack plus reusable/stacked track content | Metadata-only stable Java base pack implemented; per-track packs are stacked separately |
+| Avoid repeated prompts and unnecessary downloads | Prompt omitted on later pack requests; cache/hash reuse and real-client behavior still need verification |
+| Remove unused packs from the active stack | Java implementation includes deferred removal after in-flight downloads; does not erase client cache |
 | Never promise remote deletion of a downloaded pack from a player's device | Platform limitation |
 
 Minecraft's client owns its downloaded-pack cache. Removing a pack from the active stack is not the same as deleting the downloaded ZIP from the player's device. Musicolide must not claim it can enforce a hard client-side cache size.
@@ -46,10 +46,11 @@ The current Java playback engine and command system provide a baseline for sessi
 | Delete temporary OGG segments after pack creation | Implemented in this feature branch; CI pending |
 | Delete original input after successful import by default, with a retention option | Implemented in this feature branch; CI pending |
 | Crash cleanup of stale temporary files and pack retention/TTL | Planned |
-| Optional bundled native executables, extraction and startup diagnostics | Planned; hosting permissions must be tested |
+| Optional bundled native executables, extraction and startup diagnostics | Extraction/diagnostics implemented; binary payloads not included and host permissions unverified |
+| yt-dlp for administrator-authorized allowlisted source URLs | Implemented, disabled by default; common streaming platforms blocked regardless of allowlist |
 | Verify MineStrator/native-process compatibility | Open investigation; do not assume ProcessBuilder is allowed |
 
-The audio worker must remain independent from the server tick thread. It must use fixed argument arrays, strict path validation, bounded input/duration/queue limits and timeouts. The plugin must not spawn overlapping yt-dlp and FFmpeg processes.
+The audio worker remains independent from the server tick thread. It uses fixed argument arrays, path validation, input/duration/queue limits and process timeouts. The single worker awaits yt-dlp completion before starting FFprobe/FFmpeg. Bundled executables are supported by the extraction code, but the repository does not contain third-party native binaries; release packaging and platform permission tests remain necessary.
 
 ## 4. Source links, rights and metadata
 
@@ -70,13 +71,13 @@ Target administrator-selectable modes:
 - cloud: opt in to a separately deployed Musicolide service for authorized uploads and pack generation.
 - auto: prefer local processing and fall back only when local tools are unavailable and cloud is explicitly configured.
 
-The cloud service is not implemented yet. The design must include per-server credentials, revocation, upload limits, job ownership, idempotency, bounded polling, output validation, HTTPS artifact hosting, quotas and explicit source/pack retention. No audio is uploaded to a third party unless the administrator deliberately enables cloud mode.
+The cloud service and local/cloud/auto selection are not implemented. The design must include per-server credentials, revocation, upload limits, job ownership, idempotency, bounded polling, output validation, HTTPS artifact hosting, quotas and explicit source/pack retention. No audio is uploaded to a third party.
 
 ## 6. Resource-pack delivery and storage
 
 - Java 1.20.3+ resource-pack stacking is the target for the one-time consent and subsequent background pack workflow.
 - Reuse identical pack content and hashes. Avoid creating unique packs when an existing immutable pack can be reused.
-- Keep the base pack small; group or reuse track assets where practical.
+- Keep the base pack small; group or reuse track assets where practical. (The Java base pack is metadata-only; track packs remain immutable per-track archives.)
 - Remove unused packs from the active stack after playback when the client API supports it.
 - Never assume unapplying a pack removes the downloaded file from client storage.
 - Keep generated packs available while a player may still be downloading or using them.
@@ -85,15 +86,15 @@ The cloud service is not implemented yet. The design must include per-server cre
 
 ## 7. Geyser and Bedrock Edition
 
-**Explicit project target; not yet implemented as a playback feature.**
+**Experimental implementation on this branch; live Bedrock client acceptance is still pending.**
 
 - Geyser remains optional. Java-only servers must not require Geyser classes, configuration or files.
 - Detect Bedrock players and select the correct edition-specific adapter.
 - Reuse the shared catalogue, sessions, queues, playlists, targeting and arbitration.
-- Generate a separate Bedrock resource pack with its own manifest, sound definitions and compatible assets. Java packs are not Bedrock packs and Geyser does not convert them.
-- Use documented Geyser APIs for player identification and pack lifecycle integration.
-- Bedrock pack registration is tied to the connection lifecycle. Do not assume a new per-track pack can be added to an already connected player. Initial support may require a stable library pack or an explicit reconnect/repack workflow.
-- Verify a supported Bedrock custom-sound trigger path before claiming sound playback works. If Geyser's public API cannot emit the required custom sound, investigate a maintained extension or documented protocol integration; do not depend on reflection or unstable internals.
+- Generate one aggregate Bedrock resource pack with its own manifest, sound definitions and compatible OGG assets. Java packs are not Bedrock packs and Geyser does not convert them. (Implemented; test with clients.)
+- Use documented Geyser APIs for player identification and per-connection pack registration. (Implemented with optional Geyser-Spigot API integration.)
+- Bedrock pack registration is tied to the connection lifecycle. The implementation uses one aggregate library pack; players must reconnect after imported tracks change the library.
+- Use the same namespaced custom sound identifiers through Geyser's custom-sound translation path. (Implemented at source level; live Bedrock playback remains unverified.)
 - Test start, stop, volume, fade, synchronization, player targeting, multiple sessions and Java/Bedrock coexistence with real clients.
 
 See GEYSER.md for the detailed integration boundary and acceptance tests.

@@ -2,7 +2,17 @@
 
 ## Status
 
-**Planned; not yet enabled for playback.** Musicolide currently generates Java Edition resource packs and emits Java custom sounds. A Bedrock player joining through Geyser must not be advertised as supported until the Bedrock sound-trigger path has been tested end to end.
+**Experimental implementation in the current feature branch; live-client acceptance is still pending.**
+
+The branch now:
+- Builds one aggregate Bedrock `.mcpack` from OGG assets inside retained Java track-pack archives.
+- Writes a Bedrock `manifest.json` and `sounds/sound_definitions.json` with the same namespaced custom sound identifiers used by Musicolide.
+- Uses an optional compile-only Geyser API adapter, loaded only when Geyser-Spigot is detected.
+- Registers the aggregate pack for each incoming Bedrock session through `SessionLoadResourcePacksEvent`.
+- Uses the shared Musicolide playback session engine for Bedrock clients without sending them Java Edition resource packs.
+- Requires Bedrock players to reconnect when a new import changes the aggregate pack.
+
+This is not a release-level compatibility claim: the repository's CI does not run a Bedrock client, and no live client test has been completed.
 
 ## Design boundaries
 
@@ -22,16 +32,13 @@ Geyser's API exposes pack lifecycle events including SessionLoadResourcePacksEve
 
 Bedrock clients apply server resource packs when connecting. Unlike the Java pack stack used by Musicolide, a Bedrock client cannot be assumed to accept arbitrary new packs during an existing session. A per-track ZIP-per-playback design is therefore not appropriate for Geyser.
 
-Initial Bedrock support should use a stable, versioned library pack that is available before a Bedrock player connects. If the server imports new tracks after a player has joined, the client may need to reconnect before those tracks are available. Do not silently restart or transfer players; any reconnect workflow must be an explicit administrator/player choice.
+Initial Bedrock support uses one stable-UUID music library pack. Its version is refreshed when imported track assets change. Geyser registers the pack during the Bedrock connection resource-pack phase; Musicolide does not assume it can add the pack to an already-connected client. When the library updates, existing Bedrock players are asked to reconnect. No player is transferred or restarted automatically.
 
-## Sound-trigger investigation gate
+## Sound-trigger path and remaining verification
 
-The Geyser API provides connection identification and resource-pack registration, but the pack APIs alone do not prove that Java Edition custom sound identifiers will be played by Bedrock clients. Before enabling the Bedrock playback adapter, verify one of these paths against the supported Geyser version:
+Musicolide calls the normal Bukkit player sound API with its namespaced custom sound identifier. In the current Geyser source, the Java sound translator passes an unmapped custom Java sound identifier through to a Bedrock play-sound packet; the generated Bedrock pack defines that same identifier in its sound definitions. This provides a source-level shared-trigger path without reflection into Geyser internals or unversioned packet classes.
 
-1. A supported Geyser API route for emitting a custom Bedrock sound to one connection; or
-2. A documented and tested translation path from Musicolide's Java custom-sound trigger to the custom Bedrock sound identifier.
-
-If neither route exists, Bedrock sound emission requires a separate Geyser extension or supported protocol-level integration. Do not use reflection into Geyser internals or unversioned packet classes as a production solution.
+This is still a hypothesis until a real Bedrock client confirms sound playback. Verify start, stop, volume, positional attenuation/fade, segment continuity and multiple simultaneous sessions. Also verify pack acceptance and updates on each target Bedrock platform. If an official Geyser release changes custom-sound translation, disable Bedrock playback until the adapter has been retested.
 
 ## Acceptance tests before claiming support
 
