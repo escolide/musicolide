@@ -1,7 +1,9 @@
 package io.github.escolide.musicolide;
 
 import io.github.escolide.musicolide.audio.AudioProcessor;
+import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.command.MusicCommand;
+import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
 import io.github.escolide.musicolide.resource.PackHttpServer;
@@ -25,6 +27,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private NativeToolchain nativeToolchain;
     private PackManager packManager;
     private PlaybackEngine playback;
+    private GeyserBridge geyserBridge;
     private PackHttpServer packServer;
 
     @Override
@@ -51,6 +54,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             }
             processor = new AudioProcessor(this, repository, builder, nativeToolchain);
             packManager = new PackManager(this);
+            geyserBridge = new GeyserBridge(this);
             String bind = getConfig().getString("server.bind-address", "0.0.0.0");
             int port = getConfig().getInt("server.port", 8765);
             String prefix = getConfig().getString("server.path-prefix", "/packs");
@@ -68,7 +72,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             if (getConfig().getBoolean("worldguard.require-plugin", false) && worldGuard == null) {
                 throw new IllegalStateException("WorldGuard is required but unavailable.");
             }
-            playback = new PlaybackEngine(this, repository, packManager, worldGuard);
+            playback = new PlaybackEngine(this, repository, packManager, worldGuard, geyserBridge);
             playback.start();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);
             if (getCommand("music") != null) {
