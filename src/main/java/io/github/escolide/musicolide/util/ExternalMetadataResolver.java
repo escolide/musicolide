@@ -18,8 +18,8 @@ import java.util.regex.Pattern;
  * downloads audio, or attempts to bypass provider access controls.
  */
 public final class ExternalMetadataResolver {
-    private static final Pattern TITLE = Pattern.compile("\"title\"\\s*:\\s*\"((?:\\\\.|[^\\"])*)\"");
-    private static final Pattern AUTHOR = Pattern.compile("\"author_name\"\\s*:\\s*\"((?:\\\\.|[^\\"])*)\"");
+    private static final Pattern TITLE = Pattern.compile("\"title\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+    private static final Pattern AUTHOR = Pattern.compile("\"author_name\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
             .followRedirects(HttpClient.Redirect.NORMAL).build();
 

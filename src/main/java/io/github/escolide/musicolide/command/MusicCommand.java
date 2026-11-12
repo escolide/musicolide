@@ -95,7 +95,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority, input);
         Optional<MusicTrack> track = resolveTrack(input);
         if (track.isPresent()) {
-            offerMatch(sender, track.get(), request, isExternal(input) ? 0.75 : 1.0);
+            offerMatch(sender, track.get(), request, isExternal(input) ? -1.0 : 1.0);
             return;
         }
         if (!isExternal(input)) {
@@ -132,7 +132,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (sender instanceof Player player && (isExternal(request.inputUrl)
                 || plugin.getConfig().getBoolean("matching.require-confirmation-for-alias", true) && confidence < 1.0)) {
             pending.put(player.getUniqueId(), new PendingPlay(track, request));
-            sender.sendMessage(msg("&ePossible match: &f" + track.title() + " &7(" + Math.round(confidence * 100) + "% title-match estimate)"));
+            if (confidence < 0) {
+                sender.sendMessage(msg("&eThis URL is mapped to local track: &f" + track.title()));
+            } else {
+                sender.sendMessage(msg("&ePossible catalogue match: &f" + track.title() + " &7(" + Math.round(confidence * 100) + "% title-match estimate)"));
+            }
             sender.sendMessage(msg("&eIt may be a different recording. Type &f/music confirm &eto play."));
             return;
         }
