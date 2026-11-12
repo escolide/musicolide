@@ -52,7 +52,7 @@ public final class AudioProcessor implements AutoCloseable {
                     "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
         }
         try {
-            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle), worker);
+            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false), worker);
         } catch (RejectedExecutionException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
@@ -91,7 +91,7 @@ public final class AudioProcessor implements AutoCloseable {
                     temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
                     Path downloaded = new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
                     String relative = incoming.relativize(downloaded).toString();
-                    return processFile(relative, requestedTitle);
+                    return processFile(relative, requestedTitle, true);
                 } catch (Exception ex) {
                     throw new CompletionException(ex);
                 } finally {
@@ -108,7 +108,7 @@ public final class AudioProcessor implements AutoCloseable {
         return toolchain.statuses();
     }
 
-    private MusicTrack processFile(String fileName, String requestedTitle) {
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport) {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
@@ -173,7 +173,14 @@ public final class AudioProcessor implements AutoCloseable {
             String sha1 = sha1(generatedPack);
             MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
                     sha1, durationMs, segmentMs, count, Files.size(generatedPack));
-            repository.saveTrack(track);
+            if (temporaryUrlImport) {
+                long retentionMinutes = bounded(
+                        plugin.getConfig().getInt("audio.url-import-retention-minutes", 15), 1, 1440);
+                long expiresAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(retentionMinutes);
+                repository.saveTemporaryTrack(track, expiresAt);
+            } else {
+                repository.saveTrack(track);
+            }
             try {
                 packBuilder.rebuildBedrockLibrary();
             } catch (IOException bedrockError) {
