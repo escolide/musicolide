@@ -113,6 +113,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void diagnostics(CommandSender sender) {
         if (!admin(sender)) return;
         sender.sendMessage(msg("&bMusicolide native tool diagnostics:"));
+        if (processor.toolStatuses().isEmpty()) {
+            sender.sendMessage(msg("&eNative tools are still initializing. Run /music diagnostics again shortly."));
+            return;
+        }
         for (var status : processor.toolStatuses()) {
             if (status.available()) {
                 sender.sendMessage(msg("&a" + status.tool().name().toLowerCase(Locale.ROOT)
