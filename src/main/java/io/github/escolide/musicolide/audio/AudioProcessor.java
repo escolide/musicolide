@@ -21,12 +21,15 @@ public final class AudioProcessor implements AutoCloseable {
     private final JavaPlugin plugin;
     private final TrackRepository repository;
     private final ResourcePackBuilder packBuilder;
+    private final NativeToolchain toolchain;
     private final ThreadPoolExecutor worker;
 
-    public AudioProcessor(JavaPlugin plugin, TrackRepository repository, ResourcePackBuilder packBuilder) {
+    public AudioProcessor(JavaPlugin plugin, TrackRepository repository, ResourcePackBuilder packBuilder,
+                          NativeToolchain toolchain) {
         this.plugin = plugin;
         this.repository = repository;
         this.packBuilder = packBuilder;
+        this.toolchain = Objects.requireNonNull(toolchain, "toolchain");
         int maxQueued = bounded(plugin.getConfig().getInt("audio.processing.max-queued-jobs", 8), 1, 64);
         this.worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(maxQueued), runnable -> {
@@ -37,12 +40,62 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle) {
+        if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
+                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
+        }
         try {
             return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle), worker);
         } catch (RejectedExecutionException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
         }
+    }
+
+    /**
+     * Downloads one administrator-authorized URL into a disposable directory, then
+     * uses the same local validation/encoding path as a file import. yt-dlp exits
+     * before FFprobe or FFmpeg is launched.
+     */
+    public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "URL importing is disabled. Enable audio.yt-dlp and configure allowed-hosts first."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "yt-dlp is unavailable. Install it or provide a bundled executable."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
+                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
+                Path temporary = null;
+                try {
+                    Files.createDirectories(incoming);
+                    temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
+                    Path downloaded = new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
+                    String relative = incoming.relativize(downloaded).toString();
+                    return processFile(relative, requestedTitle);
+                } catch (Exception ex) {
+                    throw new CompletionException(ex);
+                } finally {
+                    deleteQuietly(temporary);
+                }
+            }, worker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
+        }
+    }
+
+    public List<NativeToolchain.ToolStatus> toolStatuses() {
+        return toolchain.statuses();
     }
 
     private MusicTrack processFile(String fileName, String requestedTitle) {
@@ -66,8 +119,8 @@ public final class AudioProcessor implements AutoCloseable {
             long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
             if (Files.size(source) > maxBytes) throw new IOException("Input exceeds configured size limit.");
 
-            String ffmpeg = plugin.getConfig().getString("audio.ffmpeg.executable", "ffmpeg");
-            String ffprobe = plugin.getConfig().getString("audio.ffmpeg.ffprobe-executable", "ffprobe");
+            String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
+            String ffprobe = toolchain.executable(NativeToolchain.Tool.FFPROBE);
             long durationMs = probeDuration(ffprobe, source, data);
             long maxDuration = plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800);
             if (durationMs <= 0 || durationMs > maxDuration * 1000L) {
@@ -133,12 +186,16 @@ public final class AudioProcessor implements AutoCloseable {
             throws IOException, InterruptedException {
         Path output = Files.createTempFile(dataDirectory, ".musicolide-probe-", ".txt");
         try {
-            Process process = new ProcessBuilder(executable, "-v", "error", "-show_entries", "format=duration",
+            Process process = toolchain.start(new ProcessBuilder(executable, "-v", "error", "-show_entries", "format=duration",
                     "-of", "default=noprint_wrappers=1:nokey=1", source.toString())
                     .redirectError(ProcessBuilder.Redirect.DISCARD)
-                    .redirectOutput(output.toFile()).start();
-            waitForProcess(process, bounded(plugin.getConfig().getInt(
-                    "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFprobe");
+                    .redirectOutput(output.toFile()));
+            try {
+                waitForProcess(process, bounded(plugin.getConfig().getInt(
+                        "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFprobe");
+            } finally {
+                toolchain.finished(process);
+            }
             String result = Files.readString(output, StandardCharsets.UTF_8).trim();
             try {
                 return Math.round(Double.parseDouble(result) * 1000.0);
@@ -154,7 +211,7 @@ public final class AudioProcessor implements AutoCloseable {
                            double length, int quality) throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
-        Process process = new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", String.format(Locale.ROOT, "%.3f", start),
                 "-t", String.format(Locale.ROOT, "%.3f", length),
                 "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
@@ -162,11 +219,14 @@ public final class AudioProcessor implements AutoCloseable {
                 "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
                 output.toString())
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                .start();
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
 
         int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
-        waitForProcess(process, timeout, "FFmpeg");
+        try {
+            waitForProcess(process, timeout, "FFmpeg");
+        } finally {
+            toolchain.finished(process);
+        }
         if (!Files.isRegularFile(output) || Files.size(output) == 0) {
             throw new IOException("FFmpeg completed without producing a valid OGG segment.");
         }
@@ -178,12 +238,12 @@ public final class AudioProcessor implements AutoCloseable {
         try {
             finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         } catch (InterruptedException ex) {
-            process.destroyForcibly();
+            toolchain.terminate(process);
             Thread.currentThread().interrupt();
             throw ex;
         }
         if (!finished) {
-            process.destroyForcibly();
+            toolchain.terminate(process);
             throw new IOException(label + " exceeded its " + timeoutSeconds + " second timeout.");
         }
         if (process.exitValue() != 0) {
@@ -244,5 +304,6 @@ public final class AudioProcessor implements AutoCloseable {
     @Override
     public void close() {
         worker.shutdownNow();
+        toolchain.close();
     }
 }
