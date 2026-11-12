@@ -27,6 +27,12 @@ public final class TrackRepository implements AutoCloseable {
                     )
                     """);
             statement.execute("""
+                    CREATE TABLE IF NOT EXISTS ephemeral_tracks (
+                      track_id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL,
+                      FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
+                    )
+                    """);
+            statement.execute("""
                     CREATE TABLE IF NOT EXISTS aliases (
                       alias_key TEXT PRIMARY KEY, track_id TEXT NOT NULL,
                       FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
@@ -63,6 +69,14 @@ public final class TrackRepository implements AutoCloseable {
     }
 
     public synchronized void saveTrack(MusicTrack track) throws SQLException {
+        saveTrack(track, null);
+    }
+
+    public synchronized void saveTemporaryTrack(MusicTrack track, long expiresAtMillis) throws SQLException {
+        saveTrack(track, expiresAtMillis);
+    }
+
+    private void saveTrack(MusicTrack track, Long expiresAtMillis) throws SQLException {
         String sql = """
                 INSERT INTO tracks(id,title,artist,namespace,pack_file,sha1_hex,duration_ms,segment_ms,segment_count,pack_size_bytes,created_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?)
@@ -71,19 +85,71 @@ public final class TrackRepository implements AutoCloseable {
                 duration_ms=excluded.duration_ms, segment_ms=excluded.segment_ms,
                 segment_count=excluded.segment_count, pack_size_bytes=excluded.pack_size_bytes
                 """;
+        try (Connection c = open()) {
+            c.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
+                    ps.setString(1, track.id());
+                    ps.setString(2, track.title());
+                    ps.setString(3, track.artist() == null ? "" : track.artist());
+                    ps.setString(4, track.namespace());
+                    ps.setString(5, track.packFileName());
+                    ps.setString(6, track.sha1Hex());
+                    ps.setLong(7, track.durationMs());
+                    ps.setInt(8, track.segmentMs());
+                    ps.setInt(9, track.segmentCount());
+                    ps.setLong(10, track.packSizeBytes());
+                    ps.setLong(11, System.currentTimeMillis());
+                    ps.executeUpdate();
+                }
+                if (expiresAtMillis == null) {
+                    try (PreparedStatement ps = c.prepareStatement("DELETE FROM ephemeral_tracks WHERE track_id=?")) {
+                        ps.setString(1, track.id());
+                        ps.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            INSERT INTO ephemeral_tracks(track_id,expires_at) VALUES(?,?)
+                            ON CONFLICT(track_id) DO UPDATE SET expires_at=excluded.expires_at
+                            """)) {
+                        ps.setString(1, track.id());
+                        ps.setLong(2, expiresAtMillis);
+                        ps.executeUpdate();
+                    }
+                }
+                c.commit();
+            } catch (SQLException ex) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                }
+                throw ex;
+            }
+        }
+    }
+
+    public synchronized List<MusicTrack> expiredTemporaryTracks(long nowMillis) throws SQLException {
+        List<MusicTrack> tracks = new ArrayList<>();
+        String sql = """
+                SELECT t.* FROM tracks t
+                JOIN ephemeral_tracks e ON e.track_id=t.id
+                WHERE e.expires_at<=?
+                ORDER BY e.expires_at ASC
+                """;
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, track.id());
-            ps.setString(2, track.title());
-            ps.setString(3, track.artist() == null ? "" : track.artist());
-            ps.setString(4, track.namespace());
-            ps.setString(5, track.packFileName());
-            ps.setString(6, track.sha1Hex());
-            ps.setLong(7, track.durationMs());
-            ps.setInt(8, track.segmentMs());
-            ps.setInt(9, track.segmentCount());
-            ps.setLong(10, track.packSizeBytes());
-            ps.setLong(11, System.currentTimeMillis());
-            ps.executeUpdate();
+            ps.setLong(1, nowMillis);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) tracks.add(readTrack(rs));
+            }
+        }
+        return tracks;
+    }
+
+    public synchronized boolean deleteTrack(String trackId) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("DELETE FROM tracks WHERE id=?")) {
+            ps.setString(1, trackId);
+            return ps.executeUpdate() > 0;
         }
     }
 
