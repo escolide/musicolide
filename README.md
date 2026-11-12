@@ -99,6 +99,12 @@ The first time a player needs a track, Minecraft may show a resource-pack prompt
 
 Minecraft's vanilla sound API does not expose a true pause/seek operation for an already-playing sound. Musicolide uses short segments, so pause/resume and seeking are segment-accurate rather than sample-accurate. This is an inherent vanilla-client limitation; no client mod is installed.
 
+## Configuration
+
+See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
+
+Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages.
+
 ## Status
 
 This repository is under active development. CI verifies compilation against the oldest supported Paper API and tests resource-pack metadata generation for both legacy and modern pack-format eras. Test on staging servers for 1.21.1, 1.21.9, 1.21.11 and 26.3 before production use, particularly resource-pack stacking, client download behavior and positional audio transitions.
