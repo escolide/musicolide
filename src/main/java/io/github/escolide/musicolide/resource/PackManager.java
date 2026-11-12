@@ -36,6 +36,14 @@ public final class PackManager {
     public boolean isReady(Player player, MusicTrack track) { return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId()); }
     public boolean isDeclined(Player player, MusicTrack track) { return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId()); }
 
+    /**
+     * True while any Java client is downloading this pack. Expiry cleanup must
+     * leave the file in place until the resource-pack status event arrives.
+     */
+    public boolean isDownloadInProgress(UUID packId) {
+        return requested.values().stream().anyMatch(requestedPacks -> requestedPacks.contains(packId));
+    }
+
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming, int tracksAhead) {
         // Send the tiny stable pack first. Paper/Minecraft shows its one-time
         // server consent prompt only for the first request; track packs follow
