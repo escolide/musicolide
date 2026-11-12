@@ -5,7 +5,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -17,6 +16,8 @@ import java.util.concurrent.TimeUnit;
  * identifiers only; this downloader does not extract or rebroadcast them.
  */
 public final class YtDlpDownloader {
+    private static final List<String> ALWAYS_BLOCKED_HOSTS = List.of(
+            "youtube.com", "youtu.be", "youtube-nocookie.com", "spotify.com", "soundcloud.com");
     private final JavaPlugin plugin;
     private final NativeToolchain toolchain;
 
@@ -48,6 +49,7 @@ public final class YtDlpDownloader {
             List<String> command = List.of(
                     toolchain.executable(NativeToolchain.Tool.YT_DLP),
                     "--ignore-config",
+                    "--no-cache-dir",
                     "--no-playlist",
                     "--no-progress",
                     "--no-warnings",
@@ -55,6 +57,7 @@ public final class YtDlpDownloader {
                     "--max-downloads", "1",
                     "--max-filesize", maxInputMb + "M",
                     "--format", "bestaudio/best",
+                    "--match-filter", "duration <= " + plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800),
                     "--output", outputTemplate,
                     "--", uri.toASCIIString()
             );
@@ -143,11 +146,15 @@ public final class YtDlpDownloader {
     }
 
     static boolean isBlockedHost(String host, List<String> blockedHosts) {
-        if (blockedHosts == null) return false;
         String normalized = host.toLowerCase(Locale.ROOT);
-        return blockedHosts.stream().filter(Objects::nonNull).map(value -> value.trim().toLowerCase(Locale.ROOT))
+        if (matchesHost(normalized, ALWAYS_BLOCKED_HOSTS)) return true;
+        return blockedHosts != null && matchesHost(normalized, blockedHosts);
+    }
+
+    private static boolean matchesHost(String host, List<String> values) {
+        return values.stream().filter(Objects::nonNull).map(value -> value.trim().toLowerCase(Locale.ROOT))
                 .filter(value -> !value.isBlank())
-                .anyMatch(value -> normalized.equals(value) || normalized.endsWith("." + value));
+                .anyMatch(value -> host.equals(value) || host.endsWith("." + value));
     }
 
     private static boolean isIpLiteral(String host) {
