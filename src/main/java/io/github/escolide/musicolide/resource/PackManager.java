@@ -19,6 +19,9 @@ public final class PackManager {
     private final Map<UUID, Set<UUID>> declined = new ConcurrentHashMap<>();
     private final Map<UUID, LinkedHashMap<UUID, MusicTrack>> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> active = new ConcurrentHashMap<>();
+    // Packs whose download is in flight when playback no longer needs them.
+    // Remove them from the active client stack as soon as the status event arrives.
+    private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
 
     public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack) {
@@ -62,13 +65,12 @@ public final class PackManager {
             Set<UUID> activeSet = active.get(playerId);
             if (activeSet != null) {
                 for (UUID packId : new HashSet<>(activeSet)) {
-                    if (!desired.contains(packId) && !requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                        try { player.removeResourcePack(packId); } catch (Exception ignored) {}
-                        activeSet.remove(packId);
-                        Set<UUID> readySet = ready.get(playerId);
-                        Set<UUID> declinedSet = declined.get(playerId);
-                        if (readySet != null) readySet.remove(packId);
-                        if (declinedSet != null) declinedSet.remove(packId);
+                    if (!desired.contains(packId)) {
+                        if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                            removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+                        } else {
+                            removePack(player, playerId, packId);
+                        }
                     }
                 }
             }
@@ -144,16 +146,27 @@ public final class PackManager {
         Set<UUID> activeSet = active.get(playerId);
         if (activeSet != null) {
             for (UUID packId : new HashSet<>(activeSet)) {
-                if (!requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                    try { player.removeResourcePack(packId); } catch (Exception ignored) {}
-                    activeSet.remove(packId);
-                    Set<UUID> readySet = ready.get(playerId);
-                    if (readySet != null) readySet.remove(packId);
+                if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                    removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+                } else {
+                    removePack(player, playerId, packId);
                 }
             }
         }
         LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
         if (queue != null) queue.clear();
+    }
+
+    private void removePack(Player player, UUID playerId, UUID packId) {
+        try { player.removeResourcePack(packId); } catch (Exception ignored) {}
+        Set<UUID> activeSet = active.get(playerId);
+        if (activeSet != null) activeSet.remove(packId);
+        Set<UUID> readySet = ready.get(playerId);
+        if (readySet != null) readySet.remove(packId);
+        Set<UUID> declinedSet = declined.get(playerId);
+        if (declinedSet != null) declinedSet.remove(packId);
+        Set<UUID> deferred = removeWhenReady.get(playerId);
+        if (deferred != null) deferred.remove(packId);
     }
 
     public void status(UUID playerId, UUID packId, org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
@@ -173,21 +186,30 @@ public final class PackManager {
         Set<UUID> requestedSet = requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet());
         boolean wasRequested = requestedSet.remove(packId);
         if (wasRequested) inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
-        boolean stillActive = active.getOrDefault(playerId, Set.of()).contains(packId);
+        Player player = Bukkit.getPlayer(playerId);
+        boolean removeAfterDownload = removeWhenReady.getOrDefault(playerId, Set.of()).contains(packId);
         if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
             declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
-            if (stillActive) ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            if (removeAfterDownload || !active.getOrDefault(playerId, Set.of()).contains(packId)) {
+                if (player != null) removePack(player, playerId, packId);
+            } else {
+                ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            }
         } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
                 || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
             ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
             declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            Set<UUID> activeSet = active.get(playerId);
+            if (activeSet != null) activeSet.remove(packId);
+            Set<UUID> deferred = removeWhenReady.get(playerId);
+            if (deferred != null) deferred.remove(packId);
         }
-        pump(Bukkit.getPlayer(playerId));
+        pump(player);
     }
 
     public void removePlayer(UUID playerId) {
         baseReady.remove(playerId); baseRequested.remove(playerId); baseDeclined.remove(playerId);
         ready.remove(playerId); requested.remove(playerId); declined.remove(playerId);
-        waiting.remove(playerId); active.remove(playerId); inFlight.remove(playerId);
+        waiting.remove(playerId); active.remove(playerId); removeWhenReady.remove(playerId); inFlight.remove(playerId);
     }
 }
