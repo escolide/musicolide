@@ -22,6 +22,7 @@ public final class GeyserBridge {
     private final JavaPlugin plugin;
     private final Path bedrockPack;
     private final Map<UUID, Boolean> bedrockPlayers = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> playerJoinTimes = new ConcurrentHashMap<>();
     private volatile boolean present;
     private volatile boolean unavailableLogged;
     private Method apiMethod;
@@ -66,6 +67,26 @@ public final class GeyserBridge {
         return bedrockPack != null && Files.isRegularFile(bedrockPack);
     }
 
+    public void recordPlayerJoin(UUID uuid) {
+        if (uuid != null) playerJoinTimes.put(uuid, System.currentTimeMillis());
+    }
+
+    /**
+     * A Bedrock pack is delivered only during Geyser's connection pack phase.
+     * When the library ZIP changes after a player joined, require a reconnect
+     * rather than attempting to play a sound whose asset the client lacks.
+     */
+    public boolean hasCurrentPackFor(UUID uuid) {
+        if (!isBedrockPackAvailable() || uuid == null) return false;
+        long joinedAt = playerJoinTimes.getOrDefault(uuid, 0L);
+        if (joinedAt == 0L) return false;
+        try {
+            return joinedAt >= Files.getLastModifiedTime(bedrockPack).toMillis();
+        } catch (java.io.IOException ex) {
+            return false;
+        }
+    }
+
     public boolean isBedrockPlayer(UUID uuid) {
         if (!present || uuid == null) return false;
         Boolean cached = bedrockPlayers.get(uuid);
@@ -91,5 +112,6 @@ public final class GeyserBridge {
 
     public void removePlayer(UUID uuid) {
         bedrockPlayers.remove(uuid);
+        playerJoinTimes.remove(uuid);
     }
 }
