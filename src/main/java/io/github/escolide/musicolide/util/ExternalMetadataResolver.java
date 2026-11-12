@@ -26,9 +26,9 @@ public final class ExternalMetadataResolver {
     public CompletableFuture<Optional<Metadata>> resolve(String rawUrl) {
         URI input;
         try { input = URI.create(rawUrl); }
-        catch (IllegalArgumentException ex) { return CompletableFuture.completedFuture(Optional.empty()); }
+        catch (IllegalArgumentException ex) { return CompletableFuture.completedFuture(Optional.<Metadata>empty()); }
         String host = input.getHost();
-        if (host == null) return CompletableFuture.completedFuture(Optional.empty());
+        if (host == null) return CompletableFuture.completedFuture(Optional.<Metadata>empty());
         host = host.toLowerCase(Locale.ROOT);
         String endpoint;
         if (host.equals("youtube.com") || host.endsWith(".youtube.com") || host.equals("youtu.be")) {
@@ -38,7 +38,7 @@ public final class ExternalMetadataResolver {
         } else if (host.equals("soundcloud.com") || host.endsWith(".soundcloud.com")) {
             endpoint = "https://soundcloud.com/oembed?format=json&url=";
         } else {
-            return CompletableFuture.completedFuture(Optional.empty());
+            return CompletableFuture.completedFuture(Optional.<Metadata>empty());
         }
         URI uri = URI.create(endpoint + URLEncoder.encode(rawUrl, StandardCharsets.UTF_8));
         HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
@@ -48,7 +48,7 @@ public final class ExternalMetadataResolver {
                 .thenApply(response -> {
                     if (response.statusCode() < 200 || response.statusCode() >= 300) return Optional.<Metadata>empty();
                     Matcher title = TITLE.matcher(response.body());
-                    if (!title.find()) return Optional.empty();
+                    if (!title.find()) return Optional.<Metadata>empty();
                     Matcher author = AUTHOR.matcher(response.body());
                     return Optional.of(new Metadata(unescape(title.group(1)),
                             author.find() ? unescape(author.group(1)) : ""));
