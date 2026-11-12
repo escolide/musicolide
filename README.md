@@ -60,7 +60,7 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 1. Install the JAR in plugins/ and start Paper once.
 2. Put authorized source files in plugins/Musicolide/incoming/.
 3. Configure server.public-base-url to an address your players can reach. The built-in HTTP server binds to server.bind-address:server.port. For public servers, use an HTTPS reverse proxy and expose only the configured pack path.
-4. Run /music import <filename> [title] as an administrator.
+4. Run /music import <filename> [title] as an administrator, or use /music import all to process every supported file in incoming/ sequentially.
 5. Use /music list to see imported tracks.
 6. Start playback with /music play <id-or-title>.
 
@@ -68,6 +68,7 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 
 - /music help
 - /music import <filename> [title] (admin)
+- /music import all (admin; imports supported files from incoming/ one at a time)
 - /music list [search]
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
 - /music playlist create <name>
@@ -103,7 +104,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
 
-Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages.
+Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. Cloud processing is being designed as a separate deployable service; this branch adds the bulk-import command but does not yet enable cloud mode.
 
 ## Status
 
