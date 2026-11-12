@@ -56,11 +56,15 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             }
 
             nativeToolchain = new NativeToolchain(this);
-            nativeToolchain.initialize();
-            if (getConfig().getBoolean("audio.yt-dlp.enabled", false)
-                    && !nativeToolchain.available(NativeToolchain.Tool.YT_DLP)) {
-                getLogger().warning("URL importing is enabled in config, but yt-dlp did not pass its startup check.");
-            }
+            nativeToolchain.initializeAsync().thenAccept(statuses -> {
+                if (getConfig().getBoolean("audio.yt-dlp.enabled", false)
+                        && !nativeToolchain.available(NativeToolchain.Tool.YT_DLP)) {
+                    getLogger().warning("URL importing is enabled in config, but yt-dlp did not pass its startup check.");
+                }
+            }).exceptionally(error -> {
+                getLogger().warning("Native tool initialization failed: " + error.getMessage());
+                return null;
+            });
             processor = new AudioProcessor(this, repository, builder, nativeToolchain);
             packManager = new PackManager(this, basePack);
             geyserBridge = new GeyserBridge(this, builder.bedrockPackPath());
