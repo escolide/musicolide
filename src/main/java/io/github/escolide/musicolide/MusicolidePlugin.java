@@ -7,6 +7,7 @@ import io.github.escolide.musicolide.region.WorldGuardBridge;
 import io.github.escolide.musicolide.resource.PackHttpServer;
 import io.github.escolide.musicolide.resource.PackManager;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
+import io.github.escolide.musicolide.resource.ResourcePackFormat;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -34,8 +35,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             Files.createDirectories(data.resolve("tracks"));
             Files.createDirectories(data.resolve("packs"));
             repository = new TrackRepository(data.resolve("musicolide.db"));
-            ResourcePackBuilder builder = new ResourcePackBuilder(data, getConfig().getInt("audio.resource-pack-format-major", 97),
-                    getConfig().getInt("audio.resource-pack-format-minor", 1));
+
+            String serverVersion = Bukkit.getBukkitVersion();
+            ResourcePackFormat packFormat = ResourcePackFormat.forMinecraftVersion(serverVersion);
+            getLogger().info("Detected Minecraft " + serverVersion + "; using resource-pack format "
+                    + packFormat.displayName() + ".");
+            ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
+
             processor = new AudioProcessor(this, repository, builder);
             packManager = new PackManager(this);
             String bind = getConfig().getString("server.bind-address", "0.0.0.0");

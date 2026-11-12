@@ -8,7 +8,7 @@ version = '0.1.0'
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(21)
     }
 }
 
@@ -18,8 +18,8 @@ repositories {
 }
 
 dependencies {
-    // Paper's post-26.1 version scheme. Keep the API as compile-only.
-    compileOnly 'io.papermc.paper:paper-api:26.3.build.+'
+    // Compile against the oldest supported API to prevent accidental newer API links.
+    compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -28,7 +28,7 @@ dependencies {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    options.release = 25
+    options.release = 21
 }
 
 tasks.named('test') {
