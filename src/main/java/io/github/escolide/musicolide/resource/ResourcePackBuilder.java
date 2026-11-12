@@ -10,16 +10,11 @@ import java.util.zip.ZipOutputStream;
 
 public final class ResourcePackBuilder {
     private final Path packsDirectory;
-    private final int formatMajor;
-    private final int formatMinor;
+    private final ResourcePackFormat format;
 
-    public ResourcePackBuilder(Path dataFolder, int formatMajor, int formatMinor) throws IOException {
-        if (formatMajor < 1 || formatMinor < 0) {
-            throw new IllegalArgumentException("Resource pack format must have a positive major and non-negative minor version.");
-        }
+    public ResourcePackBuilder(Path dataFolder, ResourcePackFormat format) throws IOException {
         this.packsDirectory = dataFolder.resolve("packs");
-        this.formatMajor = formatMajor;
-        this.formatMinor = formatMinor;
+        this.format = format;
         Files.createDirectories(packsDirectory);
     }
 
@@ -41,11 +36,7 @@ public final class ResourcePackBuilder {
         }
         soundsJson.append("}\n");
 
-        // 26.3 uses pack format 97.1. Since 1.21.9, min_format and max_format
-        // are required and pack_format is not used for packs targeting only new formats.
-        String meta = "{\"pack\":{\"min_format\":[" + formatMajor + "," + formatMinor
-                + "],\"max_format\":" + formatMajor
-                + ",\"description\":\"Musicolide track pack\"}}";
+        String meta = format.toPackMcmeta();
 
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
             add(zip, "pack.mcmeta", meta.getBytes(StandardCharsets.UTF_8));
