@@ -131,6 +131,7 @@ messages:
   import-started: "&aPreparing audio."
   import-complete: "&aImported &f{title}&a (&f{id}&a)."
   import-failed: "&cAudio import failed: {reason}"
+  bedrock-not-supported: "&eMusicolide recognizes your Bedrock connection, but Bedrock audio playback is not enabled on this build yet."
   playback-started: "&aNow playing: &f{title}"
   playback-paused: "&ePlayback paused."
   playback-resumed: "&aPlayback resumed."
