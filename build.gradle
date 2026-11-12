@@ -15,11 +15,14 @@ java {
 repositories {
     mavenCentral()
     maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url = 'https://repo.opencollab.dev/main/' }
 }
 
 dependencies {
     // Compile against the oldest supported API to prevent accidental newer API links.
     compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
+    // Optional at runtime: Geyser is detected before the isolated adapter class is loaded.
+    compileOnly 'org.geysermc.geyser:api:2.11.2-SNAPSHOT'
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
