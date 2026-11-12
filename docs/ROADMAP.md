@@ -45,7 +45,7 @@ The current Java playback engine and command system provide a baseline for sessi
 | Process I/O and conversion off the Bukkit main thread | Existing architecture; review continuously |
 | Delete temporary OGG segments after pack creation | Implemented in this feature branch; CI pending |
 | Delete original input after successful import by default, with a retention option | Implemented in this feature branch; CI pending |
-| Crash cleanup of stale temporary files | Planned |
+| Crash cleanup of stale temporary files | Implemented: startup cleaner removes abandoned URL-import directories, OGG segment work folders, tool-check logs and FFprobe scratch files while preserving user uploads and finished packs |
 | Expiry cleanup of temporary URL-imported pack artifacts | Implemented with a configurable idle TTL; validate on a staging server |
 | Optional bundled native executables, extraction and startup diagnostics | Extraction/diagnostics implemented; binary payloads not included and host permissions unverified |
 | yt-dlp for administrator-authorized allowlisted source URLs | Implemented, disabled by default; common streaming platforms remain metadata/alias-only |
