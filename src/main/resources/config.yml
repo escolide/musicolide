@@ -14,10 +14,26 @@ server:
   max-download-mb: 100
 
 audio:
+  # Bundled binaries are optional. When present, they are extracted to plugins/Musicolide/native/.
+  # Otherwise executable names below are resolved using the server process PATH.
+  tools:
+    bundled-first: true
   ffmpeg:
     executable: "ffmpeg"
     ffprobe-executable: "ffprobe"
-    required: true
+    required: false
+  yt-dlp:
+    enabled: false
+    executable: "yt-dlp"
+    # Add only domains from which you are authorized to download and redistribute audio.
+    # YouTube, YouTube Music, Spotify and SoundCloud are blocked regardless of this list.
+    allowed-hosts: []
+    blocked-hosts:
+      - "youtube.com"
+      - "youtu.be"
+      - "youtube-nocookie.com"
+      - "spotify.com"
+      - "soundcloud.com"
   format: "ogg"
   sample-rate: 44100
   segment-duration-ms: 1000
@@ -29,6 +45,7 @@ audio:
     max-queued-jobs: 8
     timeout-seconds: 1800
     probe-timeout-seconds: 30
+    yt-dlp-timeout-seconds: 600
     ffmpeg-threads: 1
 
 resource-packs:
