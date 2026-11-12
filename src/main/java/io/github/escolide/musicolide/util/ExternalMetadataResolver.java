@@ -46,13 +46,13 @@ public final class ExternalMetadataResolver {
                 .header("Accept", "application/json").GET().build();
         return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
-                    if (response.statusCode() < 200 || response.statusCode() >= 300) return Optional.empty();
+                    if (response.statusCode() < 200 || response.statusCode() >= 300) return Optional.<Metadata>empty();
                     Matcher title = TITLE.matcher(response.body());
                     if (!title.find()) return Optional.empty();
                     Matcher author = AUTHOR.matcher(response.body());
                     return Optional.of(new Metadata(unescape(title.group(1)),
                             author.find() ? unescape(author.group(1)) : ""));
-                }).exceptionally(error -> Optional.empty());
+                }).exceptionally(error -> Optional.<Metadata>empty());
     }
 
     private String unescape(String value) {

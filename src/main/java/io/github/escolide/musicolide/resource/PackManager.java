@@ -131,23 +131,6 @@ public final class PackManager {
         pump(Bukkit.getPlayer(playerId));
     }
 
-    public void releaseAll(Player player) {
-        UUID playerId = player.getUniqueId();
-        Set<UUID> activeSet = active.get(playerId);
-        if (activeSet != null) {
-            for (UUID packId : new HashSet<>(activeSet)) {
-                if (!requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                    try { player.removeResourcePack(packId); } catch (Exception ignored) {}
-                    activeSet.remove(packId);
-                    Set<UUID> readySet = ready.get(playerId);
-                    if (readySet != null) readySet.remove(packId);
-                }
-            }
-        }
-        LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
-        if (queue != null) queue.clear();
-    }
-
     public void removePlayer(UUID playerId) {
         ready.remove(playerId); requested.remove(playerId); declined.remove(playerId);
         waiting.remove(playerId); active.remove(playerId); inFlight.remove(playerId);
