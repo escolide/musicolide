@@ -108,7 +108,7 @@ This branch does not currently support a separately hosted Geyser proxy without 
 
 ## Client behavior
 
-The first time a player needs a track, Minecraft may show a resource-pack prompt and download it. Declining the pack prevents custom audio playback. Later uses can be served from the client's resource-pack cache.
+The first time a Java player needs music, Musicolide sends a tiny stable metadata-only base pack with the consent prompt. After it is accepted, per-track packs are requested without another prompt and use the client's background download path where supported. Unused packs are removed from the active stack, including deferred removal after an in-flight download completes. Declining the base pack prevents custom audio playback. Minecraft controls the actual downloaded ZIP cache on the player's device; the server cannot remotely delete those files.
 
 Minecraft's vanilla sound API does not expose a true pause/seek operation for an already-playing sound. Musicolide uses short segments, so pause/resume and seeking are segment-accurate rather than sample-accurate. This is an inherent vanilla-client limitation; no client mod is installed.
 
