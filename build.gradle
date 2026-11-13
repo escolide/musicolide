@@ -2,9 +2,6 @@ import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import java.sql.Driver
 import java.util.Properties
 import java.util.zip.ZipFile
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
-import java.security.MessageDigest
 
 plugins {
     id 'java'
@@ -46,76 +43,6 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
-// Package staged, platform-specific executables into compressed classpath resources.
-tasks.register('packageNativeBundles') {
-    def sourceRoot = file('src/main/native-bundles')
-    def outputRoot = layout.buildDirectory.dir('generated/native-bundles')
-    inputs.dir(sourceRoot)
-    outputs.dir(outputRoot)
-    doLast {
-        File output = outputRoot.get().asFile
-        delete(output)
-        output.mkdirs()
-        if (!sourceRoot.exists()) {
-            logger.warn('No native bundles are staged. The produced JAR is not self-contained until platform payloads are added.')
-            return
-        }
-
-        def supported = ['linux-x86_64', 'linux-aarch64', 'windows-x86_64',
-                         'windows-aarch64', 'macos-x86_64', 'macos-aarch64'] as Set
-        def platformDirectories = sourceRoot.listFiles()?.findAll { it.isDirectory() }?.sort { it.name } ?: []
-        if (platformDirectories.isEmpty()) {
-            logger.warn('No native bundles are staged. The produced JAR is not self-contained until platform payloads are added.')
-        }
-        platformDirectories.each { platformDir ->
-            if (!supported.contains(platformDir.name)) {
-                throw new GradleException('Unsupported native bundle platform directory: ' + platformDir.name)
-            }
-            boolean windows = platformDir.name.startsWith('windows-')
-            String suffix = windows ? '.exe' : ''
-            File ffmpeg = new File(platformDir, 'bin/ffmpeg' + suffix)
-            File ytDlp = new File(platformDir, 'bin/yt-dlp' + suffix)
-            File quickJs = new File(platformDir, 'bin/qjs' + suffix)
-            File licenses = new File(platformDir, 'licenses')
-            if (!ffmpeg.isFile() || !ytDlp.isFile() || !quickJs.isFile()) {
-                throw new GradleException(platformDir.name + ' bundle must contain bin/ffmpeg' + suffix
-                        + ', bin/yt-dlp' + suffix + ' and bin/qjs' + suffix + '.')
-            }
-            if (!licenses.isDirectory() || !(licenses.listFiles()?.any { it.isFile() })) {
-                throw new GradleException(platformDir.name + ' bundle must include third-party notices in licenses/.')
-            }
-
-            File archive = new File(output, platformDir.name + '.zip')
-            ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(archive)))
-            zip.setLevel(9)
-            try {
-                zip.putNextEntry(new ZipEntry('manifest.properties'))
-                String manifest = 'platform=' + platformDir.name + '\nffmpeg=bin/ffmpeg' + suffix
-                        + '\nyt-dlp=bin/yt-dlp' + suffix + '\njs-runtime=bin/qjs' + suffix + '\n'
-                zip.write(manifest.getBytes('UTF-8'))
-                zip.closeEntry()
-
-                platformDir.eachFileRecurse { source ->
-                    if (source.isFile() && source.name != 'README.md') {
-                        String relative = platformDir.toPath().relativize(source.toPath()).toString().replace(File.separatorChar, '/' as char)
-                        zip.putNextEntry(new ZipEntry(relative))
-                        source.withInputStream { input -> input.transferTo(zip) }
-                        zip.closeEntry()
-                    }
-                }
-            } finally {
-                zip.close()
-            }
-
-            MessageDigest digest = MessageDigest.getInstance('SHA-256')
-            String hex = digest.digest(archive.bytes).encodeHex().toString()
-            new File(output, platformDir.name + '.sha256').text = hex + '  ' + archive.name + '\n'
-            logger.lifecycle('Packaged ' + platformDir.name + ' native bundle: '
-                    + String.format('%.2f MiB', archive.length() / 1024.0 / 1024.0))
-        }
-    }
-}
-
 // Portable JAR, retaining SQLite's native driver binaries for every upstream platform.
 tasks.named('shadowJar', ShadowJar) {
     archiveClassifier = 'universal'
@@ -134,9 +61,7 @@ tasks.register('linuxShadowJar', ShadowJar) {
         def entry = details.path
         boolean otherSqliteNative = entry.startsWith('org/sqlite/native/') &&
                 entry != 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so'
-        boolean otherToolBundle = entry.startsWith('native-bundles/') &&
-                !entry.startsWith('native-bundles/linux-x86_64.')
-        otherSqliteNative || otherToolBundle
+        otherSqliteNative
     }
 }
 
@@ -199,30 +124,6 @@ tasks.register('verifyPluginJarSize') {
     }
 }
 
-tasks.register('verifySelfContainedNativeBundles') {
-    dependsOn tasks.named('packageNativeBundles')
-    doLast {
-        def required = ['linux-x86_64', 'linux-aarch64', 'windows-x86_64',
-                        'windows-aarch64', 'macos-x86_64', 'macos-aarch64'] as Set
-        def generated = layout.buildDirectory.dir('generated/native-bundles').get().asFile
-        def present = generated.listFiles()?.findAll { it.name.endsWith('.zip') }
-                ?.collect { it.name.substring(0, it.name.length() - 4) } as Set ?: [] as Set
-        def missing = required - present
-        if (!missing.isEmpty()) {
-            throw new GradleException('Self-contained universal release is missing native bundles for: '
-                    + missing.sort().join(', '))
-        }
-        required.each { platform ->
-            File bundle = new File(generated, platform + '.zip')
-            File digest = new File(generated, platform + '.sha256')
-            if (!bundle.isFile() || !digest.isFile()) {
-                throw new GradleException('Incomplete native bundle or SHA-256 sidecar for ' + platform + '.')
-            }
-        }
-        logger.lifecycle('All six platform native bundles are staged and checksummed.')
-    }
-}
-
 tasks.register('verifyUniversalPluginJarSize') {
     dependsOn tasks.named('shadowJar')
     doLast {
@@ -234,12 +135,18 @@ tasks.register('verifyUniversalPluginJarSize') {
         ZipFile zip = new ZipFile(pluginJar)
         try {
             def names = zip.entries().toList().findAll { !it.isDirectory() }.collect { it.name } as Set
-            def bundles = names.findAll { it.startsWith('native-bundles/') && it.endsWith('.zip') }
-            bundles.each { bundle ->
-                String sidecar = bundle.substring(0, bundle.length() - 4) + '.sha256'
-                if (!names.contains(sidecar)) {
-                    throw new GradleException('Universal JAR is missing the SHA-256 sidecar for ' + bundle + '.')
-                }
+            def requiredInstallerEntries = [
+                    'io/github/escolide/musicolide/audio/NativeToolDownloader.class',
+                    'org/apache/commons/compress/archivers/tar/TarArchiveInputStream.class',
+                    'org/tukaani/xz/XZInputStream.class'
+            ] as Set
+            def missingInstallerEntries = requiredInstallerEntries - names
+            if (!missingInstallerEntries.isEmpty()) {
+                throw new GradleException('Universal JAR is missing first-start installer dependencies: '
+                        + missingInstallerEntries.sort().join(', '))
+            }
+            if (names.any { it.startsWith('native-bundles/') }) {
+                throw new GradleException('The universal JAR must download native tools at first startup; do not embed platform binaries.')
             }
             URLClassLoader loader = new URLClassLoader(
                     [pluginJar.toURI().toURL()] as URL[], ClassLoader.getPlatformClassLoader())
