@@ -26,8 +26,10 @@ class NativeBundleInstallerTest {
         Path ytDlp = Path.of(installed.get(NativeToolchain.Tool.YT_DLP));
         assertEquals("fake-ffmpeg", Files.readString(ffmpeg));
         assertEquals("fake-yt-dlp", Files.readString(ytDlp));
+        assertEquals("fake-qjs", Files.readString(Path.of(installed.get(NativeToolchain.Tool.JS_RUNTIME))));
         assertTrue(Files.isExecutable(ffmpeg));
         assertTrue(Files.isExecutable(ytDlp));
+        assertTrue(Files.isExecutable(Path.of(installed.get(NativeToolchain.Tool.JS_RUNTIME))));
     }
 
     @Test
@@ -49,12 +51,14 @@ class NativeBundleInstallerTest {
         Path archive = temporaryDirectory.resolve(platform + ".zip");
         String manifest = "platform=" + platform + "\n"
                 + "ffmpeg=bin/ffmpeg\n"
-                + "yt-dlp=bin/yt-dlp\n";
+                + "yt-dlp=bin/yt-dlp\n"
+                + "js-runtime=bin/qjs\n";
         try (OutputStream file = Files.newOutputStream(archive);
              ZipOutputStream zip = new ZipOutputStream(file)) {
             put(zip, "manifest.properties", manifest);
             put(zip, "bin/ffmpeg", "fake-ffmpeg");
             put(zip, "bin/yt-dlp", "fake-yt-dlp");
+            put(zip, "bin/qjs", "fake-qjs");
             if (includeTraversal) put(zip, "../escape.txt", "unsafe");
         }
         return archive;
