@@ -13,6 +13,7 @@ import io.github.escolide.musicolide.resource.SharedPortPackServer;
 import io.github.escolide.musicolide.resource.PackManager;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
 import io.github.escolide.musicolide.resource.ResourcePackFormat;
+import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -64,6 +65,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                     + packFormat.displayName() + ".");
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
             resourcePackBuilder = builder;
+            SoundPackNamespaceMigration.migrate(data.resolve("packs"), repository, getLogger());
             ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
