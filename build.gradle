@@ -26,11 +26,14 @@ repositories {
 dependencies {
     compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
     compileOnly 'org.geysermc.geyser:api:2.11.2-SNAPSHOT'
+    // Netty is supplied by Paper/Purpur at runtime; keep it out of the plugin JAR.
+    compileOnly 'io.netty:netty-codec-http:4.1.115.Final'
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
     implementation 'org.apache.commons:commons-compress:1.28.0'
     implementation 'org.tukaani:xz:1.10'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'io.netty:netty-codec-http:4.1.115.Final'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
