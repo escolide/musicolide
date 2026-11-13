@@ -15,8 +15,6 @@ server:
 
 audio:
   tools:
-    # Prefer a verified embedded bundle if one is supplied by a custom build.
-    bundled-first: true
     # Download pinned yt-dlp, FFmpeg and QuickJS builds over HTTPS on first startup.
     # The download, checksum verification and extraction run in a background worker.
     # Installed tools remain in plugins/Musicolide/native/ across server restarts.
@@ -31,7 +29,7 @@ audio:
     # When enabled, /play <url> imports the URL only from administrator-allowlisted
     # hosts. Enable this only for sources the server is authorized to redistribute.
     auto-import-on-play: false
-    # QuickJS is bundled as qjs in each native bundle.
+    # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
     # URL-imported packs become eligible for expiry this many minutes after import.
     # Active playback sessions and in-flight Java pack downloads delay deletion.
