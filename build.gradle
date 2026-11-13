@@ -81,7 +81,8 @@ tasks.register('verifyPluginJarSize') {
         ZipFile zip = new ZipFile(pluginJar)
         try {
             def nativeEntries = zip.entries().toList().findAll {
-                it.name.startsWith('io/github/escolide/musicolide/internal/sqlite/native/')
+                !it.isDirectory() &&
+                        it.name.startsWith('io/github/escolide/musicolide/internal/sqlite/native/')
             }.collect { it.name }
             if (nativeEntries.size() != 1 || nativeEntries[0] != expectedNative) {
                 throw new GradleException("Linux JAR must contain only ${expectedNative}; found: ${nativeEntries}")
