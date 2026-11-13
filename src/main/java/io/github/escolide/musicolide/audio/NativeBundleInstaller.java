@@ -26,6 +26,7 @@ final class NativeBundleInstaller {
     private static final long MAX_UNCOMPRESSED_BYTES = 768L * 1024L * 1024L;
     private static final long MAX_ENTRY_BYTES = 512L * 1024L * 1024L;
     private static final int MAX_ENTRIES = 2_048;
+    private static final String INSTALL_MARKER = ".bundle-sha256";
 
     private final JavaPlugin plugin;
     private final Path dataDirectory;
@@ -70,11 +71,38 @@ final class NativeBundleInstaller {
                         actualDigest.getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
                     throw new IOException("Embedded " + platform + " native bundle failed SHA-256 verification.");
                 }
-                return extract(archive, nativeDirectory, platform);
+                Map<NativeToolchain.Tool, String> installed = existingBundle(expectedDigest);
+                if (!installed.isEmpty()) return installed;
+
+                Map<NativeToolchain.Tool, String> extracted = extract(archive, nativeDirectory, platform);
+                Path marker = nativeDirectory.resolve(platform).resolve(INSTALL_MARKER);
+                Files.writeString(marker, expectedDigest, java.nio.charset.StandardCharsets.US_ASCII,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                return extracted;
             } finally {
                 Files.deleteIfExists(archive);
             }
         }
+    }
+
+    private Map<NativeToolchain.Tool, String> existingBundle(String expectedDigest) throws IOException {
+        Path destination = nativeDirectory.resolve(platform).normalize();
+        Path marker = destination.resolve(INSTALL_MARKER);
+        if (!Files.isRegularFile(marker) || !Files.readString(marker, java.nio.charset.StandardCharsets.US_ASCII)
+                .trim().equalsIgnoreCase(expectedDigest)) {
+            return Map.of();
+        }
+
+        String suffix = platform.startsWith("windows-") ? ".exe" : "";
+        Path ffmpeg = destination.resolve("bin").resolve("ffmpeg" + suffix);
+        Path ytDlp = destination.resolve("bin").resolve("yt-dlp" + suffix);
+        if (!Files.isRegularFile(ffmpeg) || !Files.isRegularFile(ytDlp)) return Map.of();
+        setExecutable(ffmpeg, platform);
+        setExecutable(ytDlp, platform);
+        Map<NativeToolchain.Tool, String> result = new EnumMap<>(NativeToolchain.Tool.class);
+        result.put(NativeToolchain.Tool.FFMPEG, ffmpeg.toAbsolutePath().toString());
+        result.put(NativeToolchain.Tool.YT_DLP, ytDlp.toAbsolutePath().toString());
+        return Map.copyOf(result);
     }
 
     static Map<NativeToolchain.Tool, String> extract(Path archive, Path nativeDirectory,
@@ -150,7 +178,7 @@ final class NativeBundleInstaller {
             Files.createDirectories(destination);
             try (Stream<Path> paths = Files.walk(staging)) {
                 for (Path source : paths.sorted().toList()) {
-                    if (source.equals(staging) || source.equals(manifestFile)) continue;
+                    if (source.equals(staging)) continue;
                     Path relative = staging.relativize(source);
                     Path target = destination.resolve(relative).normalize();
                     if (!target.startsWith(destination)) {
@@ -256,7 +284,8 @@ final class NativeBundleInstaller {
 
     private static void copyBounded(InputStream input, Path destination, long maximumBytes) throws IOException {
         long total = 0L;
-        try (OutputStream output = Files.newOutputStream(destination, StandardOpenOption.TRUNCATE_EXISTING)) {
+        try (OutputStream output = Files.newOutputStream(destination,
+                StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
             byte[] buffer = new byte[64 * 1024];
             int read;
             while ((read = input.read(buffer)) != -1) {
