@@ -16,10 +16,11 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
-      - name: Run tests and build size-limited Java 21 plugin
+      - name: Run tests and build size-limited Java 21 development plugin
         run: bash ./gradlew --no-daemon clean test build
-      - name: Upload plugin JAR
+      - name: Upload development build (native payloads may be absent)
         uses: actions/upload-artifact@v4
         with:
-          name: musicolide-plugin
+          name: musicolide-development-build
           path: build/libs/musicolide-*.jar
+          if-no-files-found: error
