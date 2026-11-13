@@ -43,6 +43,7 @@ public final class NativeToolchain implements AutoCloseable {
     private final String platform;
     private final NativeToolInstaller installer;
     private final NativeBundleInstaller bundleInstaller;
+    private final NativeToolDownloader downloadInstaller;
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
@@ -56,6 +57,7 @@ public final class NativeToolchain implements AutoCloseable {
         this.platform = platformKey(System.getProperty("os.name", ""), System.getProperty("os.arch", ""));
         this.installer = new NativeToolInstaller(plugin, this, dataDirectory, binaryDirectory, platform);
         this.bundleInstaller = new NativeBundleInstaller(plugin, dataDirectory, binaryDirectory, platform);
+        this.downloadInstaller = new NativeToolDownloader(plugin, binaryDirectory, platform);
     }
 
     /**
@@ -100,11 +102,23 @@ public final class NativeToolchain implements AutoCloseable {
             }
         }
 
+        Map<Tool, String> downloadedTools = Map.of();
+        if (embeddedTools.isEmpty()
+                && plugin.getConfig().getBoolean("audio.tools.download-on-first-start", true)) {
+            try {
+                downloadedTools = downloadInstaller.install();
+            } catch (IOException ex) {
+                plugin.getLogger().warning("Automatic native-tool setup failed: " + ex.getMessage()
+                        + ". Musicolide will try administrator-configured executables or PATH.");
+            }
+        }
+
         for (Tool tool : Tool.values()) {
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
 
             String bundled = embeddedTools.get(tool);
+            if (bundled == null) bundled = downloadedTools.get(tool);
             if (bundled == null) {
                 try {
                     bundled = extractBundled(tool);
