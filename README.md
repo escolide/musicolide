@@ -50,15 +50,17 @@ Import only audio that you own or are authorized to distribute to your players. 
 ## Build
 
 1. Install JDK 21 or newer.
-2. Run `./gradlew clean test build`.
+2. For local development, run `./gradlew clean test build`.
 
 The universal JAR packaging pipeline supports compressed native bundles for Linux x86_64/ARM64, Windows x86_64/ARM64 and macOS x86_64/ARM64. Each staged platform directory must contain yt-dlp, a minimal FFmpeg build, QuickJS, any required shared libraries, and applicable license notices. Gradle compresses each platform directory into a JAR resource and generates a SHA-256 sidecar. On server startup, Musicolide detects the OS and architecture, verifies the matching bundle, and extracts it into plugins/Musicolide/native/<platform>/. Extraction and execution use Java APIs and ProcessBuilder; no shell, tar utility or startup download is required.
 
-The universal and Linux x86_64 slim JAR builds both enforce a strict 30 MiB maximum. This limit applies to the complete JAR, including every embedded platform bundle. Before publishing a self-contained all-platform release, run ./gradlew clean build verifySelfContainedNativeBundles. This both enforces the 30 MiB JAR limit and fails unless all six platform archives and their SHA-256 sidecars are present. The platform payloads are not yet staged in this repository, so this branch contains the packaging and extraction implementation but is not yet a self-contained release. A release is self-contained only after every advertised platform bundle has been supplied, license-reviewed, tested and shown to fit the size limit. If a platform bundle is absent, administrators can still configure compatible system executables through config/PATH, but that is a fallback rather than the intended bundled installation.
+Both universal and Linux x86_64 slim JAR builds enforce a strict 30 MiB maximum. This limit applies to the complete JAR, including every embedded platform bundle. A normal pull-request build is a development build: it may pass while native payloads are absent, and its artifact is not a self-contained production release.
+
+The self-contained release workflow (`.github/workflows/self-contained-release.yml`) runs the tests, verifies all six platform bundles and their SHA-256 sidecars, and enforces the universal JAR size limit before uploading a release artifact. Run the same checks locally with `./gradlew clean test build verifySelfContainedNativeBundles`. The platform payloads are not yet staged in this repository, so the branch is **not yet a self-contained release**. A release is ready only after every advertised platform bundle has been supplied, license-reviewed, tested and shown to fit the limit. If a platform bundle is absent, administrators can configure compatible system executables through config/PATH, but that is a fallback rather than the intended bundled installation.
 
 See src/main/native-bundles/README.md for the exact bundle layout and packaging requirements.
 
-The deployable plugin is build/libs/musicolide-0.1.0.jar.
+The self-contained release artifact is `build/libs/musicolide-0.1.0-universal.jar` only after the strict release workflow passes.
 
 ## Server setup
 
