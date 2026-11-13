@@ -50,7 +50,7 @@ Import only audio that you own or are authorized to distribute to your players. 
 ## Build
 
 1. Install JDK 21 or newer.
-2. Install FFmpeg and FFprobe on the server machine and ensure both executables are on your PATH (or configure their paths). Optional binaries can be packaged under src/main/native/<platform>/; see src/main/native/README.md for the platform layout and redistribution/licensing requirements.
+2. The CI build fetches pinned, checksum-verified Linux x86_64 yt-dlp, FFmpeg and FFprobe payloads before packaging them into the plugin JAR. For a local Linux x86_64 build, run `bash scripts/fetch-native-tools.sh` first. Other platforms may use tools installed on PATH. See `src/main/native/README.md` for versions and license notes.
 3. Run: ./gradlew clean test shadowJar
 
 The native extraction system does not include binary payloads in this source repository. Release packagers must add and license-check their own pinned builds.
