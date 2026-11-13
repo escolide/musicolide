@@ -110,6 +110,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 getCommand("music").setExecutor(command);
                 getCommand("music").setTabCompleter(command);
             }
+            if (getCommand("play") != null) {
+                getCommand("play").setExecutor(command::onPlayCommand);
+                getCommand("play").setTabCompleter(command::onPlayTabComplete);
+            }
             Bukkit.getPluginManager().registerEvents(this, this);
             getLogger().info("Musicolide enabled. Import rights-cleared audio into plugins/Musicolide/incoming/.");
         } catch (Exception ex) {

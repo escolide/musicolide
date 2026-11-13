@@ -1,0 +1,50 @@
+name: Portable release build
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    name: Verify portable JAR and first-start installer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Run tests and build both size-limited JARs
+        run: ./gradlew --no-daemon clean test build
+
+      - name: Verify universal JAR contains the first-start installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="build/libs/musicolide-0.1.0-universal.jar"
+          test -s "$JAR"
+          unzip -Z1 "$JAR" | grep -Fx "io/github/escolide/musicolide/audio/NativeToolDownloader.class" >/dev/null
+          unzip -Z1 "$JAR" | grep -Fx "org/apache/commons/compress/archivers/tar/TarArchiveInputStream.class" >/dev/null
+          unzip -Z1 "$JAR" | grep -Fx "org/tukaani/xz/XZInputStream.class" >/dev/null
+          SIZE="$(stat -c '%s' "$JAR")"
+          LIMIT="$((30 * 1024 * 1024))"
+          test "$SIZE" -le "$LIMIT"
+          printf 'Universal JAR: %s bytes (limit %s bytes)\n' "$SIZE" "$LIMIT"
+
+      - name: Upload universal plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: musicolide-universal-under-30MiB
+          path: build/libs/musicolide-0.1.0-universal.jar
+          if-no-files-found: error
+          retention-days: 30

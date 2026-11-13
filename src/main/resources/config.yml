@@ -14,28 +14,31 @@ server:
   max-download-mb: 100
 
 audio:
-  # Tools are never embedded in the plugin JAR. On Linux x86_64, missing tools
-  # are downloaded once to plugins/Musicolide/native/ after checksum verification.
-  # Other platforms use the configured executable or the server process PATH.
   tools:
-    bundled-first: true
-    auto-download: true
+    # Download pinned yt-dlp, FFmpeg and QuickJS builds over HTTPS on first startup.
+    # The download, checksum verification and extraction run in a background worker.
+    # Installed tools remain in plugins/Musicolide/native/ across server restarts.
+    # Set false only when you manage all required executables yourself.
+    download-on-first-start: true
   ffmpeg:
     executable: "ffmpeg"
     required: false
   yt-dlp:
     enabled: true
     executable: "yt-dlp"
+    # When enabled, /play <url> imports the URL only from administrator-allowlisted
+    # hosts. Enable this only for sources the server is authorized to redistribute.
+    auto-import-on-play: false
+    # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
+    js-runtime-executable: "qjs"
     # URL-imported packs become eligible for expiry this many minutes after import.
     # Active playback sessions and in-flight Java pack downloads delay deletion.
     url-import-retention-minutes: 15
-    # Add only domains from which you are authorized to download and redistribute audio.
-    # YouTube, YouTube Music, Spotify and SoundCloud are blocked regardless of this list.
+    # Add only domains from which the server has permission to download and redistribute audio.
+    # YouTube is allowed only when explicitly allowlisted and the admin confirms rights
+    # with /music import-url <url> --rights-confirmed. Spotify and SoundCloud remain blocked.
     allowed-hosts: []
     blocked-hosts:
-      - "youtube.com"
-      - "youtu.be"
-      - "youtube-nocookie.com"
       - "spotify.com"
       - "soundcloud.com"
   format: "ogg"

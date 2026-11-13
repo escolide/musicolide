@@ -12,6 +12,10 @@ commands:
     description: Control Musicolide playback, playlists and the local music catalogue.
     usage: /music help
     aliases: [musicolide, m]
+  play:
+    description: Play a track or import an administrator-allowlisted URL.
+    usage: /play <track-or-url>
+    permission: musicolide.dj
 permissions:
   musicolide.use:
     description: Allows use of Musicolide playback commands.

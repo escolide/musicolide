@@ -1,25 +1,62 @@
 # Native runtime tools
 
-Musicolide keeps FFmpeg and yt-dlp executables out of both plugin JARs.
+Musicolide keeps all native executables out of both plugin JARs. The universal
+JAR remains below 30 MiB and carries only the Java installer plus the archive
+libraries needed to extract downloaded dependencies.
 
-The Gradle build produces:
-- A Linux x86_64 slim plugin JAR, which includes only SQLite's Linux x86_64 JNI library.
-- A universal plugin JAR, which keeps SQLite's native libraries for all supported upstream platforms.
+## First-start installation
 
-On Linux x86_64, the first-start installer downloads and SHA-256-verifies:
-- yt-dlp standalone Linux x86_64, version 2026.10.26.
-- The FFmpeg-Builds Linux x86_64 LGPL archive, pinned by its SHA-256 digest in `NativeToolInstaller`.
+On first startup, a background worker detects the host OS and CPU architecture,
+then downloads pinned, SHA-256-verified versions of:
 
-Only the FFmpeg executable is extracted. The source archive is deleted after installation. FFprobe is not used: FFmpeg's own input metadata output supplies the track duration without decoding the entire file.
+- yt-dlp 2026.10.26
+- FFmpeg (an LGPL build for Linux and Windows; a separately published macOS build)
+- QuickJS-NG 0.18.0, used by yt-dlp's YouTube JavaScript challenge support
 
-The installed files live under `plugins/Musicolide/native/linux-x86_64/` and are reused after restart. The installer requires outbound HTTPS and GNU tar with XZ decompression support. If the host blocks native process execution or outbound downloads, provide compatible `ffmpeg` and `yt-dlp` executables through the server PATH or config.
+The current automatic platform profiles are Linux x86_64, Linux ARM64, Windows
+x86_64, Windows ARM64, macOS x86_64 and macOS ARM64.
 
-The slim JAR is verified during the Gradle build by loading its SQLite driver in an isolated classloader and executing a test query. The universal JAR remains available for non-Linux-x86_64 installations. Automatic native-tool downloads currently target Linux x86_64 only.
+Downloads are streamed to temporary files, checksum-verified, and only then
+installed under `plugins/Musicolide/native/<platform>/bin/`. FFmpeg archives
+are extracted with Java archive libraries; only the FFmpeg executable is kept.
+The large source archive and partial files are removed after installation.
+A small marker records exact tool versions and checksums, and the binaries are
+verified again before reuse after a restart.
 
-## Upstream licensing
+No shell, system tar program, Python installation, or manual native-tool
+installation is required. Musicolide starts yt-dlp, FFmpeg and QuickJS as native
+processes through Java `ProcessBuilder`; the host must permit process execution.
 
-- yt-dlp release and license files: https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
-- FFmpeg source and LGPL licensing: https://ffmpeg.org/legal.html
-- FFmpeg-Builds build variants and license information: https://github.com/FFmpeg-Builds/FFmpeg-Builds
+## Network and host requirements
 
-The chosen FFmpeg build is the LGPL variant. Verify the upstream license and notices for the exact binary before redistributing it independently.
+The first startup needs outbound HTTPS access to GitHub release assets. YouTube
+EJS components are fetched by yt-dlp from the official yt-dlp/ejs GitHub source
+when required, then retained in Musicolide's yt-dlp cache. Hosts that block
+outbound HTTPS can disable `audio.tools.download-on-first-start` and provide
+compatible executables through the existing executable settings or PATH.
+
+FFmpeg archives can be large (roughly 120–175 MB for some Linux/Windows
+platforms). Downloads are streamed to disk rather than held in memory. Allow
+enough free disk space for the download and installed executable.
+
+## Licensing
+
+- yt-dlp: Unlicense/public-domain dedication; third-party notices are provided
+  by the yt-dlp project.
+- QuickJS-NG: MIT.
+- FFmpeg: licensing depends on the build and enabled codecs. Linux and Windows
+  use the FFmpeg-Builds LGPL variants. The macOS package is a third-party build
+  with a mixture of GPL/LGPL codecs according to its publisher.
+
+The installed `licenses/NATIVE-TOOLS-NOTICES.txt` records the chosen release
+URLs and hashes. Review upstream license notices before redistributing any of
+the downloaded executables independently.
+
+## Build outputs
+
+- `musicolide-0.1.0-universal.jar`: recommended for portable installation.
+- `musicolide-0.1.0.jar`: lightweight Linux x86_64 build.
+
+Both builds enforce a strict 30 MiB limit. The universal JAR includes SQLite's
+native driver libraries for all supported platforms and the first-start
+installer, but no platform FFmpeg/yt-dlp/QuickJS binaries.

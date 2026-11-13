@@ -3,25 +3,24 @@ package io.github.escolide.musicolide.audio;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Resolves locally configured executables, legacy embedded tools, or securely
- * downloads the pinned Linux x86_64 runtime tools into the plugin data folder.
- * Network access, extraction, and version checks always run off the server thread.
+ * Resolves administrator-configured tools or downloads a pinned, checksum-
+ * verified native toolchain on first startup. Downloads, installation and
+ * executable probes run away from the Bukkit server thread.
  */
 public final class NativeToolchain implements AutoCloseable {
     public enum Tool {
         FFMPEG("ffmpeg", "audio.ffmpeg.executable", "-version"),
-        YT_DLP("yt-dlp", "audio.yt-dlp.executable", "--version");
+        YT_DLP("yt-dlp", "audio.yt-dlp.executable", "--version"),
+        JS_RUNTIME("qjs", "audio.yt-dlp.js-runtime-executable", "-v");
 
         private final String fileName;
         private final String configPath;
@@ -41,6 +40,7 @@ public final class NativeToolchain implements AutoCloseable {
     private final Path binaryDirectory;
     private final String platform;
     private final NativeToolInstaller installer;
+    private final NativeToolDownloader downloadInstaller;
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
@@ -53,10 +53,11 @@ public final class NativeToolchain implements AutoCloseable {
         this.binaryDirectory = dataDirectory.resolve("native");
         this.platform = platformKey(System.getProperty("os.name", ""), System.getProperty("os.arch", ""));
         this.installer = new NativeToolInstaller(plugin, this, dataDirectory, binaryDirectory, platform);
+        this.downloadInstaller = new NativeToolDownloader(plugin, binaryDirectory, platform);
     }
 
     /**
-     * Runs extraction, optional first-run downloads, and version probes away from
+     * Runs first-start downloads, installation and executable probes away from
      * the Bukkit main thread. The common-pool worker is a daemon thread.
      */
     public CompletableFuture<List<ToolStatus>> initializeAsync() {
@@ -85,19 +86,23 @@ public final class NativeToolchain implements AutoCloseable {
 
         installer.cleanupObsoleteTools();
 
+        Map<Tool, String> downloadedTools = Map.of();
+        if (plugin.getConfig().getBoolean("audio.tools.download-on-first-start", true)) {
+            try {
+                downloadedTools = downloadInstaller.install();
+            } catch (IOException ex) {
+                plugin.getLogger().warning("Automatic native-tool setup failed: " + ex.getMessage()
+                        + ". Musicolide will try administrator-configured executables or PATH.");
+            }
+        }
+
         for (Tool tool : Tool.values()) {
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
 
-            String bundled = null;
-            try {
-                bundled = extractBundled(tool);
-            } catch (IOException ex) {
-                plugin.getLogger().warning("Could not extract legacy bundled " + tool.fileName + ": " + ex.getMessage());
-            }
-
+            String downloaded = downloadedTools.get(tool);
             String existing = installer.existing(tool);
-            String executable = bundled != null ? bundled : (existing != null ? existing : configured);
+            String executable = downloaded != null ? downloaded : (existing != null ? existing : configured);
             ToolStatus status = inspect(tool, executable);
 
             // A broken/obsolete installed copy must not prevent a working PATH entry.
@@ -106,22 +111,6 @@ public final class NativeToolchain implements AutoCloseable {
                 if (configuredStatus.available()) {
                     executable = configured;
                     status = configuredStatus;
-                }
-            }
-
-            boolean autoDownload = plugin.getConfig().getBoolean("audio.tools.auto-download", true);
-            if (tool == Tool.YT_DLP && !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
-                autoDownload = false;
-            }
-            if (!status.available() && autoDownload && !closed) {
-                try {
-                    String downloaded = installer.install(tool);
-                    if (downloaded != null) {
-                        executable = downloaded;
-                        status = inspect(tool, executable);
-                    }
-                } catch (Exception ex) {
-                    plugin.getLogger().warning("Automatic setup of " + tool.fileName + " failed: " + ex.getMessage());
                 }
             }
 
@@ -156,6 +145,7 @@ public final class NativeToolchain implements AutoCloseable {
 
     public Process start(ProcessBuilder builder) throws IOException {
         if (closed) throw new IOException("Musicolide native toolchain is shutting down.");
+        configureNativeEnvironment(builder);
         Process process = builder.start();
         processes.add(process);
         return process;
@@ -186,50 +176,33 @@ public final class NativeToolchain implements AutoCloseable {
         }
     }
 
-    private String extractBundled(Tool tool) throws IOException {
-        if (!plugin.getConfig().getBoolean("audio.tools.bundled-first", true)) return null;
-        if (platform.equals("unsupported")) return null;
-        String fileName = isWindows() ? tool.fileName + ".exe" : tool.fileName;
-        String resource = "native/" + platform + "/" + fileName;
-        Path destinationDirectory = binaryDirectory.resolve(platform);
-        Path destination = destinationDirectory.resolve(fileName).normalize();
-        if (!destination.startsWith(destinationDirectory)) throw new IOException("Invalid native executable path.");
-
-        try (InputStream input = plugin.getResource(resource)) {
-            if (input == null) return null;
-            Files.createDirectories(destinationDirectory);
-            Path temporary = Files.createTempFile(destinationDirectory, fileName, ".tmp");
-            try {
-                Files.copy(input, temporary, StandardCopyOption.REPLACE_EXISTING);
-                setExecutable(temporary);
-                moveReplacing(temporary, destination);
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
+    private void configureNativeEnvironment(ProcessBuilder builder) {
+        if (platform.equals("unsupported")) return;
+        Path root = binaryDirectory.resolve(platform);
+        Path bin = root.resolve("bin");
+        Path lib = root.resolve("lib");
+        Path runtime = root.resolve("runtime");
+        String currentPath = builder.environment().getOrDefault("PATH", "");
+        List<String> pathEntries = new ArrayList<>();
+        if (Files.isDirectory(bin)) pathEntries.add(bin.toAbsolutePath().toString());
+        if (Files.isDirectory(runtime)) pathEntries.add(runtime.toAbsolutePath().toString());
+        if (Files.isDirectory(lib)) pathEntries.add(lib.toAbsolutePath().toString());
+        if (!currentPath.isBlank()) pathEntries.add(currentPath);
+        if (!pathEntries.isEmpty()) {
+            builder.environment().put("PATH", String.join(java.io.File.pathSeparator, pathEntries));
         }
-        return destination.toString();
-    }
-
-    private void setExecutable(Path file) throws IOException {
-        if (isWindows()) return;
-        try {
-            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(file);
-            permissions.add(PosixFilePermission.OWNER_EXECUTE);
-            permissions.add(PosixFilePermission.GROUP_EXECUTE);
-            Files.setPosixFilePermissions(file, permissions);
-        } catch (UnsupportedOperationException ex) {
-            if (!file.toFile().setExecutable(true, false) && !Files.isExecutable(file)) {
-                throw new IOException("Could not mark native binary executable.");
-            }
+        if (platform.startsWith("linux-") && Files.isDirectory(lib)) {
+            prependEnvironmentPath(builder, "LD_LIBRARY_PATH", lib);
+        } else if (platform.startsWith("macos-") && Files.isDirectory(lib)) {
+            prependEnvironmentPath(builder, "DYLD_LIBRARY_PATH", lib);
         }
     }
 
-    private void moveReplacing(Path source, Path destination) throws IOException {
-        try {
-            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException ex) {
-            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
-        }
+    private void prependEnvironmentPath(ProcessBuilder builder, String key, Path directory) {
+        String current = builder.environment().getOrDefault(key, "");
+        String prefix = directory.toAbsolutePath().toString();
+        builder.environment().put(key, current.isBlank() ? prefix
+                : prefix + java.io.File.pathSeparator + current);
     }
 
     private ToolStatus inspect(Tool tool, String executable) {
@@ -282,14 +255,10 @@ public final class NativeToolchain implements AutoCloseable {
         // Check Darwin before Windows: the word "darwin" contains the substring "win".
         if (os.contains("mac") || os.contains("darwin")) return "macos-" + normalizedArch;
         if (os.startsWith("windows") || os.equals("win")) {
-            return normalizedArch.equals("x86_64") ? "windows-x86_64" : "unsupported";
+            return "windows-" + normalizedArch;
         }
         if (os.contains("linux")) return "linux-" + normalizedArch;
         return "unsupported";
-    }
-
-    private boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
     @Override

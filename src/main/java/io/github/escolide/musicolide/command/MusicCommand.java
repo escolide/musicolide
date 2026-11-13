@@ -40,6 +40,20 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         this.playback = playback;
     }
 
+    public boolean onPlayCommand(CommandSender sender, Command command, String label, String[] args) {
+        String[] delegated = new String[args.length + 1];
+        delegated[0] = "play";
+        System.arraycopy(args, 0, delegated, 1, args.length);
+        return onCommand(sender, command, "music", delegated);
+    }
+
+    public List<String> onPlayTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        String[] delegated = new String[args.length + 1];
+        delegated[0] = "play";
+        System.arraycopy(args, 0, delegated, 1, args.length);
+        return onTabComplete(sender, command, "music", delegated);
+    }
+
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0 || args[0].equalsIgnoreCase("help")) { help(sender); return true; }
@@ -98,11 +112,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length < 3 || !args[2].equalsIgnoreCase("--rights-confirmed")) {
             sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> --rights-confirmed [title]"));
             sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. "
-                    + "YouTube/Spotify links are metadata aliases only."));
+                    + "YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
             return;
         }
         String title = args.length >= 4 ? String.join(" ", Arrays.copyOfRange(args, 3, args.length)) : null;
-        sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFprobe/FFmpeg start."));
+        sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFmpeg starts."));
         processor.importUrl(args[1], title).whenComplete((track, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
@@ -212,6 +226,24 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         if (!isExternal(input)) {
             sender.sendMessage(msg("&cTrack not found. Import an authorized audio file first."));
+            return;
+        }
+        if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            if (!admin(sender)) return;
+            if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+                sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
+                return;
+            }
+            sender.sendMessage(msg("&eImporting this allowlisted URL. URL auto-import is admin-only; confirm that your server may distribute this audio."));
+            processor.importUrl(input, null).whenComplete((imported, error) ->
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (error != null) {
+                            sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
+                        } else {
+                            sender.sendMessage(msg("&aImported &f" + imported.title() + "&a; starting playback."));
+                            start(sender, imported, request);
+                        }
+                    }));
             return;
         }
         if (!plugin.getConfig().getBoolean("matching.enabled", true)
@@ -494,6 +526,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] &7- import an allowlisted source"));
         sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
+        sender.sendMessage(msg("&f/play <track-or-url> [zone options] &7- short playback command"));
         sender.sendMessage(msg("&f/music play <track-or-url> [--all|--player name|--circle r|--square WxL] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
