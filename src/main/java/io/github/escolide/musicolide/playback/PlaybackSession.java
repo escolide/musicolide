@@ -53,6 +53,18 @@ public final class PlaybackSession {
     public boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
 
+    /**
+     * Returns true while this session may still need the track, including queued
+     * tracks and the repeat source. Temporary-track cleanup uses this guard so a
+     * URL import is never removed from an active or repeating session.
+     */
+    public synchronized boolean referencesTrack(String trackId) {
+        if (trackId == null) return false;
+        if (current != null && current.id().equals(trackId)) return true;
+        if (queue.stream().anyMatch(track -> track.id().equals(trackId))) return true;
+        return repeat && repeatSource.stream().anyMatch(track -> track.id().equals(trackId));
+    }
+
     public synchronized void enqueue(MusicTrack track) { queue.addLast(track); }
 
     public synchronized boolean advance() {

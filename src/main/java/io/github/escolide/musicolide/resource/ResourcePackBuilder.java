@@ -83,7 +83,7 @@ public final class ResourcePackBuilder {
         return output;
     }
 
-    public Path rebuildBedrockLibrary() throws IOException {
+    public synchronized Path rebuildBedrockLibrary() throws IOException {
         return bedrockBuilder.rebuild(packsDirectory);
     }
 

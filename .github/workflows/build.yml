@@ -16,8 +16,14 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
-      - name: Install FFmpeg for integration checks
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Fetch pinned Linux x86_64 audio tools
+        run: bash ./scripts/fetch-native-tools.sh
+      - name: Verify bundled native tools
+        run: |
+          chmod +x src/main/native/linux-x86_64/*
+          src/main/native/linux-x86_64/ffmpeg -version
+          src/main/native/linux-x86_64/ffprobe -version
+          src/main/native/linux-x86_64/yt-dlp --version
       - name: Run tests and build Java 21-compatible plugin
         run: bash ./gradlew --no-daemon clean test shadowJar
       - name: Upload plugin JAR
