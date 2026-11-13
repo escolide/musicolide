@@ -21,6 +21,11 @@ public final class PackUrlBuilder {
      */
     public static String build(String publicBaseUrl, String pathPrefix, String fileName,
                                int detectedPort, int configuredPublicPort) {
+        return build(publicBaseUrl, pathPrefix, fileName, detectedPort, configuredPublicPort, true);
+    }
+
+    public static String build(String publicBaseUrl, String pathPrefix, String fileName,
+                               int detectedPort, int configuredPublicPort, boolean sharedPortMode) {
         Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
         if (!PACK_NAME.matcher(fileName).matches()) {
             throw new IllegalArgumentException("Invalid resource-pack file name.");
@@ -28,8 +33,11 @@ public final class PackUrlBuilder {
 
         URI configured = URI.create(publicBaseUrl.trim());
         String scheme = configured.getScheme() == null ? "http" : configured.getScheme().toLowerCase();
-        if (!scheme.equals("http")) {
-            throw new IllegalArgumentException("Musicolide shared-port hosting currently requires an HTTP public-base-url.");
+        if (!scheme.equals("http") && !scheme.equals("https")) {
+            throw new IllegalArgumentException("server.public-base-url must use HTTP or HTTPS.");
+        }
+        if (sharedPortMode && !scheme.equals("http")) {
+            throw new IllegalArgumentException("Shared-port hosting currently serves plain HTTP; use an http:// public-base-url.");
         }
         String host = configured.getHost();
         if (host == null || host.isBlank()) {
