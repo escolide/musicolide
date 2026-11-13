@@ -14,8 +14,8 @@ server:
   max-download-mb: 100
 
 audio:
-  # Bundled binaries are optional. When present, they are extracted to plugins/Musicolide/native/.
-  # Otherwise executable names below are resolved using the server process PATH.
+  # Bundled native tools are extracted to plugins/Musicolide/native/ on first startup.
+  # Missing platform payloads fall back to executable names resolved from PATH.
   tools:
     bundled-first: true
   ffmpeg:
@@ -23,7 +23,7 @@ audio:
     ffprobe-executable: "ffprobe"
     required: false
   yt-dlp:
-    enabled: false
+    enabled: true
     executable: "yt-dlp"
     # URL-imported packs become eligible for expiry this many minutes after import.
     # Active playback sessions and in-flight Java pack downloads delay deletion.
