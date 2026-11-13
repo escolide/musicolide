@@ -17,9 +17,13 @@ Create a directory for each platform you intend to ship:
 - macos-x86_64
 - macos-aarch64
 
+Each directory must contain all three executables. QuickJS is required by yt-dlp
+for YouTube's JavaScript challenge solver; the manifest entry is
+js-runtime=bin/qjs (or bin/qjs.exe on Windows).
+
 Each directory must contain:
 
-- bin/ffmpeg and bin/yt-dlp (append .exe on Windows)
+- bin/ffmpeg, bin/yt-dlp, and bin/qjs (append .exe on Windows)
 - Any required runtime libraries in lib/
 - Any included JavaScript runtime in bin/ or runtime/
 - License and notice files in licenses/
@@ -32,10 +36,11 @@ the Linux x86_64 slim JAR includes only the Linux x86_64 bundle.
 
 Both distributable JARs are checked against a strict 30 MiB limit. The build
 fails if either JAR exceeds it. This means upstream full-size FFmpeg archives
-must not be copied directly into the source directories. The release toolchain
-must use minimal builds that retain the demuxers/decoders needed for intended
-audio inputs and the OGG encoder required by Musicolide, and must be tested
-against the real import corpus before release.
+must not be copied directly into the source directories. The release toolchain must use minimal builds that retain the demuxers/decoders
+needed for intended audio inputs and the OGG encoder required by Musicolide.
+YouTube-ready yt-dlp bundles also need the external JavaScript challenge scripts
+and a supported JavaScript runtime; this layout uses QuickJS. Test each platform
+bundle against the actual input corpus and YouTube EJS flow before release.
 
 No binary payload is checked into this repository by this setup commit. The
 packaging and secure extraction path is being added first; the platform payloads
