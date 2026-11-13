@@ -53,6 +53,10 @@ public final class YtDlpDownloader {
                 }
                 command.add("--js-runtimes");
                 command.add("quickjs:" + toolchain.executable(NativeToolchain.Tool.JS_RUNTIME));
+                // yt-dlp's maintained EJS scripts are retrieved from the official
+                // yt-dlp/ejs GitHub project and cached by yt-dlp as remote components.
+                command.add("--remote-components");
+                command.add("ejs:github");
             }
             command.addAll(List.of(
                     "--ignore-config",
