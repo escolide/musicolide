@@ -14,12 +14,14 @@ server:
   max-download-mb: 100
 
 audio:
-  # Tools are never embedded in the plugin JAR. On Linux x86_64, missing tools
-  # are downloaded once to plugins/Musicolide/native/ after checksum verification.
-  # Other platforms use the configured executable or the server process PATH.
+  # The universal JAR can carry compressed platform-specific native bundles.
+  # Matching files are checksum-verified and extracted into plugins/Musicolide/native/.
+  # If a platform bundle is not present, configured executables/PATH remain available.
   tools:
     bundled-first: true
-    auto-download: true
+    # Legacy network bootstrap is disabled by default. Enable only as a temporary
+    # fallback on Linux x86_64 if a matching embedded bundle is not yet packaged.
+    legacy-linux-download-fallback: false
   ffmpeg:
     executable: "ffmpeg"
     required: false
@@ -29,13 +31,11 @@ audio:
     # URL-imported packs become eligible for expiry this many minutes after import.
     # Active playback sessions and in-flight Java pack downloads delay deletion.
     url-import-retention-minutes: 15
-    # Add only domains from which you are authorized to download and redistribute audio.
-    # YouTube, YouTube Music, Spotify and SoundCloud are blocked regardless of this list.
+    # Add only domains from which the server has permission to download and redistribute audio.
+    # YouTube is allowed only when explicitly allowlisted and the admin confirms rights
+    # with /music import-url <url> --rights-confirmed. Spotify and SoundCloud remain blocked.
     allowed-hosts: []
     blocked-hosts:
-      - "youtube.com"
-      - "youtu.be"
-      - "youtube-nocookie.com"
       - "spotify.com"
       - "soundcloud.com"
   format: "ogg"

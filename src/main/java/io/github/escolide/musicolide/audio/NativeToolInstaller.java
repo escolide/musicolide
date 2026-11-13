@@ -60,10 +60,17 @@ final class NativeToolInstaller {
     }
 
     String existing(NativeToolchain.Tool tool) {
-        if (!platform.equals("linux-x86_64")) return null;
-        Path executable = binaryDirectory.resolve(platform).resolve(fileName(tool));
-        return Files.isRegularFile(executable) && Files.isExecutable(executable)
-                ? executable.toAbsolutePath().toString() : null;
+        if (platform.equals("unsupported")) return null;
+        String name = fileName(tool) + (platform.startsWith("windows-") ? ".exe" : "");
+        Path platformDirectory = binaryDirectory.resolve(platform);
+        for (Path candidate : List.of(platformDirectory.resolve(name),
+                platformDirectory.resolve("bin").resolve(name))) {
+            if (!Files.isRegularFile(candidate)) continue;
+            if (platform.startsWith("windows-") || Files.isExecutable(candidate)) {
+                return candidate.toAbsolutePath().toString();
+            }
+        }
+        return null;
     }
 
     void cleanupObsoleteTools() {

@@ -41,6 +41,7 @@ public final class NativeToolchain implements AutoCloseable {
     private final Path binaryDirectory;
     private final String platform;
     private final NativeToolInstaller installer;
+    private final NativeBundleInstaller bundleInstaller;
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
@@ -53,6 +54,7 @@ public final class NativeToolchain implements AutoCloseable {
         this.binaryDirectory = dataDirectory.resolve("native");
         this.platform = platformKey(System.getProperty("os.name", ""), System.getProperty("os.arch", ""));
         this.installer = new NativeToolInstaller(plugin, this, dataDirectory, binaryDirectory, platform);
+        this.bundleInstaller = new NativeBundleInstaller(plugin, dataDirectory, binaryDirectory, platform);
     }
 
     /**
@@ -85,15 +87,27 @@ public final class NativeToolchain implements AutoCloseable {
 
         installer.cleanupObsoleteTools();
 
+        Map<Tool, String> embeddedTools = Map.of();
+        try {
+            embeddedTools = bundleInstaller.install();
+            if (!embeddedTools.isEmpty()) {
+                plugin.getLogger().info("Extracted the embedded " + platform + " native tool bundle.");
+            }
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Embedded native bundle could not be installed: " + ex.getMessage());
+        }
+
         for (Tool tool : Tool.values()) {
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
 
-            String bundled = null;
-            try {
-                bundled = extractBundled(tool);
-            } catch (IOException ex) {
-                plugin.getLogger().warning("Could not extract legacy bundled " + tool.fileName + ": " + ex.getMessage());
+            String bundled = embeddedTools.get(tool);
+            if (bundled == null) {
+                try {
+                    bundled = extractBundled(tool);
+                } catch (IOException ex) {
+                    plugin.getLogger().warning("Could not extract legacy bundled " + tool.fileName + ": " + ex.getMessage());
+                }
             }
 
             String existing = installer.existing(tool);
@@ -109,11 +123,14 @@ public final class NativeToolchain implements AutoCloseable {
                 }
             }
 
-            boolean autoDownload = plugin.getConfig().getBoolean("audio.tools.auto-download", true);
+            // Legacy Linux download is an explicit emergency compatibility option.
+            // Normal installations use the embedded bundle or administrator-provided PATH tools.
+            boolean legacyDownload = plugin.getConfig().getBoolean(
+                    "audio.tools.legacy-linux-download-fallback", false);
             if (tool == Tool.YT_DLP && !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
-                autoDownload = false;
+                legacyDownload = false;
             }
-            if (!status.available() && autoDownload && !closed) {
+            if (!status.available() && legacyDownload && !closed) {
                 try {
                     String downloaded = installer.install(tool);
                     if (downloaded != null) {
@@ -156,6 +173,7 @@ public final class NativeToolchain implements AutoCloseable {
 
     public Process start(ProcessBuilder builder) throws IOException {
         if (closed) throw new IOException("Musicolide native toolchain is shutting down.");
+        configureBundleEnvironment(builder);
         Process process = builder.start();
         processes.add(process);
         return process;
@@ -208,6 +226,35 @@ public final class NativeToolchain implements AutoCloseable {
             }
         }
         return destination.toString();
+    }
+
+    private void configureBundleEnvironment(ProcessBuilder builder) {
+        if (platform.equals("unsupported")) return;
+        Path root = binaryDirectory.resolve(platform);
+        Path bin = root.resolve("bin");
+        Path lib = root.resolve("lib");
+        Path runtime = root.resolve("runtime");
+        String currentPath = builder.environment().getOrDefault("PATH", "");
+        List<String> pathEntries = new ArrayList<>();
+        if (Files.isDirectory(bin)) pathEntries.add(bin.toAbsolutePath().toString());
+        if (Files.isDirectory(runtime)) pathEntries.add(runtime.toAbsolutePath().toString());
+        if (Files.isDirectory(lib)) pathEntries.add(lib.toAbsolutePath().toString());
+        if (!currentPath.isBlank()) pathEntries.add(currentPath);
+        if (!pathEntries.isEmpty()) {
+            builder.environment().put("PATH", String.join(java.io.File.pathSeparator, pathEntries));
+        }
+        if (platform.startsWith("linux-") && Files.isDirectory(lib)) {
+            prependEnvironmentPath(builder, "LD_LIBRARY_PATH", lib);
+        } else if (platform.startsWith("macos-") && Files.isDirectory(lib)) {
+            prependEnvironmentPath(builder, "DYLD_LIBRARY_PATH", lib);
+        }
+    }
+
+    private void prependEnvironmentPath(ProcessBuilder builder, String key, Path directory) {
+        String current = builder.environment().getOrDefault(key, "");
+        String prefix = directory.toAbsolutePath().toString();
+        builder.environment().put(key, current.isBlank() ? prefix
+                : prefix + java.io.File.pathSeparator + current);
     }
 
     private void setExecutable(Path file) throws IOException {
@@ -282,7 +329,7 @@ public final class NativeToolchain implements AutoCloseable {
         // Check Darwin before Windows: the word "darwin" contains the substring "win".
         if (os.contains("mac") || os.contains("darwin")) return "macos-" + normalizedArch;
         if (os.startsWith("windows") || os.equals("win")) {
-            return normalizedArch.equals("x86_64") ? "windows-x86_64" : "unsupported";
+            return "windows-" + normalizedArch;
         }
         if (os.contains("linux")) return "linux-" + normalizedArch;
         return "unsupported";

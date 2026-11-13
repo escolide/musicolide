@@ -12,12 +12,11 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Downloads a single audio source only from administrator-allowlisted hosts.
- * YouTube, Spotify and other blocked streaming platforms remain lookup/alias
- * identifiers only; this downloader does not extract or rebroadcast them.
+ * Platform-specific sources are never enabled just by having yt-dlp installed;
+ * the administrator must allowlist the host and confirm distribution rights.
  */
 public final class YtDlpDownloader {
-    private static final List<String> ALWAYS_BLOCKED_HOSTS = List.of(
-            "youtube.com", "youtu.be", "youtube-nocookie.com", "spotify.com", "soundcloud.com");
+    private static final List<String> ALWAYS_BLOCKED_HOSTS = List.of("spotify.com", "soundcloud.com");
     private final JavaPlugin plugin;
     private final NativeToolchain toolchain;
 
@@ -117,7 +116,7 @@ public final class YtDlpDownloader {
 
         String host = uri.getHost().toLowerCase(Locale.ROOT);
         if (isBlockedHost(host, blockedHosts)) {
-            throw new IOException("This streaming platform is supported for metadata/aliases only, not audio importing.");
+            throw new IOException("This streaming platform is configured for metadata/aliases only, not audio importing.");
         }
         if (!isHostAllowed(host, allowedHosts)) {
             throw new IOException("The source host is not in audio.yt-dlp.allowed-hosts.");

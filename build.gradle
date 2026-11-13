@@ -2,6 +2,9 @@ import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import java.sql.Driver
 import java.util.Properties
 import java.util.zip.ZipFile
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import java.security.MessageDigest
 
 plugins {
     id 'java'
@@ -41,6 +44,69 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
+// Package staged, platform-specific executables into compressed classpath resources.
+tasks.register('packageNativeBundles') {
+    def sourceRoot = file('src/main/native-bundles')
+    def outputRoot = layout.buildDirectory.dir('generated/native-bundles')
+    inputs.dir(sourceRoot)
+    outputs.dir(outputRoot)
+    doLast {
+        File output = outputRoot.get().asFile
+        delete(output)
+        output.mkdirs()
+        if (!sourceRoot.exists()) return
+
+        def supported = ['linux-x86_64', 'linux-aarch64', 'windows-x86_64',
+                         'windows-aarch64', 'macos-x86_64', 'macos-aarch64'] as Set
+        sourceRoot.listFiles()?.findAll { it.isDirectory() }?.sort { it.name }?.each { platformDir ->
+            if (!supported.contains(platformDir.name)) {
+                throw new GradleException('Unsupported native bundle platform directory: ' + platformDir.name)
+            }
+            boolean windows = platformDir.name.startsWith('windows-')
+            String suffix = windows ? '.exe' : ''
+            File ffmpeg = new File(platformDir, 'bin/ffmpeg' + suffix)
+            File ytDlp = new File(platformDir, 'bin/yt-dlp' + suffix)
+            if (!ffmpeg.isFile() || !ytDlp.isFile()) {
+                throw new GradleException(platformDir.name + ' bundle must contain bin/ffmpeg' + suffix + ' and bin/yt-dlp' + suffix + '.')
+            }
+
+            File archive = new File(output, platformDir.name + '.zip')
+            ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(archive)))
+            zip.setLevel(9)
+            try {
+                zip.putNextEntry(new ZipEntry('manifest.properties'))
+                String manifest = 'platform=' + platformDir.name + '\nffmpeg=bin/ffmpeg' + suffix + '\nyt-dlp=bin/yt-dlp' + suffix + '\n'
+                zip.write(manifest.getBytes('UTF-8'))
+                zip.closeEntry()
+
+                platformDir.eachFileRecurse { source ->
+                    if (source.isFile() && source.name != 'README.md') {
+                        String relative = platformDir.toPath().relativize(source.toPath()).toString().replace(File.separatorChar, '/' as char)
+                        zip.putNextEntry(new ZipEntry(relative))
+                        source.withInputStream { input -> input.transferTo(zip) }
+                        zip.closeEntry()
+                    }
+                }
+            } finally {
+                zip.close()
+            }
+
+            MessageDigest digest = MessageDigest.getInstance('SHA-256')
+            String hex = digest.digest(archive.bytes).encodeHex().toString()
+            new File(output, platformDir.name + '.sha256').text = hex + '  ' + archive.name + '\n'
+            logger.lifecycle('Packaged ' + platformDir.name + ' native bundle: '
+                    + String.format('%.2f MiB', archive.length() / 1024.0 / 1024.0))
+        }
+    }
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('packageNativeBundles')
+    from(layout.buildDirectory.dir('generated/native-bundles')) {
+        into 'native-bundles'
+    }
+}
+
 // Portable JAR, retaining SQLite's native driver binaries for every upstream platform.
 tasks.named('shadowJar', ShadowJar) {
     archiveClassifier = 'universal'
@@ -57,8 +123,11 @@ tasks.register('linuxShadowJar', ShadowJar) {
     mergeServiceFiles()
     exclude { details ->
         def entry = details.path
-        entry.startsWith('org/sqlite/native/') &&
+        boolean otherSqliteNative = entry.startsWith('org/sqlite/native/') &&
                 entry != 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so'
+        boolean otherToolBundle = entry.startsWith('native-bundles/') &&
+                !entry.startsWith('native-bundles/linux-x86_64.')
+        otherSqliteNative || otherToolBundle
     }
 }
 
@@ -121,6 +190,48 @@ tasks.register('verifyPluginJarSize') {
     }
 }
 
+tasks.register('verifyUniversalPluginJarSize') {
+    dependsOn tasks.named('shadowJar')
+    doLast {
+        def pluginJar = tasks.named('shadowJar', ShadowJar).get().archiveFile.get().asFile
+        def maximumBytes = 30L * 1024L * 1024L
+        if (pluginJar.length() > maximumBytes) {
+            throw new GradleException('Universal plugin JAR is ' + pluginJar.length() + ' bytes; maximum allowed is ' + maximumBytes + ' bytes.')
+        }
+        ZipFile zip = new ZipFile(pluginJar)
+        try {
+            def names = zip.entries().toList().findAll { !it.isDirectory() }.collect { it.name } as Set
+            def bundles = names.findAll { it.startsWith('native-bundles/') && it.endsWith('.zip') }
+            bundles.each { bundle ->
+                String sidecar = bundle.substring(0, bundle.length() - 4) + '.sha256'
+                if (!names.contains(sidecar)) {
+                    throw new GradleException('Universal JAR is missing the SHA-256 sidecar for ' + bundle + '.')
+                }
+            }
+            URLClassLoader loader = new URLClassLoader(
+                    [pluginJar.toURI().toURL()] as URL[], ClassLoader.getPlatformClassLoader())
+            try {
+                Class driverType = Class.forName('org.sqlite.JDBC', true, loader)
+                Driver driver = (Driver) driverType.getDeclaredConstructor().newInstance()
+                def connection = driver.connect('jdbc:sqlite::memory:', new Properties())
+                if (connection == null) throw new GradleException('Universal SQLite driver rejected its in-memory JDBC URL.')
+                try {
+                    def result = connection.createStatement().executeQuery('SELECT 1')
+                    try {
+                        if (!result.next() || result.getInt(1) != 1) {
+                            throw new GradleException('Universal SQLite smoke test returned an unexpected result.')
+                        }
+                    } finally { result.close() }
+                } finally { connection.close() }
+            } finally { loader.close() }
+        } finally { zip.close() }
+
+        logger.lifecycle('Universal plugin JAR size: '
+                + String.format('%.2f MiB', pluginJar.length() / 1024.0 / 1024.0) + ' (limit: 30 MiB)')
+    }
+}
+
 tasks.named('build') {
-    dependsOn tasks.named('shadowJar'), tasks.named('linuxShadowJar'), tasks.named('verifyPluginJarSize')
+    dependsOn tasks.named('shadowJar'), tasks.named('linuxShadowJar'),
+            tasks.named('verifyPluginJarSize'), tasks.named('verifyUniversalPluginJarSize')
 }
