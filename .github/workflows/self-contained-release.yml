@@ -1,4 +1,4 @@
-name: Self-contained release build
+name: Portable release build
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release-build:
-    name: Verify and package all native platform bundles
+    name: Verify portable JAR and first-start installer
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -24,32 +24,27 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - name: Run tests and enforce self-contained bundle requirements
-        run: |
-          ./gradlew --no-daemon clean test build verifySelfContainedNativeBundles
+      - name: Run tests and build both size-limited JARs
+        run: ./gradlew --no-daemon clean test build
 
-      - name: Verify release JAR contains all six platform archives and checksums
+      - name: Verify universal JAR contains the first-start installer
         shell: bash
         run: |
           set -euo pipefail
           JAR="build/libs/musicolide-0.1.0-universal.jar"
           test -s "$JAR"
-          for platform in \
-            linux-x86_64 linux-aarch64 \
-            windows-x86_64 windows-aarch64 \
-            macos-x86_64 macos-aarch64; do
-            unzip -Z1 "$JAR" | grep -Fx "native-bundles/$platform.zip" >/dev/null
-            unzip -Z1 "$JAR" | grep -Fx "native-bundles/$platform.sha256" >/dev/null
-          done
+          unzip -Z1 "$JAR" | grep -Fx "io/github/escolide/musicolide/audio/NativeToolDownloader.class" >/dev/null
+          unzip -Z1 "$JAR" | grep -Fx "org/apache/commons/compress/archivers/tar/TarArchiveInputStream.class" >/dev/null
+          unzip -Z1 "$JAR" | grep -Fx "org/tukaani/xz/XZInputStream.class" >/dev/null
           SIZE="$(stat -c '%s' "$JAR")"
           LIMIT="$((30 * 1024 * 1024))"
           test "$SIZE" -le "$LIMIT"
-          printf 'Self-contained universal JAR: %s bytes (limit %s bytes)\n' "$SIZE" "$LIMIT"
+          printf 'Universal JAR: %s bytes (limit %s bytes)\n' "$SIZE" "$LIMIT"
 
-      - name: Upload self-contained release JAR
+      - name: Upload universal plugin
         uses: actions/upload-artifact@v4
         with:
-          name: musicolide-self-contained-release
+          name: musicolide-universal-under-30MiB
           path: build/libs/musicolide-0.1.0-universal.jar
           if-no-files-found: error
           retention-days: 30
