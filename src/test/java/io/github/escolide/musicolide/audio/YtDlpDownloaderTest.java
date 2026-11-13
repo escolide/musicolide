@@ -4,13 +4,49 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class YtDlpDownloaderTest {
     private static final List<String> YOUTUBE_HOSTS = List.of("youtube.com", "youtu.be");
+
+    @Test
+    void singleVideoCommandDoesNotUseMaxDownloadsLimitExitCode() {
+        List<String> command = YtDlpDownloader.buildCommand(
+                "yt-dlp",
+                URI.create("https://youtu.be/example123"),
+                "qjs",
+                Path.of("cache/yt-dlp"),
+                100,
+                1800,
+                Path.of("incoming/source.%(ext)s"));
+
+        assertTrue(command.contains("--no-playlist"));
+        assertTrue(command.contains("--js-runtimes"));
+        assertTrue(command.contains("quickjs:qjs"));
+        assertTrue(command.contains("--remote-components"));
+        assertTrue(command.contains("ejs:github"));
+        assertFalse(command.contains("--max-downloads"));
+        assertEquals("https://youtu.be/example123", command.get(command.size() - 1));
+    }
+
+    @Test
+    void youtubeCommandRequiresJavascriptRuntime() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                YtDlpDownloader.buildCommand(
+                        "yt-dlp",
+                        URI.create("https://youtu.be/example123"),
+                        null,
+                        Path.of("cache/yt-dlp"),
+                        100,
+                        1800,
+                        Path.of("incoming/source.%(ext)s")));
+    }
 
     @Test
     void acceptsAllowlistedYoutubeWatchAndShortLinks() throws Exception {
