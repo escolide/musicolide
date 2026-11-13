@@ -57,6 +57,10 @@ final class NativeToolInstaller {
     }
 
     private String fileName(NativeToolchain.Tool tool) {
-        return tool == NativeToolchain.Tool.YT_DLP ? "yt-dlp" : "ffmpeg";
+        return switch (tool) {
+            case FFMPEG -> "ffmpeg";
+            case YT_DLP -> "yt-dlp";
+            case JS_RUNTIME -> "qjs";
+        };
     }
 }
