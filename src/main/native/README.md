@@ -1,14 +1,11 @@
-# Optional native executables
+# Bundled native executables
 
-Musicolide can extract optional native executables from the plugin JAR at startup.
-Place binaries in platform folders before building:
+The CI build fetches pinned, checksum-verified Linux x86_64 tools for the MineStrator target:
+- yt-dlp 2026.10.26 standalone Linux x86_64 release.
+- FFmpeg and FFprobe from the FFmpeg-Builds LGPL static Linux x86_64 build, autobuild 2026-11-12 15:40.
 
-- `linux-x86_64/ffmpeg`, `linux-x86_64/ffprobe`, `linux-x86_64/yt-dlp`
-- `linux-aarch64/ffmpeg`, `linux-aarch64/ffprobe`, `linux-aarch64/yt-dlp`
-- `windows-x86_64/ffmpeg.exe`, `windows-x86_64/ffprobe.exe`, `windows-x86_64/yt-dlp.exe`
-- `macos-x86_64/ffmpeg`, `macos-x86_64/ffprobe`, `macos-x86_64/yt-dlp`
-- `macos-aarch64/ffmpeg`, `macos-aarch64/ffprobe`, `macos-aarch64/yt-dlp`
+Run `bash scripts/fetch-native-tools.sh` before a local Linux x86_64 build. The build workflow runs the same script and smoke-tests all three executables before creating the plugin JAR.
 
-Gradle copies these files to `native/<platform>/` inside the JAR. At startup, Musicolide extracts the matching platform files into `plugins/Musicolide/native/<platform>/`, marks Unix binaries executable and runs a bounded version check. Missing embedded binaries fall back to the executable names or configured paths in `config.yml`.
+The JAR contains native files at `native/linux-x86_64/`. Musicolide extracts them into `plugins/Musicolide/native/linux-x86_64/` and checks their versions asynchronously at startup. Other platforms retain the existing PATH/configured-executable fallback.
 
-**No native binary payloads are committed here.** Release packagers must select and pin trusted builds, record checksums, include the corresponding license and notices, and confirm that redistribution is permitted. In particular, FFmpeg licensing depends on the exact build configuration; a binary with GPL or other optional components has additional obligations. Do not add unverified binaries to a release artifact.
+Upstream license notices are included in the JAR. The yt-dlp standalone executable includes GPL-licensed components; its third-party license notice is included. The FFmpeg archive is the LGPL static variant; its LGPL notice is included. Check upstream notices before redistributing modified builds.
