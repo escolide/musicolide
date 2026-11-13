@@ -19,6 +19,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PlaybackEngine {
+    // Minecraft labels SoundCategory.RECORDS as "Jukebox/Note Blocks".
+    private static final SoundCategory SOUND_CATEGORY = SoundCategory.RECORDS;
     private final JavaPlugin plugin;
     private final TrackRepository repository;
     private final PackManager packs;
@@ -238,8 +240,8 @@ public final class PlaybackEngine {
             }
 
             String sound = track.soundKey(segment);
-            if (state.sound != null) player.stopSound(state.sound, SoundCategory.RECORDS);
-            player.playSound(player.getLocation(), sound, SoundCategory.RECORDS, volume, 1.0f);
+            if (state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
+            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
             state.segment = segment;
             state.sound = sound;
         }
@@ -317,7 +319,6 @@ public final class PlaybackEngine {
         int segment = session.segmentIndex();
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment);
-        PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         float volume = playbackVolume(player, session, fading);
         if (volume <= 0) {
             stopPlayer(player);
@@ -327,7 +328,7 @@ public final class PlaybackEngine {
                 || state.segment != segment || state.fading != fading;
         if (changed) {
             stopPlayer(player);
-            player.playSound(player.getLocation(), sound, SoundCategory.RECORDS, volume, 1.0f);
+            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
@@ -363,7 +364,7 @@ public final class PlaybackEngine {
 
     private void stopPlayer(Player player) {
         PlayerPlayback state = playerPlayback.remove(player.getUniqueId());
-        if (state != null && state.sound != null) player.stopSound(state.sound, SoundCategory.RECORDS);
+        if (state != null && state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
     }
 
     private void stopPlayersInSession(PlaybackSession session) {
