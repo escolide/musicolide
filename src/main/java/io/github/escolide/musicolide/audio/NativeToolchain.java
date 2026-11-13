@@ -57,8 +57,8 @@ public final class NativeToolchain implements AutoCloseable {
     }
 
     /**
-     * Runs bundle extraction and executable probes away from the Bukkit main
-     * thread. The common-pool worker is a daemon thread.
+     * Runs first-start downloads, installation and executable probes away from
+     * the Bukkit main thread. The common-pool worker is a daemon thread.
      */
     public CompletableFuture<List<ToolStatus>> initializeAsync() {
         return CompletableFuture.supplyAsync(this::initialize);
