@@ -204,6 +204,30 @@ tasks.register('verifyPluginJarSize') {
     }
 }
 
+tasks.register('verifySelfContainedNativeBundles') {
+    dependsOn tasks.named('packageNativeBundles')
+    doLast {
+        def required = ['linux-x86_64', 'linux-aarch64', 'windows-x86_64',
+                        'windows-aarch64', 'macos-x86_64', 'macos-aarch64'] as Set
+        def generated = layout.buildDirectory.dir('generated/native-bundles').get().asFile
+        def present = generated.listFiles()?.findAll { it.name.endsWith('.zip') }
+                ?.collect { it.name.substring(0, it.name.length() - 4) } as Set ?: [] as Set
+        def missing = required - present
+        if (!missing.isEmpty()) {
+            throw new GradleException('Self-contained universal release is missing native bundles for: '
+                    + missing.sort().join(', '))
+        }
+        required.each { platform ->
+            File bundle = new File(generated, platform + '.zip')
+            File digest = new File(generated, platform + '.sha256')
+            if (!bundle.isFile() || !digest.isFile()) {
+                throw new GradleException('Incomplete native bundle or SHA-256 sidecar for ' + platform + '.')
+            }
+        }
+        logger.lifecycle('All six platform native bundles are staged and checksummed.')
+    }
+}
+
 tasks.register('verifyUniversalPluginJarSize') {
     dependsOn tasks.named('shadowJar')
     doLast {
