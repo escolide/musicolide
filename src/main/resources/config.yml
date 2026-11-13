@@ -19,9 +19,8 @@ audio:
   # If a platform bundle is not present, configured executables/PATH remain available.
   tools:
     bundled-first: true
-    # Legacy network bootstrap is disabled by default. Enable only as a temporary
-    # fallback on Linux x86_64 if a matching embedded bundle is not yet packaged.
-    legacy-linux-download-fallback: false
+    # Normal startup never downloads native executables. Use embedded bundles or
+    # explicitly configured executables/PATH entries.
   ffmpeg:
     executable: "ffmpeg"
     required: false
