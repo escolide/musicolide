@@ -73,7 +73,8 @@ public final class SoundPackNamespaceMigration {
         Path backup = archive.resolveSibling(archive.getFileName() + BACKUP_SUFFIX);
         recoverInterruptedMigration(archive, backup, track.sha1Hex());
 
-        if (!Files.isRegularFile(archive)) return false;
+        if (!Files.isRegularFile(archive)
+                || !hasLegacySoundReferences(archive, track.namespace())) return false;
 
         Path temporary = Files.createTempFile(root, TEMP_PREFIX, TEMP_SUFFIX);
         try {
@@ -137,6 +138,19 @@ public final class SoundPackNamespaceMigration {
 
         throw new IOException("A previous sound-pack migration left a backup whose checksum "
                 + "does not match the catalogue; no file was overwritten.");
+    }
+
+    private static boolean hasLegacySoundReferences(Path archive, String namespace) throws IOException {
+        String definitionsPath = "assets/" + namespace + "/sounds.json";
+        String oldPrefix = "\"name\":\"" + namespace + "/stereo/";
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            ZipEntry definitions = zip.getEntry(definitionsPath);
+            if (definitions == null) return false;
+            try (InputStream input = zip.getInputStream(definitions)) {
+                String json = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                return json.contains(oldPrefix);
+            }
+        }
     }
 
     private static boolean rewriteSoundDefinitions(Path source, Path destination, String namespace)
