@@ -60,7 +60,7 @@ final class NativeToolDownloader {
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
-    private enum ArchiveFormat { ZIP, TAR_XZ, TAR_GZ }
+    enum ArchiveFormat { ZIP, TAR_XZ, TAR_GZ }
 
     private record Artifact(String fileName, URI uri, String sha256, long maxBytes) {
         private Artifact {
@@ -245,9 +245,6 @@ final class NativeToolDownloader {
                         + "; refusing to install the file.");
             }
             moveReplacing(partial, destination);
-        } catch (InterruptedException ex) {
-            Files.deleteIfExists(partial);
-            throw ex;
         } catch (IOException | RuntimeException ex) {
             Files.deleteIfExists(partial);
             throw ex;
