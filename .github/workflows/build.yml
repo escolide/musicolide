@@ -24,3 +24,13 @@ jobs:
           name: musicolide-development-build
           path: build/libs/musicolide-*.jar
           if-no-files-found: error
+
+  native-runtime-smoke:
+    name: Real Linux x86_64 native-tool smoke test
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pinned tools, verify hashes and test OGG encoding
+        run: bash scripts/smoke-native-tools-linux-x86_64.sh
