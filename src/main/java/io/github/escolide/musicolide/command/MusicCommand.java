@@ -141,6 +141,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                         + " unavailable &7- " + status.detail()));
             }
         }
+        boolean remoteEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
+        boolean autoImport = plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
+        List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");
+        sender.sendMessage(msg("&7URL importer: " + (remoteEnabled ? "&aenabled" : "&cdisabled")
+                + " &8| &7/play auto-import: " + (autoImport ? "&aenabled" : "&cdisabled")));
+        sender.sendMessage(msg("&7Allowlisted source hosts: &f"
+                + (allowedHosts.isEmpty() ? "(none)" : String.join(", ", allowedHosts))));
+        sender.sendMessage(msg("&7URL imports are admin-only and require redistribution rights."));
         sender.sendMessage(msg("&7Geyser detection is optional; Bedrock playback requires its separate pack adapter."));
     }
 
