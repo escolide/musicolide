@@ -120,7 +120,9 @@ public final class PackManager {
         boolean autoDetectPort = plugin.getConfig().getBoolean("server.auto-detect-port", true);
         int detected = autoDetectPort ? detectedPublicPort : -1;
         int configured = plugin.getConfig().getInt("server.public-port", -1);
-        return PackUrlBuilder.build(base, prefix, fileName, detected, configured);
+        boolean sharedPortMode = plugin.getConfig().getString("server.hosting-mode", "shared-port")
+                .equalsIgnoreCase("shared-port");
+        return PackUrlBuilder.build(base, prefix, fileName, detected, configured, sharedPortMode);
     }
 
     private void enqueueIfNeeded(UUID playerId, LinkedHashMap<UUID, MusicTrack> queue, MusicTrack track) {
