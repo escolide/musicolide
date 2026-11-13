@@ -64,7 +64,7 @@ public final class ResourcePackBuilder {
         int index = 0;
         for (Map.Entry<String, String> entry : sounds.entrySet()) {
             soundsJson.append("  \"").append(entry.getKey()).append("\": {\"sounds\":[{\"name\":\"")
-                    .append(entry.getValue()).append("\",\"stream\":false}]}");
+                    .append(namespace).append(':').append(entry.getValue()).append("\",\"stream\":false}]}");
             if (++index < sounds.size()) soundsJson.append(',');
             soundsJson.append('\n');
         }
