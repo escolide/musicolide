@@ -190,14 +190,34 @@ public final class PackManager {
         if (deferred != null) deferred.remove(packId);
     }
 
+    /**
+     * ACCEPTED and DOWNLOADED are progress notifications, not completion.
+     * Keep the request in-flight until the client either applies the pack or
+     * reports a terminal result. Status names are used instead of enum
+     * constants for newer Paper values so the plugin remains binary-source
+     * compatible with the older compileOnly API.
+     */
+    static boolean isPendingStatus(String statusName) {
+        return "ACCEPTED".equals(statusName) || "DOWNLOADED".equals(statusName);
+    }
+
     public void status(UUID playerId, UUID packId, org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
+        if (status == null) return;
+        String statusName = status.name();
+
+        // Both values may arrive while the same download is still running.
+        // Clearing requested/baseRequested here makes the 5-tick playback
+        // loop enqueue and send the exact same pack repeatedly.
+        if (isPendingStatus(statusName)) return;
+
         if (basePack.id().equals(packId)) {
             baseRequested.remove(playerId);
-            if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
+            if ("SUCCESSFULLY_LOADED".equals(statusName)) {
                 baseDeclined.remove(playerId);
                 baseReady.add(playerId);
-            } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
-                    || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
+            } else {
+                // Every other non-progress status is terminal. Do not let an
+                // invalid URL, failed reload, or discard trigger a resend loop.
                 baseReady.remove(playerId);
                 baseDeclined.add(playerId);
             }
@@ -206,20 +226,32 @@ public final class PackManager {
 
         Set<UUID> requestedSet = requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet());
         boolean wasRequested = requestedSet.remove(packId);
-        if (wasRequested) inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
+        if (wasRequested) {
+            inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
+        }
+
         Player player = Bukkit.getPlayer(playerId);
         boolean removeAfterDownload = removeWhenReady.getOrDefault(playerId, Set.of()).contains(packId);
-        if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
+        if ("SUCCESSFULLY_LOADED".equals(statusName)) {
             declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
             if (removeAfterDownload || !active.getOrDefault(playerId, Set.of()).contains(packId)) {
                 if (player != null) removePack(player, playerId, packId);
             } else {
                 ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
             }
-        } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
-                || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
+        } else {
             ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
-            declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+
+            // A discard caused by Musicolide removing a no-longer-needed pack
+            // must not poison that pack for a later session. A client discard
+            // of a pack that is still wanted is suppressed like a decline.
+            boolean stillDesired = (!removeAfterDownload
+                    && active.getOrDefault(playerId, Set.of()).contains(packId))
+                    || waiting.getOrDefault(playerId, new LinkedHashMap<>()).containsKey(packId);
+            Set<UUID> declinedSet = declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet());
+            if (!"DISCARDED".equals(statusName) || stillDesired) declinedSet.add(packId);
+            else declinedSet.remove(packId);
+
             Set<UUID> activeSet = active.get(playerId);
             if (activeSet != null) activeSet.remove(packId);
             Set<UUID> deferred = removeWhenReady.get(playerId);
