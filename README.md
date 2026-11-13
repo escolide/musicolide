@@ -43,7 +43,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 ## Audio source and rights
 
-YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly allowlists the source host. The /play URL command can import an allowlisted URL when audio.yt-dlp.auto-import-on-play is enabled. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
+YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once an administrator enables that setting and configures authorized hosts, users with the DJ permission can run /play <url> in-game to import the source and start playback after the resource pack is generated. From console, specify --all or --player <name>. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
 
 Import only audio that you own or are authorized to distribute to your players. The presence of yt-dlp does not grant redistribution rights.
 
@@ -71,6 +71,22 @@ The deployable universal plugin is `build/libs/musicolide-0.1.0-universal.jar`.
 4. Run /music import <filename> [title] as an administrator, or use /music import all to process every supported file in incoming/ sequentially.
 5. Use /music list to see imported tracks.
 6. Start playback with /music play <id-or-title>, or /play <url> when allowlisted URL auto-import is enabled.
+
+## Enable direct YouTube playback
+
+To enable the administrator-triggered `/play <url>` import path, edit `plugins/Musicolide/config.yml` after the first startup:
+
+```yaml
+audio:
+  yt-dlp:
+    enabled: true
+    auto-import-on-play: true
+    allowed-hosts:
+      - "youtube.com"
+      - "youtu.be"
+```
+
+Then run `/music reload` (or restart the server). A player with the `musicolide.dj` permission can run `/play <YouTube URL>` in-game after the server administrator enables this setting. The import downloads to a temporary folder, runs yt-dlp first, then FFmpeg converts the source into short OGG segments, builds the resource pack, saves the temporary track, and starts a playback session. Console usage must include `--all` or `--player <name>`. Only use this for audio the server is authorized to download and redistribute; this setting does not grant those rights.
 
 ## Commands
 
@@ -123,7 +139,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
 
-Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL import is off by default and restricted to administrator-allowlisted hosts. YouTube may be added to allowed-hosts for authorized sources; Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
+Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL auto-import is off by default and restricted to administrators. The default allowed-hosts list includes youtube.com and youtu.be; the server operator must explicitly enable audio.yt-dlp.auto-import-on-play after confirming redistribution rights. Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
 
 ## Status
 

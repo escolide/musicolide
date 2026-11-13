@@ -5,6 +5,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -66,6 +68,11 @@ public final class YtDlpDownloader {
                     "--no-playlist",
                     "--no-progress",
                     "--no-warnings",
+                    "--no-colors",
+                    "--socket-timeout", "20",
+                    "--retries", "3",
+                    "--fragment-retries", "3",
+                    "--concurrent-fragments", "1",
                     "--no-part",
                     "--max-downloads", "1",
                     "--max-filesize", maxInputMb + "M",
@@ -86,8 +93,11 @@ public final class YtDlpDownloader {
             int exit = process.exitValue();
             toolchain.finished(process);
             if (exit != 0) {
+                String details = readErrorSummary(errorLog, sourceUrl);
                 throw new IOException("yt-dlp failed with exit code " + exit
-                        + ". Check that the source is downloadable and authorized.");
+                        + (details.isBlank()
+                        ? ". Check that the source is reachable and authorized."
+                        : ". Details: " + details));
             }
 
             try (var files = Files.list(destinationDirectory)) {
@@ -110,6 +120,41 @@ public final class YtDlpDownloader {
         } finally {
             if (process != null) toolchain.finished(process);
             Files.deleteIfExists(errorLog);
+        }
+    }
+
+    /**
+     * Keep a short tail of yt-dlp's stderr so an administrator can diagnose
+     * extractor/runtime failures without allowing an unbounded log into chat.
+     */
+    private static String readErrorSummary(Path errorLog, String sourceUrl) {
+        try {
+            long size = Files.size(errorLog);
+            int bytesToRead = (int) Math.min(size, 16 * 1024L);
+            if (bytesToRead == 0) return "";
+
+            String raw;
+            try (SeekableByteChannel channel = Files.newByteChannel(errorLog, StandardOpenOption.READ)) {
+                channel.position(Math.max(0L, size - bytesToRead));
+                ByteBuffer buffer = ByteBuffer.allocate(bytesToRead);
+                while (buffer.hasRemaining()) {
+                    int read = channel.read(buffer);
+                    if (read < 0) break;
+                }
+                buffer.flip();
+                raw = StandardCharsets.UTF_8.decode(buffer).toString();
+            }
+
+            String normalized = raw.replace(sourceUrl, "[source URL]")
+                    .replaceAll("(?i)(authorization|cookie|token)=([^&\\s]+)", "$1=[redacted]");
+            List<String> lines = normalized.lines().map(String::trim)
+                    .filter(line -> !line.isBlank()).toList();
+            if (lines.isEmpty()) return "";
+            int start = Math.max(0, lines.size() - 6);
+            String summary = String.join(" | ", lines.subList(start, lines.size()));
+            return summary.length() <= 1000 ? summary : summary.substring(summary.length() - 1000);
+        } catch (IOException ex) {
+            return "";
         }
     }
 

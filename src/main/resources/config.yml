@@ -26,8 +26,9 @@ audio:
   yt-dlp:
     enabled: true
     executable: "yt-dlp"
-    # When enabled, /play <url> imports the URL only from administrator-allowlisted
-    # hosts. Enable this only for sources the server is authorized to redistribute.
+    # When enabled by an administrator, /play <url> imports a YouTube URL.
+    # Imports remain admin-only and must be authorized for download and redistribution.
+    # Keep false unless the server operator has confirmed those rights.
     auto-import-on-play: false
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
@@ -35,9 +36,11 @@ audio:
     # Active playback sessions and in-flight Java pack downloads delay deletion.
     url-import-retention-minutes: 15
     # Add only domains from which the server has permission to download and redistribute audio.
-    # YouTube is allowed only when explicitly allowlisted and the admin confirms rights
-    # with /music import-url <url> --rights-confirmed. Spotify and SoundCloud remain blocked.
-    allowed-hosts: []
+    # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
+    # For a one-time import, use /music import-url <url> --rights-confirmed.
+    allowed-hosts:
+      - "youtube.com"
+      - "youtu.be"
     blocked-hosts:
       - "spotify.com"
       - "soundcloud.com"

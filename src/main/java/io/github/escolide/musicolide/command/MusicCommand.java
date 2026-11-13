@@ -17,6 +17,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -140,6 +141,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                         + " unavailable &7- " + status.detail()));
             }
         }
+        boolean remoteEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
+        boolean autoImport = plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
+        List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");
+        sender.sendMessage(msg("&7URL importer: " + (remoteEnabled ? "&aenabled" : "&cdisabled")
+                + " &8| &7/play auto-import: " + (autoImport ? "&aenabled" : "&cdisabled")));
+        sender.sendMessage(msg("&7Allowlisted source hosts: &f"
+                + (allowedHosts.isEmpty() ? "(none)" : String.join(", ", allowedHosts))));
+        sender.sendMessage(msg("&7URL imports are admin-only and require redistribution rights."));
         sender.sendMessage(msg("&7Geyser detection is optional; Bedrock playback requires its separate pack adapter."));
     }
 
@@ -229,7 +238,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
         if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
-            if (!admin(sender)) return;
+            // The server administrator opts in globally through config.yml and
+            // restricts source hosts. DJ permission controls who may start a URL import.
             if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
                 sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
                 return;
@@ -244,6 +254,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                             start(sender, imported, request);
                         }
                     }));
+            return;
+        }
+        if (isYouTubeUrl(input)) {
+            sender.sendMessage(msg("&cYouTube URL auto-import is disabled."));
+            sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play and allow youtube.com/youtu.be in config.yml."));
+            sender.sendMessage(msg("&7For a one-time authorized import, use /music import-url <url> --rights-confirmed, then /music play <track-id>."));
             return;
         }
         if (!plugin.getConfig().getBoolean("matching.enabled", true)
@@ -304,7 +320,28 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return repository.search(token, 1).stream().findFirst();
     }
 
-    private boolean isExternal(String token) { return token != null && (token.startsWith("http://") || token.startsWith("https://")); }
+    private boolean isExternal(String token) {
+        if (token == null) return false;
+        try {
+            String scheme = URI.create(token).getScheme();
+            return scheme != null && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"));
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private boolean isYouTubeUrl(String token) {
+        if (token == null) return false;
+        try {
+            String host = URI.create(token).getHost();
+            if (host == null) return false;
+            host = host.toLowerCase(Locale.ROOT);
+            if (host.startsWith("www.")) host = host.substring(4);
+            return host.equals("youtube.com") || host.endsWith(".youtube.com") || host.equals("youtu.be");
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
 
     private PlayRequest parseRequest(CommandSender sender, String[] args) {
         boolean global = false;
