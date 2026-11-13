@@ -238,7 +238,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
         if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
-            if (!admin(sender)) return;
+            // The server administrator opts in globally through config.yml and
+            // restricts source hosts. DJ permission controls who may start a URL import.
             if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
                 sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
                 return;
