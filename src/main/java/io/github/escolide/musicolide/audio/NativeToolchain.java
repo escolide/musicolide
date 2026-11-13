@@ -94,11 +94,12 @@ public final class NativeToolchain implements AutoCloseable {
                 plugin.getLogger().warning("Could not extract legacy bundled " + tool.fileName + ": " + ex.getMessage());
             }
 
-            String executable = bundled == null ? configured : bundled;
+            String existing = installer.existing(tool);
+            String executable = bundled != null ? bundled : (existing != null ? existing : configured);
             ToolStatus status = inspect(tool, executable);
 
-            // A broken/obsolete embedded copy must not prevent a working PATH entry.
-            if (!status.available() && bundled != null && !configured.equals(bundled)) {
+            // A broken/obsolete installed copy must not prevent a working PATH entry.
+            if (!status.available() && !configured.equals(executable)) {
                 ToolStatus configuredStatus = inspect(tool, configured);
                 if (configuredStatus.available()) {
                     executable = configured;
