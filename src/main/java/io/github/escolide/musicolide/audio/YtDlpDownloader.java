@@ -41,6 +41,8 @@ public final class YtDlpDownloader {
         int maxInputMb = bounded(plugin.getConfig().getInt("audio.max-input-mb", 100), 1, 2048);
         int timeoutSeconds = bounded(plugin.getConfig().getInt(
                 "audio.processing.yt-dlp-timeout-seconds", 600), 10, 7200);
+        Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
+        Files.createDirectories(cacheDirectory);
         Path errorLog = Files.createTempFile(destinationDirectory, ".yt-dlp-", ".log");
         Process process = null;
         try {
@@ -60,7 +62,7 @@ public final class YtDlpDownloader {
             }
             command.addAll(List.of(
                     "--ignore-config",
-                    "--no-cache-dir",
+                    "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
                     "--no-playlist",
                     "--no-progress",
                     "--no-warnings",
