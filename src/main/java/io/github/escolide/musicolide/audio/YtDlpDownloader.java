@@ -12,12 +12,11 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Downloads a single audio source only from administrator-allowlisted hosts.
- * YouTube, Spotify and other blocked streaming platforms remain lookup/alias
- * identifiers only; this downloader does not extract or rebroadcast them.
+ * Platform-specific sources are never enabled just by having yt-dlp installed;
+ * the administrator must allowlist the host and confirm distribution rights.
  */
 public final class YtDlpDownloader {
-    private static final List<String> ALWAYS_BLOCKED_HOSTS = List.of(
-            "youtube.com", "youtu.be", "youtube-nocookie.com", "spotify.com", "soundcloud.com");
+    private static final List<String> ALWAYS_BLOCKED_HOSTS = List.of("spotify.com", "soundcloud.com");
     private final JavaPlugin plugin;
     private final NativeToolchain toolchain;
 
@@ -42,14 +41,28 @@ public final class YtDlpDownloader {
         int maxInputMb = bounded(plugin.getConfig().getInt("audio.max-input-mb", 100), 1, 2048);
         int timeoutSeconds = bounded(plugin.getConfig().getInt(
                 "audio.processing.yt-dlp-timeout-seconds", 600), 10, 7200);
+        Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
+        Files.createDirectories(cacheDirectory);
         Path errorLog = Files.createTempFile(destinationDirectory, ".yt-dlp-", ".log");
         Process process = null;
         try {
             String outputTemplate = destinationDirectory.resolve("source.%(ext)s").toString();
-            List<String> command = List.of(
-                    toolchain.executable(NativeToolchain.Tool.YT_DLP),
+            List<String> command = new ArrayList<>();
+            command.add(toolchain.executable(NativeToolchain.Tool.YT_DLP));
+            if (isYouTubeHost(uri.getHost())) {
+                if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+                    throw new IOException("QuickJS is unavailable; YouTube extraction cannot start.");
+                }
+                command.add("--js-runtimes");
+                command.add("quickjs:" + toolchain.executable(NativeToolchain.Tool.JS_RUNTIME));
+                // yt-dlp's maintained EJS scripts are retrieved from the official
+                // yt-dlp/ejs GitHub project and cached by yt-dlp as remote components.
+                command.add("--remote-components");
+                command.add("ejs:github");
+            }
+            command.addAll(List.of(
                     "--ignore-config",
-                    "--no-cache-dir",
+                    "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
                     "--no-playlist",
                     "--no-progress",
                     "--no-warnings",
@@ -60,7 +73,7 @@ public final class YtDlpDownloader {
                     "--match-filter", "duration <= " + plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800),
                     "--output", outputTemplate,
                     "--", uri.toASCIIString()
-            );
+            ));
             process = toolchain.start(new ProcessBuilder(command)
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(errorLog.toFile()));
@@ -100,6 +113,13 @@ public final class YtDlpDownloader {
         }
     }
 
+    private static boolean isYouTubeHost(String host) {
+        String normalized = host == null ? "" : host.toLowerCase(Locale.ROOT);
+        return normalized.equals("youtu.be") || normalized.equals("youtube.com")
+                || normalized.endsWith(".youtube.com") || normalized.equals("youtube-nocookie.com")
+                || normalized.endsWith(".youtube-nocookie.com");
+    }
+
     static URI validateSource(String sourceUrl, List<String> allowedHosts, List<String> blockedHosts)
             throws IOException {
         final URI uri;
@@ -117,7 +137,7 @@ public final class YtDlpDownloader {
 
         String host = uri.getHost().toLowerCase(Locale.ROOT);
         if (isBlockedHost(host, blockedHosts)) {
-            throw new IOException("This streaming platform is supported for metadata/aliases only, not audio importing.");
+            throw new IOException("This streaming platform is configured for metadata/aliases only, not audio importing.");
         }
         if (!isHostAllowed(host, allowedHosts)) {
             throw new IOException("The source host is not in audio.yt-dlp.allowed-hosts.");

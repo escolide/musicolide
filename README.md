@@ -35,7 +35,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
-- FFmpeg/FFprobe prepare imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
+- FFmpeg probes input duration and prepares imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
 - A small built-in HTTP server serves generated per-track resource packs. Put HTTPS in front of it for production.
 - Resource packs are requested only for the current track and a rolling prefetch window (four upcoming tracks by default). Client-side pack hashes allow cached packs to be reused.
 - Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional volume-based stereo fade outside the main zone.
@@ -43,20 +43,26 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 ## Audio source and rights
 
-Musicolide deliberately does **not** extract or rebroadcast audio from YouTube Music, Spotify or SoundCloud. Their platform terms and streaming APIs impose restrictions on downloading, caching, game integration and/or multi-listener rebroadcast. A URL from one of those services can be stored as an alias to a track that the server administrator has independently obtained permission to distribute. The alias is an identification hint, not a source of audio.
+YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly allowlists the source host. The /play URL command can import an allowlisted URL when audio.yt-dlp.auto-import-on-play is enabled. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
 
-Import only audio that you own or are authorized to distribute to your players. Musicolide does not circumvent DRM, subscriptions, region controls or platform protections.
+Import only audio that you own or are authorized to distribute to your players. The presence of yt-dlp does not grant redistribution rights.
 
-## Build
+## Build and native-tool setup
 
 1. Install JDK 21 or newer.
-2. The CI build fetches pinned, checksum-verified Linux x86_64 yt-dlp, FFmpeg and FFprobe payloads before packaging them into the plugin JAR. For a local Linux x86_64 build, run `bash scripts/fetch-native-tools.sh` first. Other platforms may use tools installed on PATH. See `src/main/native/README.md` for versions and license notes.
-3. Run: ./gradlew clean test shadowJar
+2. For development, run `./gradlew clean test build`.
 
-The native extraction system does not include binary payloads in this source repository. Release packagers must add and license-check their own pinned builds.
+The **universal JAR stays below 30 MiB**. It does not contain hundreds of megabytes of platform executables. Instead, on the first server startup, Musicolide detects the OS/CPU architecture and downloads the matching pinned versions of yt-dlp, FFmpeg and QuickJS. Downloads are streamed to disk, SHA-256 verified, and extracted into `plugins/Musicolide/native/<platform>/` using Java archive libraries. No shell, system tar program, Python installation, or manual native-tool installation is required.
 
-The deployable plugin is build/libs/musicolide-0.1.0.jar.
+Automatic first-start downloads are provided for Linux x86_64/ARM64, Windows x86_64/ARM64 and macOS x86_64/ARM64. The tools remain installed across restarts. FFmpeg archives can be large (roughly 120–175 MB for the current Linux/Windows upstream packages); the installer streams them instead of loading them into RAM and deletes the archive after extracting the FFmpeg executable. Keep sufficient free disk space for the download and extracted tools.
 
+The server needs outbound HTTPS access to GitHub release assets during first-time setup. YouTube extraction also enables yt-dlp's official `ejs:github` remote component, so the server needs GitHub access when yt-dlp first retrieves or refreshes the JavaScript challenge scripts. If the host blocks outbound downloads, set `audio.tools.download-on-first-start: false` and configure compatible executables through the existing executable settings or PATH.
+
+Linux and Windows use the FFmpeg-Builds LGPL variants. The macOS installer uses the publisher's macOS builds; those include a mixture of GPL/LGPL codecs, so consult the installed `licenses/NATIVE-TOOLS-NOTICES.txt` before redistributing those tools. yt-dlp and QuickJS notices are also recorded under the installed native directory.
+
+Both the universal JAR and the Linux x86_64 slim JAR have build-time checks enforcing a strict 30 MiB maximum. The universal build is the recommended download when using different operating systems or changing hosting providers; the slim build is only for compatible Linux x86_64 deployments.
+
+The deployable universal plugin is `build/libs/musicolide-0.1.0-universal.jar`.
 ## Server setup
 
 1. Install the JAR in plugins/ and start Paper once.
@@ -64,7 +70,7 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 3. Configure server.public-base-url to an address your players can reach. The built-in HTTP server binds to server.bind-address:server.port. For public servers, use an HTTPS reverse proxy and expose only the configured pack path.
 4. Run /music import <filename> [title] as an administrator, or use /music import all to process every supported file in incoming/ sequentially.
 5. Use /music list to see imported tracks.
-6. Start playback with /music play <id-or-title>.
+6. Start playback with /music play <id-or-title>, or /play <url> when allowlisted URL auto-import is enabled.
 
 ## Commands
 
@@ -72,6 +78,7 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 - /music import <filename> [title] (admin)
 - /music import all (admin; imports supported files from incoming/ one at a time)
 - /music import-url <url> --rights-confirmed [title] (admin; requires yt-dlp and an allowlisted source host)
+- /play <track-or-url> (DJ for saved tracks; URL auto-import additionally requires admin permission, audio.yt-dlp.auto-import-on-play: true, and an allowlisted host)
 - /music diagnostics (admin; reports native audio-tool availability)
 - /music list [search]
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
@@ -116,7 +123,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
 
-Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL import is off by default and restricted to administrator-allowlisted hosts; YouTube, Spotify and SoundCloud are blocked as audio sources and may be used only as metadata/alias identifiers for independently authorized local tracks. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
+Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL import is off by default and restricted to administrator-allowlisted hosts. YouTube may be added to allowed-hosts for authorized sources; Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
 
 ## Status
 

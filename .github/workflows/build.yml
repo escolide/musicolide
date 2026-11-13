@@ -16,18 +16,21 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
-      - name: Fetch pinned Linux x86_64 audio tools
-        run: bash ./scripts/fetch-native-tools.sh
-      - name: Verify bundled native tools
-        run: |
-          chmod +x src/main/native/linux-x86_64/*
-          src/main/native/linux-x86_64/ffmpeg -version
-          src/main/native/linux-x86_64/ffprobe -version
-          src/main/native/linux-x86_64/yt-dlp --version
-      - name: Run tests and build Java 21-compatible plugin
-        run: bash ./gradlew --no-daemon clean test shadowJar
-      - name: Upload plugin JAR
+      - name: Run tests and build size-limited Java 21 development plugin
+        run: bash ./gradlew --no-daemon clean test build
+      - name: Upload development build (native payloads may be absent)
         uses: actions/upload-artifact@v4
         with:
-          name: musicolide-plugin
+          name: musicolide-development-build
           path: build/libs/musicolide-*.jar
+          if-no-files-found: error
+
+  native-runtime-smoke:
+    name: Real Linux x86_64 native-tool smoke test
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pinned tools, verify hashes and test OGG encoding
+        run: bash scripts/smoke-native-tools-linux-x86_64.sh

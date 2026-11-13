@@ -46,10 +46,9 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
         }
-        if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
-                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
-                    "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
+                    "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
             return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false), worker);
@@ -62,7 +61,7 @@ public final class AudioProcessor implements AutoCloseable {
     /**
      * Downloads one administrator-authorized URL into a disposable directory, then
      * uses the same local validation/encoding path as a file import. yt-dlp exits
-     * before FFprobe or FFmpeg is launched.
+     * before FFmpeg is launched.
      */
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
         if (!toolchain.isInitialized()) {
@@ -77,10 +76,9 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "yt-dlp is unavailable. Install it or provide a bundled executable."));
         }
-        if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
-                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
-                    "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
+                    "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
             return CompletableFuture.supplyAsync(() -> {
@@ -130,8 +128,7 @@ public final class AudioProcessor implements AutoCloseable {
             if (Files.size(source) > maxBytes) throw new IOException("Input exceeds configured size limit.");
 
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
-            String ffprobe = toolchain.executable(NativeToolchain.Tool.FFPROBE);
-            long durationMs = probeDuration(ffprobe, source, data);
+            long durationMs = probeDuration(ffmpeg, source, data);
             long maxDuration = plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800);
             if (durationMs <= 0 || durationMs > maxDuration * 1000L) {
                 throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
@@ -209,22 +206,19 @@ public final class AudioProcessor implements AutoCloseable {
             throws IOException, InterruptedException {
         Path output = Files.createTempFile(dataDirectory, ".musicolide-probe-", ".txt");
         try {
-            Process process = toolchain.start(new ProcessBuilder(executable, "-v", "error", "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1", source.toString())
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+            // FFmpeg reports container duration while opening the input. A zero-length
+            // null output lets us read that metadata without decoding the whole track.
+            Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-nostdin",
+                    "-i", source.toString(), "-t", "0", "-f", "null", "-")
+                    .redirectErrorStream(true)
                     .redirectOutput(output.toFile()));
             try {
                 waitForProcess(process, bounded(plugin.getConfig().getInt(
-                        "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFprobe");
+                        "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFmpeg metadata probe");
             } finally {
                 toolchain.finished(process);
             }
-            String result = Files.readString(output, StandardCharsets.UTF_8).trim();
-            try {
-                return Math.round(Double.parseDouble(result) * 1000.0);
-            } catch (NumberFormatException ex) {
-                throw new IOException("FFprobe returned an invalid duration.", ex);
-            }
+            return FfmpegDurationParser.parseMillis(Files.readString(output, StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(output);
         }
