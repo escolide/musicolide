@@ -64,7 +64,7 @@ public final class SoundPackNamespaceMigration {
     }
 
     private static boolean migrateTrack(Path root, TrackRepository repository, MusicTrack track, Logger logger)
-            throws IOException, SQLException {
+            throws Exception {
         Path archive = root.resolve(track.packFileName()).toAbsolutePath().normalize();
         if (!archive.startsWith(root) || !root.equals(archive.getParent())) {
             throw new IOException("The track pack path is outside the configured packs directory.");
