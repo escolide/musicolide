@@ -439,6 +439,10 @@ final class NativeToolDownloader {
         }
     }
 
+    static boolean supportsPlatform(String platform) {
+        return specFor(platform) != null;
+    }
+
     private static PlatformSpec specFor(String platform) {
         return switch (platform) {
             case "linux-x86_64" -> new PlatformSpec("yt" + YT_DLP_VERSION + "-qjs" + QUICKJS_VERSION
