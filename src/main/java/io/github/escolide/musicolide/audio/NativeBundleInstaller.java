@@ -74,6 +74,8 @@ final class NativeBundleInstaller {
                 Map<NativeToolchain.Tool, String> installed = existingBundle(expectedDigest);
                 if (!installed.isEmpty()) return installed;
 
+                // Never leave a stale success marker behind if a repair extraction fails.
+                Files.deleteIfExists(nativeDirectory.resolve(platform).resolve(INSTALL_MARKER));
                 Map<NativeToolchain.Tool, String> extracted = extract(archive, nativeDirectory, platform);
                 Path marker = nativeDirectory.resolve(platform).resolve(INSTALL_MARKER);
                 Files.writeString(marker, expectedDigest, java.nio.charset.StandardCharsets.US_ASCII,
