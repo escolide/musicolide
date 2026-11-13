@@ -14,13 +14,14 @@ server:
   max-download-mb: 100
 
 audio:
-  # Bundled native tools are extracted to plugins/Musicolide/native/ on first startup.
-  # Missing platform payloads fall back to executable names resolved from PATH.
+  # Tools are never embedded in the plugin JAR. On Linux x86_64, missing tools
+  # are downloaded once to plugins/Musicolide/native/ after checksum verification.
+  # Other platforms use the configured executable or the server process PATH.
   tools:
     bundled-first: true
+    auto-download: true
   ffmpeg:
     executable: "ffmpeg"
-    ffprobe-executable: "ffprobe"
     required: false
   yt-dlp:
     enabled: true
