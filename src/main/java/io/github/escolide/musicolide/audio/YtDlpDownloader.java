@@ -45,8 +45,16 @@ public final class YtDlpDownloader {
         Process process = null;
         try {
             String outputTemplate = destinationDirectory.resolve("source.%(ext)s").toString();
-            List<String> command = List.of(
-                    toolchain.executable(NativeToolchain.Tool.YT_DLP),
+            List<String> command = new ArrayList<>();
+            command.add(toolchain.executable(NativeToolchain.Tool.YT_DLP));
+            if (isYouTubeHost(uri.getHost())) {
+                if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+                    throw new IOException("QuickJS is unavailable; YouTube extraction cannot start.");
+                }
+                command.add("--js-runtimes");
+                command.add("quickjs:" + toolchain.executable(NativeToolchain.Tool.JS_RUNTIME));
+            }
+            command.addAll(List.of(
                     "--ignore-config",
                     "--no-cache-dir",
                     "--no-playlist",
@@ -59,7 +67,7 @@ public final class YtDlpDownloader {
                     "--match-filter", "duration <= " + plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800),
                     "--output", outputTemplate,
                     "--", uri.toASCIIString()
-            );
+            ));
             process = toolchain.start(new ProcessBuilder(command)
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(errorLog.toFile()));
@@ -97,6 +105,13 @@ public final class YtDlpDownloader {
             if (process != null) toolchain.finished(process);
             Files.deleteIfExists(errorLog);
         }
+    }
+
+    private static boolean isYouTubeHost(String host) {
+        String normalized = host == null ? "" : host.toLowerCase(Locale.ROOT);
+        return normalized.equals("youtu.be") || normalized.equals("youtube.com")
+                || normalized.endsWith(".youtube.com") || normalized.equals("youtube-nocookie.com")
+                || normalized.endsWith(".youtube-nocookie.com");
     }
 
     static URI validateSource(String sourceUrl, List<String> allowedHosts, List<String> blockedHosts)
