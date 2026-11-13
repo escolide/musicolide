@@ -75,7 +75,7 @@ The deployable plugin is build/libs/musicolide-0.1.0.jar.
 - /music import <filename> [title] (admin)
 - /music import all (admin; imports supported files from incoming/ one at a time)
 - /music import-url <url> --rights-confirmed [title] (admin; requires yt-dlp and an allowlisted source host)
-- /play <track-or-url> (DJ; URLs are imported only when audio.yt-dlp.auto-import-on-play is enabled and the host is allowlisted)
+- /play <track-or-url> (DJ for saved tracks; URL auto-import additionally requires admin permission, audio.yt-dlp.auto-import-on-play: true, and an allowlisted host)
 - /music diagnostics (admin; reports native audio-tool availability)
 - /music list [search]
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
