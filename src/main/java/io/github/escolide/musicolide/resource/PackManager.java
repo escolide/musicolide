@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class PackManager {
     private final JavaPlugin plugin;
     private final ResourcePackBuilder.BasePackInfo basePack;
+    private final int detectedPublicPort;
     private final Set<UUID> baseReady = ConcurrentHashMap.newKeySet();
     private final Set<UUID> baseRequested = ConcurrentHashMap.newKeySet();
     private final Set<UUID> baseDeclined = ConcurrentHashMap.newKeySet();
@@ -24,9 +25,10 @@ public final class PackManager {
     private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
 
-    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack) {
+    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort) {
         this.plugin = plugin;
         this.basePack = Objects.requireNonNull(basePack, "basePack");
+        this.detectedPublicPort = detectedPublicPort;
     }
 
     public boolean isBaseDeclined(Player player) {
@@ -113,9 +115,12 @@ public final class PackManager {
     }
 
     private String packUrl(String fileName) {
-        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1:8765");
+        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1");
         String prefix = plugin.getConfig().getString("server.path-prefix", "/packs");
-        return base.replaceAll("/+$", "") + (prefix.startsWith("/") ? prefix : "/" + prefix) + "/" + fileName;
+        boolean autoDetectPort = plugin.getConfig().getBoolean("server.auto-detect-port", true);
+        int detected = autoDetectPort ? detectedPublicPort : -1;
+        int configured = plugin.getConfig().getInt("server.public-port", -1);
+        return PackUrlBuilder.build(base, prefix, fileName, detected, configured);
     }
 
     private void enqueueIfNeeded(UUID playerId, LinkedHashMap<UUID, MusicTrack> queue, MusicTrack track) {
