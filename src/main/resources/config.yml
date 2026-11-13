@@ -36,8 +36,8 @@ audio:
     # Active playback sessions and in-flight Java pack downloads delay deletion.
     url-import-retention-minutes: 15
     # Add only domains from which the server has permission to download and redistribute audio.
-    # YouTube is allowed only when explicitly allowlisted and the admin confirms rights
-    # with /music import-url <url> --rights-confirmed. Spotify and SoundCloud remain blocked.
+    # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
+    # For a one-time import, use /music import-url <url> --rights-confirmed.
     allowed-hosts:
       - "youtube.com"
       - "youtu.be"
