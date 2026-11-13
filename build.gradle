@@ -54,11 +54,18 @@ tasks.register('packageNativeBundles') {
         File output = outputRoot.get().asFile
         delete(output)
         output.mkdirs()
-        if (!sourceRoot.exists()) return
+        if (!sourceRoot.exists()) {
+            logger.warn('No native bundles are staged. The produced JAR is not self-contained until platform payloads are added.')
+            return
+        }
 
         def supported = ['linux-x86_64', 'linux-aarch64', 'windows-x86_64',
                          'windows-aarch64', 'macos-x86_64', 'macos-aarch64'] as Set
-        sourceRoot.listFiles()?.findAll { it.isDirectory() }?.sort { it.name }?.each { platformDir ->
+        def platformDirectories = sourceRoot.listFiles()?.findAll { it.isDirectory() }?.sort { it.name } ?: []
+        if (platformDirectories.isEmpty()) {
+            logger.warn('No native bundles are staged. The produced JAR is not self-contained until platform payloads are added.')
+        }
+        platformDirectories.each { platformDir ->
             if (!supported.contains(platformDir.name)) {
                 throw new GradleException('Unsupported native bundle platform directory: ' + platformDir.name)
             }
@@ -67,9 +74,13 @@ tasks.register('packageNativeBundles') {
             File ffmpeg = new File(platformDir, 'bin/ffmpeg' + suffix)
             File ytDlp = new File(platformDir, 'bin/yt-dlp' + suffix)
             File quickJs = new File(platformDir, 'bin/qjs' + suffix)
+            File licenses = new File(platformDir, 'licenses')
             if (!ffmpeg.isFile() || !ytDlp.isFile() || !quickJs.isFile()) {
                 throw new GradleException(platformDir.name + ' bundle must contain bin/ffmpeg' + suffix
                         + ', bin/yt-dlp' + suffix + ' and bin/qjs' + suffix + '.')
+            }
+            if (!licenses.isDirectory() || !(licenses.listFiles()?.any { it.isFile() })) {
+                throw new GradleException(platformDir.name + ' bundle must include third-party notices in licenses/.')
             }
 
             File archive = new File(output, platformDir.name + '.zip')
