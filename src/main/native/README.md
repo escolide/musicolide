@@ -1,11 +1,21 @@
-# Bundled native executables
+# Native runtime tools
 
-The CI build fetches pinned, checksum-verified Linux x86_64 tools for the MineStrator target:
-- yt-dlp 2026.10.26 standalone Linux x86_64 release.
-- FFmpeg and FFprobe from the FFmpeg-Builds LGPL static Linux x86_64 build, autobuild 2026-11-12 15:40.
+Musicolide keeps native executables out of the distributable plugin JAR.
 
-Run `bash scripts/fetch-native-tools.sh` before a local Linux x86_64 build. The build workflow runs the same script and smoke-tests all three executables before creating the plugin JAR.
+On Linux x86_64, the first-start installer downloads and SHA-256-verifies:
+- yt-dlp standalone Linux x86_64, version 2026.10.26.
+- The FFmpeg-Builds Linux x86_64 LGPL archive, checksum-pinned in `NativeToolInstaller`.
 
-The JAR contains native files at `native/linux-x86_64/`. Musicolide extracts them into `plugins/Musicolide/native/linux-x86_64/` and checks their versions asynchronously at startup. Other platforms retain the existing PATH/configured-executable fallback.
+Only the FFmpeg executable is extracted. The source archive is deleted after installation. FFprobe is not used: FFmpeg's own input metadata output supplies the track duration without decoding the entire file.
 
-Upstream license notices are included in the JAR. The yt-dlp standalone executable includes GPL-licensed components; its third-party license notice is included. The FFmpeg archive is the LGPL static variant; its LGPL notice is included. Check upstream notices before redistributing modified builds.
+The installed files live under `plugins/Musicolide/native/linux-x86_64/` and are reused after restart. The build includes a 30 MiB JAR-size guard. Other operating systems use the configured executable or the server process PATH; automatic downloads are currently limited to Linux x86_64.
+
+The installer requires outbound HTTPS and GNU tar with XZ decompression support. If the host blocks native process execution or outbound downloads, provide compatible `ffmpeg` and `yt-dlp` executables through the server PATH or config.
+
+## Upstream licensing
+
+- yt-dlp release and license files: https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
+- FFmpeg source and LGPL licensing: https://ffmpeg.org/legal.html
+- FFmpeg-Builds build variants and license information: https://github.com/FFmpeg-Builds/FFmpeg-Builds
+
+The chosen FFmpeg build is the LGPL variant. Verify the upstream license and notices for the exact binary before redistributing it independently.
