@@ -330,7 +330,7 @@ final class NativeToolDownloader {
 
     private static boolean isFfmpegEntry(String name) {
         if (name == null) return false;
-        String normalized = name.replace('\\\\', '/');
+        String normalized = name.replace('\\', '/');
         String lower = normalized.toLowerCase(Locale.ROOT);
         String basename = lower.substring(lower.lastIndexOf('/') + 1);
         return (basename.equals("ffmpeg") || basename.equals("ffmpeg.exe"))
