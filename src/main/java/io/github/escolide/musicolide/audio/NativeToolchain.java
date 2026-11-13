@@ -83,6 +83,8 @@ public final class NativeToolchain implements AutoCloseable {
             plugin.getLogger().warning("Native tool directories could not be prepared: " + ex.getMessage());
         }
 
+        installer.cleanupObsoleteTools();
+
         for (Tool tool : Tool.values()) {
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
