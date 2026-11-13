@@ -45,7 +45,6 @@ tasks.named('test') {
 tasks.named('shadowJar', ShadowJar) {
     archiveClassifier = 'universal'
     mergeServiceFiles()
-    relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
 }
 
 // Default production JAR is optimized for the target MineStrator host (Linux x86_64).
@@ -56,7 +55,6 @@ tasks.register('linuxShadowJar', ShadowJar) {
     configurations = [project.configurations.runtimeClasspath]
     from sourceSets.main.output
     mergeServiceFiles()
-    relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
     exclude { details ->
         def entry = details.path
         entry.startsWith('org/sqlite/native/') &&
@@ -77,12 +75,12 @@ tasks.register('verifyPluginJarSize') {
             throw new GradleException("Linux plugin JAR is ${pluginJar.length()} bytes; maximum allowed is ${maximumBytes} bytes.")
         }
 
-        def expectedNative = 'io/github/escolide/musicolide/internal/sqlite/native/Linux/x86_64/libsqlitejdbc.so'
+        def expectedNative = 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so'
         ZipFile zip = new ZipFile(pluginJar)
         try {
             def nativeEntries = zip.entries().toList().findAll {
                 !it.isDirectory() &&
-                        it.name.startsWith('io/github/escolide/musicolide/internal/sqlite/native/')
+                        it.name.startsWith('org/sqlite/native/')
             }.collect { it.name }
             if (nativeEntries.size() != 1 || nativeEntries[0] != expectedNative) {
                 throw new GradleException("Linux JAR must contain only ${expectedNative}; found: ${nativeEntries}")
@@ -97,7 +95,7 @@ tasks.register('verifyPluginJarSize') {
                 [pluginJar.toURI().toURL()] as URL[], ClassLoader.getPlatformClassLoader())
         try {
             Class driverType = Class.forName(
-                    'io.github.escolide.musicolide.internal.sqlite.JDBC', true, loader)
+                    'org.sqlite.JDBC', true, loader)
             Driver driver = (Driver) driverType.getDeclaredConstructor().newInstance()
             def connection = driver.connect('jdbc:sqlite::memory:', new Properties())
             if (connection == null) {
