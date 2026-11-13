@@ -14,6 +14,8 @@ curl --fail --location --retry 3 --output "$WORK/yt-dlp" "https://github.com/yt-
 echo "$YT_DLP_SHA256  $WORK/yt-dlp" | sha256sum --check --status
 curl --fail --location --retry 3 --output "$WORK/ffmpeg.tar.xz" "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ARCHIVE}"
 echo "$FFMPEG_SHA256  $WORK/ffmpeg.tar.xz" | sha256sum --check --status
+tar -tJf "$WORK/ffmpeg.tar.xz" | grep -Eq "/bin/ffmpeg$"
+tar -tJf "$WORK/ffmpeg.tar.xz" | grep -Eq "/bin/ffprobe$"
 mkdir -p "$WORK/ffmpeg"
 tar -xJf "$WORK/ffmpeg.tar.xz" -C "$WORK/ffmpeg"
 FFMPEG_BIN="$(find "$WORK/ffmpeg" -type f -path "*/bin/ffmpeg" -print -quit)"
