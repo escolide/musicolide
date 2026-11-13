@@ -5,6 +5,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -47,36 +49,24 @@ public final class YtDlpDownloader {
         Process process = null;
         try {
             String outputTemplate = destinationDirectory.resolve("source.%(ext)s").toString();
-            List<String> command = new ArrayList<>();
-            command.add(toolchain.executable(NativeToolchain.Tool.YT_DLP));
+            String jsRuntimeExecutable = null;
             if (isYouTubeHost(uri.getHost())) {
                 if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
                     throw new IOException("QuickJS is unavailable; YouTube extraction cannot start.");
                 }
-                command.add("--js-runtimes");
-                command.add("quickjs:" + toolchain.executable(NativeToolchain.Tool.JS_RUNTIME));
-                // yt-dlp's maintained EJS scripts are retrieved from the official
-                // yt-dlp/ejs GitHub project and cached by yt-dlp as remote components.
-                command.add("--remote-components");
-                command.add("ejs:github");
+                jsRuntimeExecutable = toolchain.executable(NativeToolchain.Tool.JS_RUNTIME);
             }
-            command.addAll(List.of(
-                    "--ignore-config",
-                    "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
-                    "--no-playlist",
-                    "--no-progress",
-                    "--no-warnings",
-                    "--no-part",
-                    "--max-downloads", "1",
-                    "--max-filesize", maxInputMb + "M",
-                    "--format", "bestaudio/best",
-                    "--match-filter", "duration <= " + plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800),
-                    "--output", outputTemplate,
-                    "--", uri.toASCIIString()
-            ));
+            List<String> command = buildCommand(
+                    toolchain.executable(NativeToolchain.Tool.YT_DLP),
+                    uri,
+                    jsRuntimeExecutable,
+                    cacheDirectory,
+                    maxInputMb,
+                    plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800),
+                    Path.of(outputTemplate));
             process = toolchain.start(new ProcessBuilder(command)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(errorLog.toFile()));
+                    .redirectErrorStream(true)
+                    .redirectOutput(errorLog.toFile()));
 
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
@@ -86,8 +76,11 @@ public final class YtDlpDownloader {
             int exit = process.exitValue();
             toolchain.finished(process);
             if (exit != 0) {
+                String details = readErrorSummary(errorLog, sourceUrl);
                 throw new IOException("yt-dlp failed with exit code " + exit
-                        + ". Check that the source is downloadable and authorized.");
+                        + (details.isBlank()
+                        ? ". Check that the source is reachable and authorized."
+                        : ". Details: " + details));
             }
 
             try (var files = Files.list(destinationDirectory)) {
@@ -110,6 +103,83 @@ public final class YtDlpDownloader {
         } finally {
             if (process != null) toolchain.finished(process);
             Files.deleteIfExists(errorLog);
+        }
+    }
+
+    /**
+     * Build a single-source download command. Do not add --max-downloads 1:
+     * yt-dlp returns exit code 101 when that limit is reached, even after the
+     * requested single source has downloaded successfully. --no-playlist is
+     * sufficient to ensure that one input URL yields at most one video.
+     */
+    static List<String> buildCommand(String executable, URI uri, String jsRuntimeExecutable,
+                                     Path cacheDirectory, int maxInputMb, long maxTrackDurationSeconds,
+                                     Path outputTemplate) {
+        List<String> command = new ArrayList<>();
+        command.add(executable);
+        if (isYouTubeHost(uri.getHost())) {
+            if (jsRuntimeExecutable == null || jsRuntimeExecutable.isBlank()) {
+                throw new IllegalArgumentException("A JavaScript runtime is required for YouTube extraction.");
+            }
+            command.add("--js-runtimes");
+            command.add("quickjs:" + jsRuntimeExecutable);
+            // yt-dlp's maintained EJS scripts are retrieved from the official
+            // yt-dlp/ejs GitHub project and cached by yt-dlp as remote components.
+            command.add("--remote-components");
+            command.add("ejs:github");
+        }
+        command.addAll(List.of(
+                "--ignore-config",
+                "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
+                "--no-playlist",
+                "--no-progress",
+                "--no-colors",
+                "--socket-timeout", "20",
+                "--retries", "3",
+                "--fragment-retries", "3",
+                "--concurrent-fragments", "1",
+                "--no-part",
+                "--max-filesize", maxInputMb + "M",
+                "--format", "bestaudio/best",
+                "--match-filter", "duration <= " + maxTrackDurationSeconds,
+                "--output", outputTemplate.toString(),
+                "--", uri.toASCIIString()
+        ));
+        return List.copyOf(command);
+    }
+
+    /**
+     * Keep a short tail of yt-dlp's combined output so an administrator can
+     * diagnose extractor/runtime failures without allowing an unbounded log into chat.
+     */
+    private static String readErrorSummary(Path errorLog, String sourceUrl) {
+        try {
+            long size = Files.size(errorLog);
+            int bytesToRead = (int) Math.min(size, 16 * 1024L);
+            if (bytesToRead == 0) return "";
+
+            String raw;
+            try (SeekableByteChannel channel = Files.newByteChannel(errorLog, StandardOpenOption.READ)) {
+                channel.position(Math.max(0L, size - bytesToRead));
+                ByteBuffer buffer = ByteBuffer.allocate(bytesToRead);
+                while (buffer.hasRemaining()) {
+                    int read = channel.read(buffer);
+                    if (read < 0) break;
+                }
+                buffer.flip();
+                raw = StandardCharsets.UTF_8.decode(buffer).toString();
+            }
+
+            String normalized = raw.replace(sourceUrl, "[source URL]")
+                    .replaceAll("(?i)(authorization|cookie|token)=([^&\\s]+)", "$1=[redacted]");
+            List<String> lines = normalized.lines().map(String::trim)
+                    .filter(line -> !line.isBlank()).toList();
+            if (lines.isEmpty()) return "";
+            int start = Math.max(0, lines.size() - 6);
+            String summary = String.join(" | ", lines.subList(start, lines.size()));
+            return summary.length() <= 1000 ? summary : summary.substring(summary.length() - 1000);
+        } catch (IOException ex) {
+            return "";
         }
     }
 

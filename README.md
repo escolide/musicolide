@@ -36,14 +36,14 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
 - FFmpeg probes input duration and prepares imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
-- A small built-in HTTP server serves generated per-track resource packs. Put HTTPS in front of it for production.
+- By default, generated resource packs are served locally through the existing Minecraft TCP listener. Musicolide inspects the first bytes of each accepted connection before Minecraft's packet handlers: HTTP GET/HEAD requests for the configured pack path are served from the local packs directory, while all other connections are passed to Paper unchanged. No second public port, external storage, VPS or upload account is required. A legacy dedicated-port HTTP mode remains available.
 - Resource packs are requested only for the current track and a rolling prefetch window (four upcoming tracks by default). Client-side pack hashes allow cached packs to be reused.
 - Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional volume-based stereo fade outside the main zone.
 - Overlap is resolved per player. The default policy is first-started session wins; lower-priority music continues in the exclusive part of its zone.
 
 ## Audio source and rights
 
-YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly allowlists the source host. The /play URL command can import an allowlisted URL when audio.yt-dlp.auto-import-on-play is enabled. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
+YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once an administrator enables that setting and configures authorized hosts, users with the DJ permission can run /play <url> in-game to import the source and start playback after the resource pack is generated. From console, specify --all or --player <name>. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
 
 Import only audio that you own or are authorized to distribute to your players. The presence of yt-dlp does not grant redistribution rights.
 
@@ -65,12 +65,33 @@ Both the universal JAR and the Linux x86_64 slim JAR have build-time checks enfo
 The deployable universal plugin is `build/libs/musicolide-0.1.0-universal.jar`.
 ## Server setup
 
-1. Install the JAR in plugins/ and start Paper once.
+1. Install the JAR in plugins/ and start Paper or Purpur once.
 2. Put authorized source files in plugins/Musicolide/incoming/.
-3. Configure server.public-base-url to an address your players can reach. The built-in HTTP server binds to server.bind-address:server.port. For public servers, use an HTTPS reverse proxy and expose only the configured pack path.
-4. Run /music import <filename> [title] as an administrator, or use /music import all to process every supported file in incoming/ sequentially.
-5. Use /music list to see imported tracks.
-6. Start playback with /music play <id-or-title>, or /play <url> when allowlisted URL auto-import is enabled.
+3. Set server.public-base-url to the public IP address or hostname players use to join the server. The default hosting mode is shared-port, and Musicolide automatically detects the bound Minecraft TCP listener port. The port written in an existing public-base-url is replaced when auto-detection is enabled.
+4. If the host maps the public TCP port to a different number than the port bound inside the Minecraft process, set server.public-port to that external port. Leave it at -1 for automatic detection.
+5. Run /music import <filename> [title] as an administrator, or use /music import all to process every supported file in incoming/ sequentially.
+6. Use /music list to see imported tracks.
+7. Start playback with /music play <id-or-title>, or /play <url> when allowlisted URL auto-import is enabled.
+
+No additional inbound port is needed in the default shared-port mode. The plugin keeps pack ZIP files in plugins/Musicolide/packs/ and serves them through the existing Minecraft TCP listener. The HTTP download URL must use the same public host and TCP port that players use to reach the Minecraft listener.
+
+Hosts that provide an additional public TCP port can opt into the legacy separate listener with server.hosting-mode: "dedicated-port"; configure server.port and include that port in server.public-base-url. This mode is not needed for normal shared-port deployments.
+
+## Enable direct YouTube playback
+
+To enable the administrator-triggered `/play <url>` import path, edit `plugins/Musicolide/config.yml` after the first startup:
+
+```yaml
+audio:
+  yt-dlp:
+    enabled: true
+    auto-import-on-play: true
+    allowed-hosts:
+      - "youtube.com"
+      - "youtu.be"
+```
+
+Then run `/music reload` (or restart the server). A player with the `musicolide.dj` permission can run `/play <YouTube URL>` in-game after the server administrator enables this setting. The import downloads to a temporary folder, runs yt-dlp first, then FFmpeg converts the source into short OGG segments, builds the resource pack, saves the temporary track, and starts a playback session. Console usage must include `--all` or `--player <name>`. Only use this for audio the server is authorized to download and redistribute; this setting does not grant those rights.
 
 ## Commands
 
@@ -121,10 +142,10 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 ## Configuration
 
-See the fully commented config.yml for all available settings. The resource-pack format is selected automatically from the running server version; do not manually set a pack format. Use /music reload after changing reloadable settings. HTTP listener settings require a server restart.
+See the fully commented config.yml for all available settings. The resource-pack format and shared Minecraft listener port are detected automatically; do not manually set a pack format or the Minecraft port. Set server.public-base-url to the public host players use. If external port mapping differs from the local Minecraft listener, set server.public-port explicitly. Use /music reload after changing reloadable settings. Hosting mode and shared-listener injection require a full server restart.
 
-Important settings include range geometry, prefetch depth, segment duration, cache limits, HTTP hosting, overlap priorities, fade behavior, permissions and messages. URL import is off by default and restricted to administrator-allowlisted hosts. YouTube may be added to allowed-hosts for authorized sources; Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
+Important settings include range geometry, prefetch depth, segment duration, cache limits, resource-pack hosting mode, public host/optional port override, overlap priorities, fade behavior, permissions and messages. URL auto-import is off by default and restricted to administrators. The default allowed-hosts list includes youtube.com and youtu.be; the server operator must explicitly enable audio.yt-dlp.auto-import-on-play after confirming redistribution rights. Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
 
 ## Status
 
-This repository is under active development. CI verifies compilation against the oldest supported Paper API and tests resource-pack metadata generation for both legacy and modern pack-format eras. Test on staging servers for 1.21.1, 1.21.9, 1.21.11 and 26.3 before production use, particularly resource-pack stacking, client download behavior and positional audio transitions.
+This repository is under active development. The shared-port listener integration uses Paper/Purpur's internal Netty acceptor layout through guarded reflection; it is not a stable Bukkit API. Unit tests cover HTTP-versus-Minecraft prefix detection and public URL port selection, but those tests do not replace live server tests. Test on staging servers for 1.21.1, 1.21.9, 1.21.11 and 26.2/26.3 before production use, particularly the Netty hook, mixed client versions, resource-pack downloads, resource-pack stacking and positional audio transitions. The server still needs to be reachable on its normal Minecraft TCP port, and the configured public host must resolve to that server. HTTP is used for the shared-port download endpoint; the plugin does not terminate HTTPS on the Minecraft listener.
