@@ -35,7 +35,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
-- FFmpeg/FFprobe prepare imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
+- FFmpeg probes input duration and prepares imported audio into stereo OGG segments only. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
 - A small built-in HTTP server serves generated per-track resource packs. Put HTTPS in front of it for production.
 - Resource packs are requested only for the current track and a rolling prefetch window (four upcoming tracks by default). Client-side pack hashes allow cached packs to be reused.
 - Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional volume-based stereo fade outside the main zone.
@@ -50,10 +50,15 @@ Import only audio that you own or are authorized to distribute to your players. 
 ## Build
 
 1. Install JDK 21 or newer.
-2. The CI build fetches pinned, checksum-verified Linux x86_64 yt-dlp, FFmpeg and FFprobe payloads before packaging them into the plugin JAR. For a local Linux x86_64 build, run `bash scripts/fetch-native-tools.sh` first. Other platforms may use tools installed on PATH. See `src/main/native/README.md` for versions and license notes.
-3. Run: ./gradlew clean test shadowJar
+2. Run `./gradlew clean test build`.
 
-The native extraction system does not include binary payloads in this source repository. Release packagers must add and license-check their own pinned builds.
+The distributable JAR intentionally contains **no FFmpeg or yt-dlp executable payloads**. This keeps the plugin download small and avoids shipping duplicate native binaries for every operating system. A Gradle verification task fails the build if the JAR exceeds 30 MiB.
+
+On the first startup of a Linux x86_64 server, Musicolide automatically downloads checksum-pinned yt-dlp and the FFmpeg executable into `plugins/Musicolide/native/linux-x86_64/`. Downloads are verified with SHA-256 before installation; the FFmpeg archive is deleted after extracting only the `ffmpeg` executable. FFprobe is not needed because Musicolide reads duration metadata directly from FFmpeg. The installed native tools are reused on later restarts.
+
+A first-time Linux install therefore needs outbound HTTPS access to GitHub and a system `tar` command with XZ support. The native runtime occupies additional server disk space (currently about 185 MB for yt-dlp and FFmpeg), but those files are **not** part of the plugin JAR. If the host already has compatible executables configured or on PATH, Musicolide uses those instead and skips their download. Other operating systems continue to use configured/PATH executables; automatic downloads currently target Linux x86_64 only.
+
+For manual Linux x86_64 testing, `bash scripts/fetch-native-tools.sh` places optional test binaries under `build/native-tools/`; these files are not packaged. See `src/main/native/README.md` for tool versions, integrity checks and licensing references.
 
 The deployable plugin is build/libs/musicolide-0.1.0.jar.
 
