@@ -19,6 +19,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PlaybackEngine {
+    // Minecraft labels SoundCategory.RECORDS as "Jukebox/Note Blocks".
+    private static final SoundCategory SOUND_CATEGORY = SoundCategory.RECORDS;
     private final JavaPlugin plugin;
     private final TrackRepository repository;
     private final PackManager packs;
@@ -31,6 +33,7 @@ public final class PlaybackEngine {
     private final GeyserBridge geyser;
     private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
     private BukkitTask task;
+    private BukkitTask segmentTask;
 
     public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs,
                           WorldGuardBridge worldGuard, GeyserBridge geyser) {
@@ -44,6 +47,9 @@ public final class PlaybackEngine {
     public void start() {
         long interval = Math.max(1, plugin.getConfig().getLong("general.check-interval-ticks", 5));
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 1L, interval);
+        // Segment changes are time-critical: the normal zone/pack loop may run less often.
+        // This lightweight watcher only checks players who are already receiving audio.
+        segmentTask = Bukkit.getScheduler().runTaskTimer(plugin, this::tickSegments, 1L, 1L);
     }
 
     public synchronized PlaybackSession startSession(UUID owner, String ownerName, MusicZone zone,
@@ -197,6 +203,58 @@ public final class PlaybackEngine {
         }
     }
 
+    /**
+     * Advances audio segments on a one-tick cadence without forcing the more
+     * expensive zone and resource-pack checks to run every tick. This avoids
+     * audible gaps caused by noticing a segment boundary late in the normal loop.
+     */
+    private void tickSegments() {
+        if (playerPlayback.isEmpty()) return;
+
+        Map<UUID, PlaybackSession> activeById = new HashMap<>();
+        synchronized (this) {
+            if (sessions.isEmpty()) return;
+            for (PlaybackSession session : sessions) activeById.put(session.id(), session);
+        }
+
+        for (Map.Entry<UUID, PlayerPlayback> entry : new ArrayList<>(playerPlayback.entrySet())) {
+            UUID playerId = entry.getKey();
+            PlayerPlayback state = entry.getValue();
+            if (state.sessionId == null || state.trackId == null) continue;
+
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null || !player.isOnline()) continue;
+
+            PlaybackSession session = activeById.get(state.sessionId);
+            if (session == null || session.paused() || !session.targets(playerId)) continue;
+            MusicTrack track = session.current();
+            if (track == null || !track.id().equals(state.trackId)) continue;
+
+            int segment = session.segmentIndex();
+            if (segment < 0 || segment >= track.segmentCount() || segment == state.segment) continue;
+
+            float volume = playbackVolume(player, session, state.fading);
+            if (volume <= 0) {
+                stopPlayer(player);
+                continue;
+            }
+
+            String sound = track.soundKey(segment);
+            if (state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
+            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
+            state.segment = segment;
+            state.sound = sound;
+        }
+    }
+
+    private float playbackVolume(Player player, PlaybackSession session, boolean fading) {
+        PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
+        float volume = (pref.volume() / 100.0f)
+                * (plugin.getConfig().getInt("playback.default-volume", 100) / 100.0f);
+        if (fading) volume *= (float) session.zone().fadeFactor(player.getX(), player.getZ());
+        return Math.max(0, Math.min(1, volume));
+    }
+
     private int compare(Candidate a, Candidate b) {
         boolean manual = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
         if (manual && a.session.priority() != b.session.priority()) {
@@ -261,13 +319,7 @@ public final class PlaybackEngine {
         int segment = session.segmentIndex();
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment);
-        PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
-        float volume = (pref.volume() / 100.0f)
-                * (plugin.getConfig().getInt("playback.default-volume", 100) / 100.0f);
-        if (fading) {
-            volume *= (float) session.zone().fadeFactor(player.getX(), player.getZ());
-        }
-        volume = Math.max(0, Math.min(1, volume));
+        float volume = playbackVolume(player, session, fading);
         if (volume <= 0) {
             stopPlayer(player);
             return;
@@ -276,7 +328,7 @@ public final class PlaybackEngine {
                 || state.segment != segment || state.fading != fading;
         if (changed) {
             stopPlayer(player);
-            player.playSound(player.getLocation(), sound, SoundCategory.MUSIC, volume, 1.0f);
+            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
@@ -312,7 +364,7 @@ public final class PlaybackEngine {
 
     private void stopPlayer(Player player) {
         PlayerPlayback state = playerPlayback.remove(player.getUniqueId());
-        if (state != null && state.sound != null) player.stopSound(state.sound, SoundCategory.MUSIC);
+        if (state != null && state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
     }
 
     private void stopPlayersInSession(PlaybackSession session) {
@@ -332,6 +384,7 @@ public final class PlaybackEngine {
 
     public void stopAll() {
         if (task != null) task.cancel();
+        if (segmentTask != null) segmentTask.cancel();
         for (Player player : Bukkit.getOnlinePlayers()) {
             stopPlayer(player);
             packs.releaseAll(player);
