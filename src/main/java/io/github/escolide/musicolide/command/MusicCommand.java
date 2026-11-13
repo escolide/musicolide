@@ -17,6 +17,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -246,6 +247,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     }));
             return;
         }
+        if (isYouTubeUrl(input)) {
+            sender.sendMessage(msg("&cYouTube URL auto-import is disabled."));
+            sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play and allow youtube.com/youtu.be in config.yml."));
+            sender.sendMessage(msg("&7For a one-time authorized import, use /music import-url <url> --rights-confirmed, then /music play <track-id>."));
+            return;
+        }
         if (!plugin.getConfig().getBoolean("matching.enabled", true)
                 || !plugin.getConfig().getBoolean("matching.metadata-lookup", true)) {
             sender.sendMessage(msg("&cNo saved alias exists for this URL. Ask an administrator to add one."));
@@ -304,7 +311,28 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return repository.search(token, 1).stream().findFirst();
     }
 
-    private boolean isExternal(String token) { return token != null && (token.startsWith("http://") || token.startsWith("https://")); }
+    private boolean isExternal(String token) {
+        if (token == null) return false;
+        try {
+            String scheme = URI.create(token).getScheme();
+            return scheme != null && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"));
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private boolean isYouTubeUrl(String token) {
+        if (token == null) return false;
+        try {
+            String host = URI.create(token).getHost();
+            if (host == null) return false;
+            host = host.toLowerCase(Locale.ROOT);
+            if (host.startsWith("www.")) host = host.substring(4);
+            return host.equals("youtube.com") || host.endsWith(".youtube.com") || host.equals("youtu.be");
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
 
     private PlayRequest parseRequest(CommandSender sender, String[] args) {
         boolean global = false;
