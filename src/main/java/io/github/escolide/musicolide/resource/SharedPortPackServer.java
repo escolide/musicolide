@@ -21,7 +21,6 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.QueryStringDecoder;
-import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.util.ReferenceCountUtil;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -438,7 +437,10 @@ public final class SharedPortPackServer implements AutoCloseable {
             response.headers().set(HttpHeaderNames.CONNECTION, "close");
 
             if (head) {
-                context.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+                DefaultFullHttpResponse headResponse = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+                headResponse.headers().set(response.headers());
+                context.writeAndFlush(headResponse).addListener(ChannelFutureListener.CLOSE);
                 return;
             }
 
