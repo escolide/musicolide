@@ -22,7 +22,7 @@ public final class NativeToolchain implements AutoCloseable {
     public enum Tool {
         FFMPEG("ffmpeg", "audio.ffmpeg.executable", "-version"),
         YT_DLP("yt-dlp", "audio.yt-dlp.executable", "--version"),
-        JS_RUNTIME("qjs", "audio.yt-dlp.js-runtime-executable", "--version");
+        JS_RUNTIME("qjs", "audio.yt-dlp.js-runtime-executable", "-v");
 
         private final String fileName;
         private final String configPath;
