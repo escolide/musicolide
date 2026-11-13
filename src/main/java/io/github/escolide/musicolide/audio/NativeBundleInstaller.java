@@ -96,12 +96,16 @@ final class NativeBundleInstaller {
         String suffix = platform.startsWith("windows-") ? ".exe" : "";
         Path ffmpeg = destination.resolve("bin").resolve("ffmpeg" + suffix);
         Path ytDlp = destination.resolve("bin").resolve("yt-dlp" + suffix);
-        if (!Files.isRegularFile(ffmpeg) || !Files.isRegularFile(ytDlp)) return Map.of();
+        Path jsRuntime = destination.resolve("bin").resolve("qjs" + suffix);
+        if (!Files.isRegularFile(ffmpeg) || !Files.isRegularFile(ytDlp)
+                || !Files.isRegularFile(jsRuntime)) return Map.of();
         setExecutable(ffmpeg, platform);
         setExecutable(ytDlp, platform);
+        setExecutable(jsRuntime, platform);
         Map<NativeToolchain.Tool, String> result = new EnumMap<>(NativeToolchain.Tool.class);
         result.put(NativeToolchain.Tool.FFMPEG, ffmpeg.toAbsolutePath().toString());
         result.put(NativeToolchain.Tool.YT_DLP, ytDlp.toAbsolutePath().toString());
+        result.put(NativeToolchain.Tool.JS_RUNTIME, jsRuntime.toAbsolutePath().toString());
         return Map.copyOf(result);
     }
 
@@ -169,7 +173,7 @@ final class NativeBundleInstaller {
 
             String ffmpegRelative = requiredExecutable(manifest, "ffmpeg");
             String ytDlpRelative = requiredExecutable(manifest, "yt-dlp");
-            String jsRuntimeRelative = optionalExecutable(manifest, "js-runtime");
+            String jsRuntimeRelative = requiredExecutable(manifest, "js-runtime");
 
             Path stagedFfmpeg = resolveRegularFile(staging, ffmpegRelative);
             Path stagedYtDlp = resolveRegularFile(staging, ytDlpRelative);
@@ -203,10 +207,9 @@ final class NativeBundleInstaller {
             Map<NativeToolchain.Tool, String> result = new EnumMap<>(NativeToolchain.Tool.class);
             result.put(NativeToolchain.Tool.FFMPEG, ffmpeg.toAbsolutePath().toString());
             result.put(NativeToolchain.Tool.YT_DLP, ytDlp.toAbsolutePath().toString());
-            if (stagedJsRuntime != null) {
-                Path jsRuntime = destination.resolve(staging.relativize(stagedJsRuntime)).normalize();
-                setExecutable(jsRuntime, expectedPlatform);
-            }
+            Path jsRuntime = destination.resolve(staging.relativize(stagedJsRuntime)).normalize();
+            setExecutable(jsRuntime, expectedPlatform);
+            result.put(NativeToolchain.Tool.JS_RUNTIME, jsRuntime.toAbsolutePath().toString());
             return Map.copyOf(result);
         } finally {
             deleteTree(staging);
