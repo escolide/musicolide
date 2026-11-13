@@ -85,7 +85,6 @@ resource-packs:
 playback:
   default-volume: 100
   default-mode: "stereo"
-  category: "RECORDS"
   overlap:
     enabled: true
     priority-policy: "first-started"
