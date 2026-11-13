@@ -66,6 +66,18 @@ final class NativeToolInstaller {
                 ? executable.toAbsolutePath().toString() : null;
     }
 
+    void cleanupObsoleteTools() {
+        if (!platform.equals("linux-x86_64")) return;
+        Path obsoleteProbe = binaryDirectory.resolve(platform).resolve("ffprobe");
+        try {
+            if (Files.deleteIfExists(obsoleteProbe)) {
+                plugin.getLogger().info("Removed obsolete FFprobe; FFmpeg now handles duration probing.");
+            }
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not remove obsolete FFprobe: " + ex.getMessage());
+        }
+    }
+
     String install(NativeToolchain.Tool tool) throws IOException {
         if (!platform.equals("linux-x86_64")) return null;
 
