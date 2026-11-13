@@ -9,12 +9,10 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Locates previously installed native tools. Current releases bundle their
- * platform tools in the JAR; this class preserves compatibility with existing
- * installations that already have tools in plugins/Musicolide/native/.
- *
- * There is intentionally no network downloader or shell-based archive extractor
- * in the normal runtime installer.
+ * Locates administrator-configured or previously installed native tools.
+ * The first-start downloader stores verified tools under
+ * plugins/Musicolide/native/<platform>/bin/; this class also preserves
+ * compatibility with older direct-path installations.
  */
 final class NativeToolInstaller {
     private final JavaPlugin plugin;
