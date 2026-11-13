@@ -1,0 +1,55 @@
+name: Self-contained release build
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    name: Verify and package all native platform bundles
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Run tests and enforce self-contained bundle requirements
+        run: |
+          ./gradlew --no-daemon clean test build verifySelfContainedNativeBundles
+
+      - name: Verify release JAR contains all six platform archives and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="build/libs/musicolide-0.1.0-universal.jar"
+          test -s "$JAR"
+          for platform in \
+            linux-x86_64 linux-aarch64 \
+            windows-x86_64 windows-aarch64 \
+            macos-x86_64 macos-aarch64; do
+            unzip -Z1 "$JAR" | grep -Fx "native-bundles/$platform.zip" >/dev/null
+            unzip -Z1 "$JAR" | grep -Fx "native-bundles/$platform.sha256" >/dev/null
+          done
+          SIZE="$(stat -c '%s' "$JAR")"
+          LIMIT="$((30 * 1024 * 1024))"
+          test "$SIZE" -le "$LIMIT"
+          printf 'Self-contained universal JAR: %s bytes (limit %s bytes)\n' "$SIZE" "$LIMIT"
+
+      - name: Upload self-contained release JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: musicolide-self-contained-release
+          path: build/libs/musicolide-0.1.0-universal.jar
+          if-no-files-found: error
+          retention-days: 30
