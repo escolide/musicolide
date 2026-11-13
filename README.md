@@ -43,7 +43,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 ## Audio source and rights
 
-YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once an administrator enables that setting, an administrator can run /play <url> in-game to import the source and start playback after the resource pack is generated. From console, specify --all or --player <name>. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
+YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once an administrator enables that setting and configures authorized hosts, users with the DJ permission can run /play <url> in-game to import the source and start playback after the resource pack is generated. From console, specify --all or --player <name>. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
 
 Import only audio that you own or are authorized to distribute to your players. The presence of yt-dlp does not grant redistribution rights.
 
@@ -86,7 +86,7 @@ audio:
       - "youtu.be"
 ```
 
-Then run `/music reload` (or restart the server). An operator with `musicolide.admin` can run `/play <YouTube URL>` in-game. The import downloads to a temporary folder, runs yt-dlp first, then FFmpeg converts the source into short OGG segments, builds the resource pack, saves the temporary track, and starts a playback session. Console usage must include `--all` or `--player <name>`. Only use this for audio the server is authorized to download and redistribute; this setting does not grant those rights.
+Then run `/music reload` (or restart the server). A player with the `musicolide.dj` permission can run `/play <YouTube URL>` in-game after the server administrator enables this setting. The import downloads to a temporary folder, runs yt-dlp first, then FFmpeg converts the source into short OGG segments, builds the resource pack, saves the temporary track, and starts a playback session. Console usage must include `--all` or `--player <name>`. Only use this for audio the server is authorized to download and redistribute; this setting does not grant those rights.
 
 ## Commands
 
