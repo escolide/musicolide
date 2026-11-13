@@ -129,6 +129,7 @@ final class NativeToolDownloader {
             marker.setProperty("yt-dlp.version", YT_DLP_VERSION);
             marker.setProperty("quickjs.version", QUICKJS_VERSION);
             marker.setProperty("ffmpeg.archive.sha256", spec.ffmpeg().sha256());
+            marker.setProperty("ffmpeg.binary.sha256", sha256File(ffmpeg));
             marker.setProperty("yt-dlp.sha256", spec.ytDlp().sha256());
             marker.setProperty("quickjs.sha256", spec.quickJs().sha256());
             try (OutputStream output = Files.newOutputStream(staging.resolve(INSTALL_MARKER),
@@ -163,9 +164,20 @@ final class NativeToolDownloader {
 
         Map<NativeToolchain.Tool, String> paths = toolPaths(directory);
         if (paths.size() != 3) return Map.of();
-        for (String path : paths.values()) {
-            Path executable = Path.of(path);
-            if (!Files.isRegularFile(executable, LinkOption.NOFOLLOW_LINKS)) return Map.of();
+
+        Map<NativeToolchain.Tool, String> expected = Map.of(
+                NativeToolchain.Tool.FFMPEG, marker.getProperty("ffmpeg.binary.sha256", ""),
+                NativeToolchain.Tool.YT_DLP, marker.getProperty("yt-dlp.sha256", ""),
+                NativeToolchain.Tool.JS_RUNTIME, marker.getProperty("quickjs.sha256", ""));
+        for (Map.Entry<NativeToolchain.Tool, String> entry : paths.entrySet()) {
+            Path executable = Path.of(entry.getValue());
+            String expectedHash = expected.get(entry.getKey());
+            if (expectedHash == null || !expectedHash.matches("(?i)[0-9a-f]{64}")
+                    || !Files.isRegularFile(executable, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(executable) == 0L
+                    || !expectedHash.equalsIgnoreCase(sha256File(executable))) {
+                return Map.of();
+            }
             setExecutable(executable);
         }
         return Map.copyOf(paths);
@@ -388,6 +400,16 @@ final class NativeToolDownloader {
 
     private String executableName(String name) {
         return name + (platform.startsWith("windows-") ? ".exe" : "");
+    }
+
+    private static String sha256File(Path file) throws IOException {
+        MessageDigest digest = sha256Digest();
+        try (InputStream input = Files.newInputStream(file)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     private static MessageDigest sha256Digest() {
