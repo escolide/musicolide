@@ -42,20 +42,23 @@ tasks.named('shadowJar') {
     relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
 }
 
-tasks.named('processResources') {
-    from('src/main/native') {
-        into 'native'
-        exclude '**/README.md', '**/LICENSE*', '**/COPYING*', '**/NOTICE*'
-    }
-    from('src/main/native/licenses') {
-        into 'META-INF/licenses/musicolide'
-    }
-}
 
 tasks.named('jar') {
     enabled = false
 }
 
-tasks.named('build') {
+tasks.register('verifyPluginJarSize') {
     dependsOn tasks.named('shadowJar')
+    doLast {
+        def pluginJar = tasks.named('shadowJar').get().archiveFile.get().asFile
+        def maximumBytes = 30L * 1024L * 1024L
+        if (pluginJar.length() > maximumBytes) {
+            throw new GradleException("Plugin JAR is ${pluginJar.length()} bytes; maximum allowed is ${maximumBytes} bytes.")
+        }
+        logger.lifecycle("Plugin JAR size: ${String.format('%.2f MB', pluginJar.length() / 1024.0 / 1024.0)} (limit: 30 MB)")
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('shadowJar'), tasks.named('verifyPluginJarSize')
 }
