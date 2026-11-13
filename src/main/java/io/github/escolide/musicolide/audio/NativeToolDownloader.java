@@ -333,8 +333,10 @@ final class NativeToolDownloader {
         String normalized = name.replace('\\', '/');
         String lower = normalized.toLowerCase(Locale.ROOT);
         String basename = lower.substring(lower.lastIndexOf('/') + 1);
-        return (basename.equals("ffmpeg") || basename.equals("ffmpeg.exe"))
-                && (lower.contains("/bin/") || !lower.contains("/"));
+        // Archives are from pinned release URLs and SHA-256 checked; select the
+        // executable by exact basename so upstream packaging-directory changes
+        // do not break macOS tarballs. No archive path is ever written to disk.
+        return basename.equals("ffmpeg") || basename.equals("ffmpeg.exe");
     }
 
     private static void copyBounded(InputStream input, OutputStream output, long maximum) throws IOException {
