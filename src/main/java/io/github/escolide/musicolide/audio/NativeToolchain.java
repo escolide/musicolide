@@ -4,6 +4,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermission;
@@ -13,14 +14,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Resolves optional binaries embedded at native/<platform>/ or installed on PATH.
- * Binary payloads are deliberately not committed to this repository; packagers can
- * place license-cleared builds under src/main/native/<platform>/ before building.
+ * Resolves locally configured executables, legacy embedded tools, or securely
+ * downloads the pinned Linux x86_64 runtime tools into the plugin data folder.
+ * Network access, extraction, and version checks always run off the server thread.
  */
 public final class NativeToolchain implements AutoCloseable {
     public enum Tool {
         FFMPEG("ffmpeg", "audio.ffmpeg.executable", "-version"),
-        FFPROBE("ffprobe", "audio.ffmpeg.ffprobe-executable", "-version"),
         YT_DLP("yt-dlp", "audio.yt-dlp.executable", "--version");
 
         private final String fileName;
@@ -40,6 +40,7 @@ public final class NativeToolchain implements AutoCloseable {
     private final Path dataDirectory;
     private final Path binaryDirectory;
     private final String platform;
+    private final NativeToolInstaller installer;
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
@@ -51,12 +52,12 @@ public final class NativeToolchain implements AutoCloseable {
         this.dataDirectory = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
         this.binaryDirectory = dataDirectory.resolve("native");
         this.platform = platformKey(System.getProperty("os.name", ""), System.getProperty("os.arch", ""));
+        this.installer = new NativeToolInstaller(plugin, this, dataDirectory, binaryDirectory, platform);
     }
 
     /**
-     * Runs executable extraction and version probes away from the Bukkit main thread.
-     * The common pool uses daemon workers; close() prevents any later child process
-     * from being started if the plugin is disabled during initialization.
+     * Runs extraction, optional first-run downloads, and version probes away from
+     * the Bukkit main thread. The common-pool worker is a daemon thread.
      */
     public CompletableFuture<List<ToolStatus>> initializeAsync() {
         return CompletableFuture.supplyAsync(this::initialize);
@@ -71,6 +72,7 @@ public final class NativeToolchain implements AutoCloseable {
             initialized = true;
             return List.of();
         }
+
         try {
             Files.createDirectories(binaryDirectory);
             Files.createDirectories(dataDirectory.resolve("temp"));
@@ -82,18 +84,45 @@ public final class NativeToolchain implements AutoCloseable {
         }
 
         for (Tool tool : Tool.values()) {
-            String executable = null;
+            String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
+            if (configured == null || configured.isBlank()) configured = tool.fileName;
+
+            String bundled = null;
             try {
-                executable = extractBundled(tool);
+                bundled = extractBundled(tool);
             } catch (IOException ex) {
-                plugin.getLogger().warning("Could not extract bundled " + tool.fileName + ": " + ex.getMessage());
+                plugin.getLogger().warning("Could not extract legacy bundled " + tool.fileName + ": " + ex.getMessage());
             }
-            if (executable == null || executable.isBlank()) {
-                executable = plugin.getConfig().getString(tool.configPath, tool.fileName);
-            }
-            if (executable == null || executable.isBlank()) executable = tool.fileName;
-            executables.put(tool, executable);
+
+            String executable = bundled == null ? configured : bundled;
             ToolStatus status = inspect(tool, executable);
+
+            // A broken/obsolete embedded copy must not prevent a working PATH entry.
+            if (!status.available() && bundled != null && !configured.equals(bundled)) {
+                ToolStatus configuredStatus = inspect(tool, configured);
+                if (configuredStatus.available()) {
+                    executable = configured;
+                    status = configuredStatus;
+                }
+            }
+
+            boolean autoDownload = plugin.getConfig().getBoolean("audio.tools.auto-download", true);
+            if (tool == Tool.YT_DLP && !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+                autoDownload = false;
+            }
+            if (!status.available() && autoDownload && !closed) {
+                try {
+                    String downloaded = installer.install(tool);
+                    if (downloaded != null) {
+                        executable = downloaded;
+                        status = inspect(tool, executable);
+                    }
+                } catch (Exception ex) {
+                    plugin.getLogger().warning("Automatic setup of " + tool.fileName + " failed: " + ex.getMessage());
+                }
+            }
+
+            executables.put(tool, executable);
             statuses.put(tool, status);
             if (status.available()) {
                 plugin.getLogger().info(tool.fileName + " available: " + status.version());
@@ -102,6 +131,7 @@ public final class NativeToolchain implements AutoCloseable {
                         + "Audio importing that needs this tool will be disabled; playback of existing tracks remains available.");
             }
         }
+
         initialized = true;
         return List.copyOf(statuses.values());
     }
@@ -161,6 +191,7 @@ public final class NativeToolchain implements AutoCloseable {
         Path destinationDirectory = binaryDirectory.resolve(platform);
         Path destination = destinationDirectory.resolve(fileName).normalize();
         if (!destination.startsWith(destinationDirectory)) throw new IOException("Invalid native executable path.");
+
         try (InputStream input = plugin.getResource(resource)) {
             if (input == null) return null;
             Files.createDirectories(destinationDirectory);
@@ -168,12 +199,7 @@ public final class NativeToolchain implements AutoCloseable {
             try {
                 Files.copy(input, temporary, StandardCopyOption.REPLACE_EXISTING);
                 setExecutable(temporary);
-                try {
-                    Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE,
-                            StandardCopyOption.REPLACE_EXISTING);
-                } catch (AtomicMoveNotSupportedException ex) {
-                    Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
-                }
+                moveReplacing(temporary, destination);
             } finally {
                 Files.deleteIfExists(temporary);
             }
@@ -192,6 +218,14 @@ public final class NativeToolchain implements AutoCloseable {
             if (!file.toFile().setExecutable(true, false) && !Files.isExecutable(file)) {
                 throw new IOException("Could not mark native binary executable.");
             }
+        }
+    }
+
+    private void moveReplacing(Path source, Path destination) throws IOException {
+        try {
+            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ex) {
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -226,7 +260,7 @@ public final class NativeToolchain implements AutoCloseable {
         long size = Files.size(file);
         try (var channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
             channel.position(Math.max(0, size - maximumBytes));
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate((int) Math.min(size, maximumBytes));
+            ByteBuffer buffer = ByteBuffer.allocate((int) Math.min(size, maximumBytes));
             channel.read(buffer);
             buffer.flip();
             return StandardCharsets.UTF_8.decode(buffer).toString();
