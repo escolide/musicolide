@@ -72,8 +72,6 @@ The deployable universal plugin is `build/libs/musicolide-0.1.0-universal.jar`.
 5. Use /music list to see imported tracks.
 6. Start playback with /music play <id-or-title>, or /play <url> when allowlisted URL auto-import is enabled.
 
-## Commands
-
 ## Enable direct YouTube playback
 
 To enable the administrator-triggered `/play <url>` import path, edit `plugins/Musicolide/config.yml` after the first startup:
@@ -90,6 +88,7 @@ audio:
 
 Then run `/music reload` (or restart the server). An operator with `musicolide.admin` can run `/play <YouTube URL>` in-game. The import downloads to a temporary folder, runs yt-dlp first, then FFmpeg converts the source into short OGG segments, builds the resource pack, saves the temporary track, and starts a playback session. Console usage must include `--all` or `--player <name>`. Only use this for audio the server is authorized to download and redistribute; this setting does not grant those rights.
 
+## Commands
 
 - /music help
 - /music import <filename> [title] (admin)
