@@ -21,6 +21,10 @@ Each directory must contain all three executables. QuickJS is required by yt-dlp
 for YouTube's JavaScript challenge solver; the manifest entry is
 js-runtime=bin/qjs (or bin/qjs.exe on Windows).
 
+Each directory must contain all three executables. QuickJS is the JavaScript engine
+used by yt-dlp's YouTube challenge solver and is passed explicitly through
+--js-runtimes quickjs:<absolute-path>.
+
 Each directory must contain:
 
 - bin/ffmpeg, bin/yt-dlp, and bin/qjs (append .exe on Windows)
