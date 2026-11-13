@@ -14,9 +14,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Resolves locally configured executables, legacy embedded tools, or securely
- * downloads the pinned Linux x86_64 runtime tools into the plugin data folder.
- * Network access, extraction, and version checks always run off the server thread.
+ * Resolves administrator-configured tools or extracts a checksum-verified
+ * platform bundle embedded in the plugin JAR. Extraction and version checks
+ * always run away from the Bukkit server thread.
  */
 public final class NativeToolchain implements AutoCloseable {
     public enum Tool {
@@ -58,8 +58,8 @@ public final class NativeToolchain implements AutoCloseable {
     }
 
     /**
-     * Runs extraction, optional first-run downloads, and version probes away from
-     * the Bukkit main thread. The common-pool worker is a daemon thread.
+     * Runs bundle extraction and executable probes away from the Bukkit main
+     * thread. The common-pool worker is a daemon thread.
      */
     public CompletableFuture<List<ToolStatus>> initializeAsync() {
         return CompletableFuture.supplyAsync(this::initialize);
@@ -88,13 +88,15 @@ public final class NativeToolchain implements AutoCloseable {
         installer.cleanupObsoleteTools();
 
         Map<Tool, String> embeddedTools = Map.of();
-        try {
-            embeddedTools = bundleInstaller.install();
-            if (!embeddedTools.isEmpty()) {
-                plugin.getLogger().info("Extracted the embedded " + platform + " native tool bundle.");
+        if (plugin.getConfig().getBoolean("audio.tools.bundled-first", true)) {
+            try {
+                embeddedTools = bundleInstaller.install();
+                if (!embeddedTools.isEmpty()) {
+                    plugin.getLogger().info("Verified and installed the embedded " + platform + " native tool bundle.");
+                }
+            } catch (IOException ex) {
+                plugin.getLogger().warning("Embedded native bundle could not be installed: " + ex.getMessage());
             }
-        } catch (IOException ex) {
-            plugin.getLogger().warning("Embedded native bundle could not be installed: " + ex.getMessage());
         }
 
         for (Tool tool : Tool.values()) {
@@ -120,25 +122,6 @@ public final class NativeToolchain implements AutoCloseable {
                 if (configuredStatus.available()) {
                     executable = configured;
                     status = configuredStatus;
-                }
-            }
-
-            // Legacy Linux download is an explicit emergency compatibility option.
-            // Normal installations use the embedded bundle or administrator-provided PATH tools.
-            boolean legacyDownload = plugin.getConfig().getBoolean(
-                    "audio.tools.legacy-linux-download-fallback", false);
-            if (tool == Tool.YT_DLP && !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
-                legacyDownload = false;
-            }
-            if (!status.available() && legacyDownload && !closed) {
-                try {
-                    String downloaded = installer.install(tool);
-                    if (downloaded != null) {
-                        executable = downloaded;
-                        status = inspect(tool, executable);
-                    }
-                } catch (Exception ex) {
-                    plugin.getLogger().warning("Automatic setup of " + tool.fileName + " failed: " + ex.getMessage());
                 }
             }
 
@@ -336,7 +319,8 @@ public final class NativeToolchain implements AutoCloseable {
     }
 
     private boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return os.startsWith("windows") || os.equals("win");
     }
 
     @Override
