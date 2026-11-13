@@ -7,7 +7,7 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT"
 YT_DLP_VERSION="2026.10.26"
 YT_DLP_SHA256="767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795"
-FFMPEG_TAG="autobuild-2026-11-12-15-40"
+FFMPEG_TAG="latest"
 FFMPEG_ARCHIVE="ffmpeg-master-latest-linux64-lgpl.tar.xz"
 FFMPEG_SHA256="a954b5f03a1b9c379113a40bcc84d2f773a7453d8bd555f4b600da8b39958586"
 curl --fail --location --retry 3 --output "$WORK/yt-dlp" "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp_linux"
