@@ -9,10 +9,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -21,7 +19,6 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
@@ -54,11 +51,6 @@ final class NativeToolDownloader {
     private static final long MAX_YT_DLP_BYTES = 64L * 1024L * 1024L;
     private static final long MAX_QUICKJS_BYTES = 16L * 1024L * 1024L;
     private static final long MAX_EXTRACTED_FFMPEG_BYTES = 256L * 1024L * 1024L;
-
-    private static final HttpClient HTTP = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(25))
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
 
     enum ArchiveFormat { ZIP, TAR_XZ, TAR_GZ }
 
@@ -102,6 +94,7 @@ final class NativeToolDownloader {
         }
 
         Files.createDirectories(nativeRoot);
+        cleanupStaleStagingDirectories();
         Path staging = nativeRoot.resolve("." + platform + ".download-" + UUID.randomUUID());
         Path work = staging.resolve("work");
         Path bin = staging.resolve("bin");
@@ -148,10 +141,6 @@ final class NativeToolDownloader {
             plugin.getLogger().info("Installed and checksum-verified yt-dlp, FFmpeg and QuickJS for " + platform
                     + " under plugins/Musicolide/native/.");
             return toolPaths(nativeRoot.resolve(platform));
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            deleteTree(staging);
-            throw new IOException("Native-tool download was interrupted.", ex);
         } catch (IOException | RuntimeException ex) {
             deleteTree(staging);
             throw ex;
@@ -194,28 +183,35 @@ final class NativeToolDownloader {
         return paths;
     }
 
-    private void download(Artifact artifact, Path destination) throws IOException, InterruptedException {
+    private void download(Artifact artifact, Path destination) throws IOException {
         Files.createDirectories(destination.getParent());
         Path partial = destination.resolveSibling(destination.getFileName() + ".part");
         Files.deleteIfExists(partial);
 
-        HttpRequest request = HttpRequest.newBuilder(artifact.uri())
-                .timeout(Duration.ofMinutes(30))
-                .header("User-Agent", "Musicolide-NativeInstaller/1.0")
-                .header("Accept", "application/octet-stream")
-                .GET()
-                .build();
+        HttpURLConnection connection = (HttpURLConnection) artifact.uri().toURL().openConnection();
+        connection.setInstanceFollowRedirects(true);
+        connection.setConnectTimeout(25_000);
+        connection.setReadTimeout(60_000);
+        connection.setUseCaches(false);
+        connection.setRequestProperty("User-Agent", "Musicolide-NativeInstaller/1.0");
+        connection.setRequestProperty("Accept", "application/octet-stream");
 
-        HttpResponse<InputStream> response = HTTP.send(request, HttpResponse.BodyHandlers.ofInputStream());
-        try (InputStream body = response.body()) {
-            if (response.statusCode() != 200) {
-                throw new IOException("Download of " + artifact.fileName() + " returned HTTP "
-                        + response.statusCode() + ".");
+        try {
+            int status = connection.getResponseCode();
+            if (status != HttpURLConnection.HTTP_OK) {
+                throw new IOException("Download of " + artifact.fileName() + " returned HTTP " + status + ".");
             }
-            if (!isTrustedDownloadHost(response.uri().getHost())) {
-                throw new IOException("Native-tool download redirected to an untrusted host.");
+            URI finalUri;
+            try {
+                finalUri = connection.getURL().toURI();
+            } catch (java.net.URISyntaxException ex) {
+                throw new IOException("Native-tool download redirected to an invalid URL.", ex);
             }
-            long contentLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+            if (!"https".equalsIgnoreCase(finalUri.getScheme())
+                    || !isTrustedDownloadHost(finalUri.getHost())) {
+                throw new IOException("Native-tool download redirected to an untrusted host or scheme.");
+            }
+            long contentLength = connection.getContentLengthLong();
             if (contentLength > artifact.maxBytes()) {
                 throw new IOException("Native-tool archive " + artifact.fileName()
                         + " exceeds its configured download-size limit.");
@@ -224,8 +220,9 @@ final class NativeToolDownloader {
             MessageDigest digest = sha256Digest();
             long total = 0L;
             byte[] buffer = new byte[64 * 1024];
-            try (OutputStream output = Files.newOutputStream(partial,
-                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            try (InputStream body = connection.getInputStream();
+                 OutputStream output = Files.newOutputStream(partial,
+                         StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
                 int read;
                 while ((read = body.read(buffer)) != -1) {
                     total += read;
@@ -248,6 +245,20 @@ final class NativeToolDownloader {
         } catch (IOException | RuntimeException ex) {
             Files.deleteIfExists(partial);
             throw ex;
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private void cleanupStaleStagingDirectories() {
+        String prefix = "." + platform + ".download-";
+        try (var children = Files.list(nativeRoot)) {
+            for (Path child : children.filter(path -> path.getFileName().toString().startsWith(prefix)).toList()) {
+                deleteTree(child);
+            }
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not clean an abandoned native-tool staging directory: "
+                    + ex.getMessage());
         }
     }
 
