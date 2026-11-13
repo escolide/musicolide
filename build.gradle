@@ -19,9 +19,7 @@ repositories {
 }
 
 dependencies {
-    // Compile against the oldest supported API to prevent accidental newer API links.
     compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
-    // Optional at runtime: Geyser is detected before the isolated adapter class is loaded.
     compileOnly 'org.geysermc.geyser:api:2.11.2-SNAPSHOT'
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
     testImplementation platform('org.junit:junit-bom:5.12.2')
@@ -44,11 +42,13 @@ tasks.named('shadowJar') {
     relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
 }
 
-// Optional license-cleared native builds can be supplied under src/main/native/<platform>/.
 tasks.named('processResources') {
     from('src/main/native') {
         into 'native'
         exclude '**/README.md', '**/LICENSE*', '**/COPYING*', '**/NOTICE*'
+    }
+    from('src/main/native/licenses') {
+        into 'META-INF/licenses/musicolide'
     }
 }
 
