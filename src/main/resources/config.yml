@@ -14,13 +14,14 @@ server:
   max-download-mb: 100
 
 audio:
-  # The universal JAR can carry compressed platform-specific native bundles.
-  # Matching files are checksum-verified and extracted into plugins/Musicolide/native/.
-  # If a platform bundle is not present, configured executables/PATH remain available.
   tools:
+    # Prefer a verified embedded bundle if one is supplied by a custom build.
     bundled-first: true
-    # Normal startup never downloads native executables. Use embedded bundles or
-    # explicitly configured executables/PATH entries.
+    # Download pinned yt-dlp, FFmpeg and QuickJS builds over HTTPS on first startup.
+    # The download, checksum verification and extraction run in a background worker.
+    # Installed tools remain in plugins/Musicolide/native/ across server restarts.
+    # Set false only when you manage all required executables yourself.
+    download-on-first-start: true
   ffmpeg:
     executable: "ffmpeg"
     required: false
