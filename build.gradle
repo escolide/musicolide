@@ -66,8 +66,10 @@ tasks.register('packageNativeBundles') {
             String suffix = windows ? '.exe' : ''
             File ffmpeg = new File(platformDir, 'bin/ffmpeg' + suffix)
             File ytDlp = new File(platformDir, 'bin/yt-dlp' + suffix)
-            if (!ffmpeg.isFile() || !ytDlp.isFile()) {
-                throw new GradleException(platformDir.name + ' bundle must contain bin/ffmpeg' + suffix + ' and bin/yt-dlp' + suffix + '.')
+            File quickJs = new File(platformDir, 'bin/qjs' + suffix)
+            if (!ffmpeg.isFile() || !ytDlp.isFile() || !quickJs.isFile()) {
+                throw new GradleException(platformDir.name + ' bundle must contain bin/ffmpeg' + suffix
+                        + ', bin/yt-dlp' + suffix + ' and bin/qjs' + suffix + '.')
             }
 
             File archive = new File(output, platformDir.name + '.zip')
@@ -75,7 +77,8 @@ tasks.register('packageNativeBundles') {
             zip.setLevel(9)
             try {
                 zip.putNextEntry(new ZipEntry('manifest.properties'))
-                String manifest = 'platform=' + platformDir.name + '\nffmpeg=bin/ffmpeg' + suffix + '\nyt-dlp=bin/yt-dlp' + suffix + '\n'
+                String manifest = 'platform=' + platformDir.name + '\nffmpeg=bin/ffmpeg' + suffix
+                        + '\nyt-dlp=bin/yt-dlp' + suffix + '\njs-runtime=bin/qjs' + suffix + '\n'
                 zip.write(manifest.getBytes('UTF-8'))
                 zip.closeEntry()
 
