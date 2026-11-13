@@ -229,11 +229,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
         if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            if (!admin(sender)) return;
             if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
                 sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
                 return;
             }
-            sender.sendMessage(msg("&eImporting this allowlisted URL. The server will only import sources approved by its administrator."));
+            sender.sendMessage(msg("&eImporting this allowlisted URL. URL auto-import is admin-only; confirm that your server may distribute this audio."));
             processor.importUrl(input, null).whenComplete((imported, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
                         if (error != null) {
