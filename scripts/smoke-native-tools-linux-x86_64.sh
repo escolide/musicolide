@@ -38,6 +38,7 @@ install -m 0755 "$WORK/qjs" "$WORK/bin/qjs"
 install -m 0755 "$FFMPEG_BIN" "$WORK/bin/ffmpeg"
 
 test "$("$WORK/bin/yt-dlp" --version)" = "$YT_DLP_VERSION"
+"$WORK/bin/qjs" -v >/dev/null
 "$WORK/bin/qjs" -e 'print("quickjs-ok")' | grep -Fx "quickjs-ok"
 "$WORK/bin/ffmpeg" -hide_banner -version >/dev/null
 "$WORK/bin/ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q 'libvorbis'
