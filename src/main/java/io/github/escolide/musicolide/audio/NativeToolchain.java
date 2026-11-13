@@ -3,20 +3,18 @@ package io.github.escolide.musicolide.audio;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Resolves administrator-configured tools or extracts a checksum-verified
- * platform bundle embedded in the plugin JAR. Extraction and version checks
- * always run away from the Bukkit server thread.
+ * Resolves administrator-configured tools or downloads a pinned, checksum-
+ * verified native toolchain on first startup. Downloads, installation and
+ * executable probes run away from the Bukkit server thread.
  */
 public final class NativeToolchain implements AutoCloseable {
     public enum Tool {
@@ -42,7 +40,6 @@ public final class NativeToolchain implements AutoCloseable {
     private final Path binaryDirectory;
     private final String platform;
     private final NativeToolInstaller installer;
-    private final NativeBundleInstaller bundleInstaller;
     private final NativeToolDownloader downloadInstaller;
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
@@ -56,7 +53,6 @@ public final class NativeToolchain implements AutoCloseable {
         this.binaryDirectory = dataDirectory.resolve("native");
         this.platform = platformKey(System.getProperty("os.name", ""), System.getProperty("os.arch", ""));
         this.installer = new NativeToolInstaller(plugin, this, dataDirectory, binaryDirectory, platform);
-        this.bundleInstaller = new NativeBundleInstaller(plugin, dataDirectory, binaryDirectory, platform);
         this.downloadInstaller = new NativeToolDownloader(plugin, binaryDirectory, platform);
     }
 
@@ -90,21 +86,8 @@ public final class NativeToolchain implements AutoCloseable {
 
         installer.cleanupObsoleteTools();
 
-        Map<Tool, String> embeddedTools = Map.of();
-        if (plugin.getConfig().getBoolean("audio.tools.bundled-first", true)) {
-            try {
-                embeddedTools = bundleInstaller.install();
-                if (!embeddedTools.isEmpty()) {
-                    plugin.getLogger().info("Verified and installed the embedded " + platform + " native tool bundle.");
-                }
-            } catch (IOException ex) {
-                plugin.getLogger().warning("Embedded native bundle could not be installed: " + ex.getMessage());
-            }
-        }
-
         Map<Tool, String> downloadedTools = Map.of();
-        if (embeddedTools.isEmpty()
-                && plugin.getConfig().getBoolean("audio.tools.download-on-first-start", true)) {
+        if (plugin.getConfig().getBoolean("audio.tools.download-on-first-start", true)) {
             try {
                 downloadedTools = downloadInstaller.install();
             } catch (IOException ex) {
@@ -117,18 +100,9 @@ public final class NativeToolchain implements AutoCloseable {
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
 
-            String bundled = embeddedTools.get(tool);
-            if (bundled == null) bundled = downloadedTools.get(tool);
-            if (bundled == null) {
-                try {
-                    bundled = extractBundled(tool);
-                } catch (IOException ex) {
-                    plugin.getLogger().warning("Could not extract legacy bundled " + tool.fileName + ": " + ex.getMessage());
-                }
-            }
-
+            String downloaded = downloadedTools.get(tool);
             String existing = installer.existing(tool);
-            String executable = bundled != null ? bundled : (existing != null ? existing : configured);
+            String executable = downloaded != null ? downloaded : (existing != null ? existing : configured);
             ToolStatus status = inspect(tool, executable);
 
             // A broken/obsolete installed copy must not prevent a working PATH entry.
@@ -171,7 +145,7 @@ public final class NativeToolchain implements AutoCloseable {
 
     public Process start(ProcessBuilder builder) throws IOException {
         if (closed) throw new IOException("Musicolide native toolchain is shutting down.");
-        configureBundleEnvironment(builder);
+        configureNativeEnvironment(builder);
         Process process = builder.start();
         processes.add(process);
         return process;
@@ -202,31 +176,7 @@ public final class NativeToolchain implements AutoCloseable {
         }
     }
 
-    private String extractBundled(Tool tool) throws IOException {
-        if (!plugin.getConfig().getBoolean("audio.tools.bundled-first", true)) return null;
-        if (platform.equals("unsupported")) return null;
-        String fileName = isWindows() ? tool.fileName + ".exe" : tool.fileName;
-        String resource = "native/" + platform + "/" + fileName;
-        Path destinationDirectory = binaryDirectory.resolve(platform);
-        Path destination = destinationDirectory.resolve(fileName).normalize();
-        if (!destination.startsWith(destinationDirectory)) throw new IOException("Invalid native executable path.");
-
-        try (InputStream input = plugin.getResource(resource)) {
-            if (input == null) return null;
-            Files.createDirectories(destinationDirectory);
-            Path temporary = Files.createTempFile(destinationDirectory, fileName, ".tmp");
-            try {
-                Files.copy(input, temporary, StandardCopyOption.REPLACE_EXISTING);
-                setExecutable(temporary);
-                moveReplacing(temporary, destination);
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
-        }
-        return destination.toString();
-    }
-
-    private void configureBundleEnvironment(ProcessBuilder builder) {
+    private void configureNativeEnvironment(ProcessBuilder builder) {
         if (platform.equals("unsupported")) return;
         Path root = binaryDirectory.resolve(platform);
         Path bin = root.resolve("bin");
@@ -253,28 +203,6 @@ public final class NativeToolchain implements AutoCloseable {
         String prefix = directory.toAbsolutePath().toString();
         builder.environment().put(key, current.isBlank() ? prefix
                 : prefix + java.io.File.pathSeparator + current);
-    }
-
-    private void setExecutable(Path file) throws IOException {
-        if (isWindows()) return;
-        try {
-            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(file);
-            permissions.add(PosixFilePermission.OWNER_EXECUTE);
-            permissions.add(PosixFilePermission.GROUP_EXECUTE);
-            Files.setPosixFilePermissions(file, permissions);
-        } catch (UnsupportedOperationException ex) {
-            if (!file.toFile().setExecutable(true, false) && !Files.isExecutable(file)) {
-                throw new IOException("Could not mark native binary executable.");
-            }
-        }
-    }
-
-    private void moveReplacing(Path source, Path destination) throws IOException {
-        try {
-            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException ex) {
-            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
-        }
     }
 
     private ToolStatus inspect(Tool tool, String executable) {
@@ -331,11 +259,6 @@ public final class NativeToolchain implements AutoCloseable {
         }
         if (os.contains("linux")) return "linux-" + normalizedArch;
         return "unsupported";
-    }
-
-    private boolean isWindows() {
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        return os.startsWith("windows") || os.equals("win");
     }
 
     @Override
