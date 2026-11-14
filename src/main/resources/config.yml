@@ -126,13 +126,11 @@ playback:
     transition: true
   synchronization:
     action-bar-now-playing: true
-    # Wait for all current, audible recipients to have a ready pack before starting a new track.
-    # This prevents faster clients starting the shared clock while others are still downloading.
+    # Synchronize Java recipients, but never let one slow client hold playback indefinitely.
     start-barrier: true
-    bedrock:
-      # Include Bedrock players in the shared start barrier once Geyser reports
-      # their initial music-pack exchange as play-ready.
-      enabled: true
+    # Maximum time to wait for pending Java resource packs before starting the track.
+    # Players still pending at the deadline are skipped for this track.
+    start-barrier-timeout-seconds: 7
     progress-update-ticks: 20
 
 playlists:
