@@ -287,6 +287,10 @@ public final class PlaybackEngine {
         if (sourceTrack == null) return SyncStart.NO_SESSION;
         if (session.paused() || session.resumePreparing()) return SyncStart.PAUSED;
         if (!session.clockStarted()) return SyncStart.NOT_PLAYING;
+        if (isPlayerMuted(player)
+                || playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) {
+            return SyncStart.NO_SESSION;
+        }
         if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
             return SyncStart.BEDROCK_UNSUPPORTED;
         }
@@ -297,7 +301,10 @@ public final class PlaybackEngine {
 
         UUID playerId = player.getUniqueId();
         PlayerPlayback existing = playerPlayback.get(playerId);
-        if (existing != null && existing.syncPreparing) return SyncStart.ALREADY_PREPARING;
+        if (existing != null && (existing.syncPreparing
+                || (existing.syncTrack != null && !packs.isReady(player, existing.syncTrack)))) {
+            return SyncStart.ALREADY_PREPARING;
+        }
 
         double delaySeconds = plugin.getConfig().getDouble(
                 "playback.synchronization.late-join.delay-seconds", 4.0);
