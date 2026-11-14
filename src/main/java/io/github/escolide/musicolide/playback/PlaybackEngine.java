@@ -290,8 +290,29 @@ public final class PlaybackEngine {
                         return;
                     }
                     if (previous != remainder) releaseGeneratedTrack(previous);
+                    // The regular prefetch path deliberately substitutes the
+                    // catalogue track for a temporary tail when a listener has
+                    // no current playback state (for example, a late joiner).
+                    // Resume/seek just cleared that state for the whole audience,
+                    // so explicitly queue this shared tail for the listeners who
+                    // are currently eligible to hear this session.
+                    if (!session.paused() && !session.resumePreparing()) {
+                        requestRemainderForCurrentListeners(session, remainder);
+                    }
                     if (completion != null) completion.accept(readyMessage);
                 }));
+    }
+
+    private void requestRemainderForCurrentListeners(PlaybackSession session, MusicTrack remainder) {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
+            Candidate candidate = findCandidate(player);
+            if (candidate == null || candidate.session != session) continue;
+            if (!packs.requestTemporaryTrack(player, remainder)) {
+                plugin.getLogger().warning("Could not queue the resumed audio pack for "
+                        + player.getName() + ". Their Minecraft playback remains paused until synchronization succeeds.");
+            }
+        }
     }
 
     private String rootMessage(Throwable error) {
