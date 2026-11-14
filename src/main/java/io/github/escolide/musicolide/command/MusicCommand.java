@@ -34,6 +34,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final PlaybackEngine playback;
     private final ExternalMetadataResolver metadataResolver = new ExternalMetadataResolver();
     private final Map<UUID, PendingPlay> pending = new ConcurrentHashMap<>();
+    private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
+    private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
+
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback) {
         this.plugin = plugin;
@@ -67,6 +70,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "diagnostics" -> diagnostics(sender);
                 case "download" -> downloadLibrary(sender);
                 case "list" -> listTracks(sender, args);
+                case "search" -> searchYouTube(sender, args);
+                case "select" -> selectYouTubeResult(sender, args);
                 case "play" -> play(sender, args);
                 case "confirm" -> confirm(sender);
                 case "pause", "resume", "skip", "stop" -> control(sender, sub);
@@ -248,19 +253,33 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
-        if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music play <track-or-url> [@a|@p|@s|playername] [zone options]")); return; }
-        String input = args[1];
-        PlayRequest parsed = parseRequest(sender, args);
+        if (args.length < 2) {
+            sender.sendMessage(msg("&eUsage: /play <track-id, title, YouTube URL or search query>"));
+            return;
+        }
+
+        // Keep multi-word titles/queries intact. Optional selectors and zone
+        // settings begin at the first recognized selector or --option.
+        int modifierStart = firstPlayModifierIndex(sender, args);
+        String input = String.join(" ", Arrays.copyOfRange(args, 1, modifierStart)).trim();
+        if (input.isBlank()) {
+            sender.sendMessage(msg("&eEnter a track title, YouTube URL or search query."));
+            return;
+        }
+        String[] requestArgs = withPlayModifiers(args[0], input, args, modifierStart);
+        PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority, input);
+
         Optional<MusicTrack> track = resolveTrack(input);
         if (track.isPresent()) {
             offerMatch(sender, track.get(), request, isExternal(input) ? -1.0 : 1.0);
             return;
         }
         if (!isExternal(input)) {
-            sender.sendMessage(msg("&cTrack not found. Import an authorized audio file first."));
+            beginYouTubeSearch(sender, input, request);
             return;
         }
         if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
@@ -270,7 +289,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
                 return;
             }
-            sender.sendMessage(msg("&eImporting this allowlisted URL. URL auto-import is admin-only; confirm that your server may distribute this audio."));
+            sender.sendMessage(msg("&eImporting this allowlisted URL. Confirm that your server may distribute this audio."));
             processor.importUrl(input, null).whenComplete((imported, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
                         if (error != null) {
@@ -312,6 +331,147 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(msg("&cCatalogue search failed: " + ex.getMessage()));
             }
         }));
+    }
+
+    private int firstPlayModifierIndex(CommandSender sender, String[] args) {
+        for (int i = 2; i < args.length; i++) {
+            String value = args[i];
+            String normalized = value.toLowerCase(Locale.ROOT);
+            if (normalized.startsWith("--") || normalized.equals("@a")
+                    || normalized.equals("@p") || normalized.equals("@s")
+                    || Bukkit.getPlayerExact(value) != null) {
+                return i;
+            }
+        }
+        return args.length;
+    }
+
+    private String[] withPlayModifiers(String label, String input, String[] original, int modifierStart) {
+        List<String> values = new ArrayList<>();
+        values.add(label);
+        values.add(input);
+        for (int i = modifierStart; i < original.length; i++) values.add(original[i]);
+        return values.toArray(String[]::new);
+    }
+
+    private void searchYouTube(CommandSender sender, String[] args) {
+        if (!dj(sender)) return;
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cYouTube result selection is player-specific; run this command in game."));
+            return;
+        }
+        if (args.length < 2) {
+            sender.sendMessage(msg("&eUsage: /music search <song or artist>"));
+            return;
+        }
+        String query = String.join(" ", Arrays.copyOfRange(args, 1, args.length)).trim();
+        PlayRequest request = parseRequest(player, new String[]{"play", "search"});
+        beginYouTubeSearch(sender, query, request);
+    }
+
+    private void beginYouTubeSearch(CommandSender sender, String query, PlayRequest request) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cYouTube search selection is player-specific; run /music search in game."));
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            sender.sendMessage(msg("&cYouTube search is disabled by the server administrator."));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        pendingSearches.entrySet().removeIf(entry ->
+                now - entry.getValue().createdAtMillis > SEARCH_RESULT_TTL_MILLIS);
+        sender.sendMessage(msg("&eSearching YouTube for: &f" + safeChat(query)));
+
+        processor.searchYouTube(query).whenComplete((results, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline()) return;
+                    if (error != null) {
+                        sender.sendMessage(msg("&cYouTube search failed: " + rootMessage(error)));
+                        return;
+                    }
+                    if (results == null || results.isEmpty()) {
+                        pendingSearches.remove(player.getUniqueId());
+                        sender.sendMessage(msg("&eNo suitable YouTube results were found."));
+                        return;
+                    }
+
+                    pendingSearches.put(player.getUniqueId(),
+                            new PendingSearch(query, List.copyOf(results), request, System.currentTimeMillis()));
+                    sender.sendMessage(msg("&bYouTube results for &f" + safeChat(query) + "&b:"));
+                    for (int i = 0; i < results.size(); i++) {
+                        YtDlpDownloader.SearchResult result = results.get(i);
+                        String title = TextUtil.truncate(safeChat(result.title()), 62);
+                        String uploader = TextUtil.truncate(safeChat(result.uploader()), 28);
+                        String duration = result.durationSeconds() > 0
+                                ? format(result.durationSeconds() * 1000L) : "duration ?";
+                        sender.sendMessage(msg("&e" + (i + 1) + ". &f" + title
+                                + (uploader.isBlank() ? "" : " &7- " + uploader)
+                                + " &8[" + duration + "]"));
+                        sender.sendMessage(msg("&8" + result.url()));
+                    }
+                    sender.sendMessage(msg("&aChoose one with &f/music select <number>&a. Results expire in 5 minutes."));
+                    if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+                        sender.sendMessage(msg("&7Selection imports audio; an admin must enable audio.yt-dlp.auto-import-on-play first."));
+                    }
+                }));
+    }
+
+    private void selectYouTubeResult(CommandSender sender, String[] args) {
+        if (!dj(sender)) return;
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cOnly a player can select their own YouTube search result."));
+            return;
+        }
+        if (args.length != 2) {
+            sender.sendMessage(msg("&eUsage: /music select <number>"));
+            return;
+        }
+        PendingSearch search = pendingSearches.get(player.getUniqueId());
+        if (search == null || System.currentTimeMillis() - search.createdAtMillis > SEARCH_RESULT_TTL_MILLIS) {
+            pendingSearches.remove(player.getUniqueId());
+            sender.sendMessage(msg("&cYou have no current YouTube search results. Run /music search <query> first."));
+            return;
+        }
+        int selection;
+        try {
+            selection = Integer.parseInt(args[1]);
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("Choose a result number shown in the latest search.");
+        }
+        if (selection < 1 || selection > search.results.size()) {
+            throw new IllegalArgumentException("Choose a result between 1 and " + search.results.size() + ".");
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            sender.sendMessage(msg("&cSelecting a result imports audio, but audio.yt-dlp.auto-import-on-play is disabled."));
+            sender.sendMessage(msg("&7Ask an administrator to enable it after confirming redistribution rights."));
+            return;
+        }
+
+        YtDlpDownloader.SearchResult selected = search.results.get(selection - 1);
+        pendingSearches.remove(player.getUniqueId(), search);
+        sender.sendMessage(msg("&eImporting selected result: &f" + safeChat(selected.title())));
+        processor.importUrl(selected.url(), null).whenComplete((imported, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline()) return;
+                    if (error != null) {
+                        sender.sendMessage(msg("&cSelected result could not be imported: " + rootMessage(error)));
+                    } else {
+                        sender.sendMessage(msg("&aImported &f" + imported.title() + "&a; starting playback."));
+                        start(sender, imported, search.request);
+                    }
+                }));
+    }
+
+    private String safeChat(String value) {
+        if (value == null) return "";
+        return value.replace('§', ' ').replace("&", "＆")
+                .replaceAll("[\\p{Cntrl}&&[^\\t]]", " ")
+                .replaceAll("\\s+", " ").trim();
     }
 
     private void offerMatch(CommandSender sender, MusicTrack track, PlayRequest request, double confidence) {
@@ -780,6 +940,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
         sender.sendMessage(msg("&f/music download &7- retry or request your music library"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
+        sender.sendMessage(msg("&f/music search <query> &7- search YouTube without downloading audio"));
+        sender.sendMessage(msg("&f/music select <number> &7- import and play a selected YouTube result"));
         sender.sendMessage(msg("&f/play <track-or-url> [@a|@p|@s|playername] [zone options] &7- short playback command"));
         sender.sendMessage(msg("&f/music play <track-or-url> [@a|@p|@s|playername] [--circle r|--square WxL|--region id] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
@@ -809,9 +971,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "play", "confirm", "pause", "resume",
+        if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "search", "select", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
+        if (args.length == 2 && args[0].equalsIgnoreCase("select") && sender instanceof Player player) {
+            PendingSearch search = pendingSearches.get(player.getUniqueId());
+            if (search != null && System.currentTimeMillis() - search.createdAtMillis <= SEARCH_RESULT_TTL_MILLIS) {
+                List<String> numbers = new ArrayList<>();
+                for (int i = 1; i <= search.results.size(); i++) numbers.add(Integer.toString(i));
+                return partial(numbers, args[1]);
+            }
+        }
         if (args.length == 2 && args[0].equalsIgnoreCase("speed"))
             return partial(List.of("0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("volume"))
@@ -845,4 +1015,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private record PlayRequest(MusicZone zone, boolean all, Collection<UUID> listeners, int priority, String inputUrl) {}
     private record PendingPlay(MusicTrack track, PlayRequest request) {}
+    private record PendingSearch(String query, List<YtDlpDownloader.SearchResult> results,
+                                 PlayRequest request, long createdAtMillis) {}
+
 }
