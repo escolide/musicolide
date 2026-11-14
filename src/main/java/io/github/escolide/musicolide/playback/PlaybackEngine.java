@@ -137,20 +137,21 @@ public final class PlaybackEngine {
     }
 
     /**
-     * Selects a session only when at least one Java player can currently hear it:
-     * the player must be a target, inside the zone, unmuted, and have the required
-     * playback pack ready. Bedrock and pack-rejected clients never make a session
-     * eligible for Discord. When global and spatial sessions compete, a spatial
-     * session wins at equal manual priority so zone-dedicated music is represented.
+     * Selects the session Discord may mirror. The default global-only mode
+     * requires a genuinely server-wide audience and a global listening zone;
+     * zone-aware mode retains the previous eligible-listener arbitration.
      */
     private void updateDiscordBroadcastSnapshot(List<Player> online,
                                                 Map<UUID, Candidate> winners,
                                                 List<PlaybackSession> active) {
         boolean manualPriority = plugin.getConfig().getBoolean(
                 "playback.overlap.manual-priority-enabled", true);
+        String broadcastScope = plugin.getConfig().getString("discord.broadcast-scope", "global-only");
+        boolean zoneAware = "zone-aware".equalsIgnoreCase(broadcastScope);
         PlaybackSession selected = null;
 
         for (PlaybackSession session : active) {
+            if (!zoneAware && !session.isServerWideGlobalSession()) continue;
             if (session.current() == null || session.isEmpty() || session.finished()
                     || !session.clockStarted() || session.paused() || session.resumePreparing()) {
                 continue;
@@ -188,12 +189,14 @@ public final class PlaybackEngine {
                 if (session.priority() > selected.priority()) selected = session;
                 continue;
             }
-            int scope = Integer.compare(discordScopeRank(session), discordScopeRank(selected));
-            if (scope < 0) {
-                selected = session;
-                continue;
-            }
-            if (scope == 0 && session.startedAt() < selected.startedAt()) {
+            if (zoneAware) {
+                int scope = Integer.compare(discordScopeRank(session), discordScopeRank(selected));
+                if (scope < 0) {
+                    selected = session;
+                    continue;
+                }
+                if (scope == 0 && session.startedAt() < selected.startedAt()) selected = session;
+            } else if (session.startedAt() < selected.startedAt()) {
                 selected = session;
             }
         }
