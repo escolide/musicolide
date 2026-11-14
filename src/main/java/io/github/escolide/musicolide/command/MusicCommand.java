@@ -489,9 +489,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void start(CommandSender sender, MusicTrack track, PlayRequest request) {
         UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
-        PlaybackSession session = playback.startSession(owner, sender.getName(), request.zone, request.all,
-                request.listeners, List.of(track), request.priority);
-        sender.sendMessage(msg("&aStarted &f" + track.title() + " &7(session " + session.id().toString().substring(0, 8) + ")"));
+        PlaybackEngine.PlayDisposition disposition = playback.playOrQueue(owner, sender.getName(),
+                request.zone, request.all, request.listeners, track, request.priority);
+        switch (disposition) {
+            case STARTED -> sender.sendMessage(msg("&aStarted &f" + track.title() + "."));
+            case QUEUED -> sender.sendMessage(msg("&aAdded &f" + track.title() + " &ato your current playback queue."));
+            case QUEUE_FULL -> sender.sendMessage(msg("&cYour playback queue is full. The new track was not added."));
+        }
     }
 
     private void control(CommandSender sender, String action) {
