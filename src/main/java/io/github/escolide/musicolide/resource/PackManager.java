@@ -5,12 +5,17 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PackManager {
     private final JavaPlugin plugin;
     private final ResourcePackBuilder.BasePackInfo basePack;
+    private final int detectedPublicPort;
     private final Set<UUID> baseReady = ConcurrentHashMap.newKeySet();
     private final Set<UUID> baseRequested = ConcurrentHashMap.newKeySet();
     private final Set<UUID> baseDeclined = ConcurrentHashMap.newKeySet();
@@ -23,10 +28,12 @@ public final class PackManager {
     // Remove them from the active client stack as soon as the status event arrives.
     private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
+    private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
 
-    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack) {
+    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort) {
         this.plugin = plugin;
         this.basePack = Objects.requireNonNull(basePack, "basePack");
+        this.detectedPublicPort = detectedPublicPort;
     }
 
     public boolean isBaseDeclined(Player player) {
@@ -113,9 +120,14 @@ public final class PackManager {
     }
 
     private String packUrl(String fileName) {
-        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1:8765");
+        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1");
         String prefix = plugin.getConfig().getString("server.path-prefix", "/packs");
-        return base.replaceAll("/+$", "") + (prefix.startsWith("/") ? prefix : "/" + prefix) + "/" + fileName;
+        boolean autoDetectPort = plugin.getConfig().getBoolean("server.auto-detect-port", true);
+        int detected = autoDetectPort ? detectedPublicPort : -1;
+        int configured = plugin.getConfig().getInt("server.public-port", -1);
+        boolean sharedPortMode = plugin.getConfig().getString("server.hosting-mode", "shared-port")
+                .equalsIgnoreCase("shared-port");
+        return PackUrlBuilder.build(base, prefix, fileName, detected, configured, sharedPortMode);
     }
 
     private void enqueueIfNeeded(UUID playerId, LinkedHashMap<UUID, MusicTrack> queue, MusicTrack track) {
@@ -155,6 +167,46 @@ public final class PackManager {
         }
     }
 
+    /**
+     * Releases a temporary regenerated-audio pack after the session stops using it.
+     * A pending client download is allowed to finish before its file is deleted.
+     */
+    public void releaseGeneratedTrack(MusicTrack track) {
+        if (track == null || track.namespace() == null || !track.namespace().startsWith("mr_")) return;
+        UUID packId = track.packId();
+        Path directory = plugin.getDataFolder().toPath().resolve("packs").toAbsolutePath().normalize();
+        Path file = directory.resolve(track.packFileName()).normalize();
+        if (!file.startsWith(directory) || !track.packFileName().matches("[A-Za-z0-9_-]+\\.zip")) return;
+
+        // Remove queued-but-not-yet-sent references before deleting the file.
+        for (LinkedHashMap<UUID, MusicTrack> queue : waiting.values()) queue.remove(packId);
+        for (Map.Entry<UUID, Set<UUID>> entry : active.entrySet()) {
+            UUID playerId = entry.getKey();
+            if (!entry.getValue().contains(packId)) continue;
+            if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            } else {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player != null) removePack(player, playerId, packId);
+                else entry.getValue().remove(packId);
+            }
+        }
+        deleteGeneratedWhenIdle.put(packId, file);
+        deleteGeneratedFileIfIdle(packId);
+    }
+
+    private void deleteGeneratedFileIfIdle(UUID packId) {
+        if (isDownloadInProgress(packId)) return;
+        Path file = deleteGeneratedWhenIdle.remove(packId);
+        if (file == null) return;
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not delete temporary resumed-audio pack "
+                    + file.getFileName() + ": " + ex.getMessage());
+        }
+    }
+
     public void releaseAll(Player player) {
         UUID playerId = player.getUniqueId();
         Set<UUID> activeSet = active.get(playerId);
@@ -183,14 +235,34 @@ public final class PackManager {
         if (deferred != null) deferred.remove(packId);
     }
 
+    /**
+     * ACCEPTED and DOWNLOADED are progress notifications, not completion.
+     * Keep the request in-flight until the client either applies the pack or
+     * reports a terminal result. Status names are used instead of enum
+     * constants for newer Paper values so the plugin remains binary-source
+     * compatible with the older compileOnly API.
+     */
+    static boolean isPendingStatus(String statusName) {
+        return "ACCEPTED".equals(statusName) || "DOWNLOADED".equals(statusName);
+    }
+
     public void status(UUID playerId, UUID packId, org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
+        if (status == null) return;
+        String statusName = status.name();
+
+        // Both values may arrive while the same download is still running.
+        // Clearing requested/baseRequested here makes the 5-tick playback
+        // loop enqueue and send the exact same pack repeatedly.
+        if (isPendingStatus(statusName)) return;
+
         if (basePack.id().equals(packId)) {
             baseRequested.remove(playerId);
-            if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
+            if ("SUCCESSFULLY_LOADED".equals(statusName)) {
                 baseDeclined.remove(playerId);
                 baseReady.add(playerId);
-            } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
-                    || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
+            } else {
+                // Every other non-progress status is terminal. Do not let an
+                // invalid URL, failed reload, or discard trigger a resend loop.
                 baseReady.remove(playerId);
                 baseDeclined.add(playerId);
             }
@@ -199,31 +271,45 @@ public final class PackManager {
 
         Set<UUID> requestedSet = requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet());
         boolean wasRequested = requestedSet.remove(packId);
-        if (wasRequested) inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
+        if (wasRequested) {
+            inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
+        }
+
         Player player = Bukkit.getPlayer(playerId);
         boolean removeAfterDownload = removeWhenReady.getOrDefault(playerId, Set.of()).contains(packId);
-        if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
+        if ("SUCCESSFULLY_LOADED".equals(statusName)) {
             declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
             if (removeAfterDownload || !active.getOrDefault(playerId, Set.of()).contains(packId)) {
                 if (player != null) removePack(player, playerId, packId);
             } else {
                 ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
             }
-        } else if (status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.DECLINED
-                || status == org.bukkit.event.player.PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD) {
+        } else {
             ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
-            declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+
+            // A discard caused by Musicolide removing a no-longer-needed pack
+            // must not poison that pack for a later session. A client discard
+            // of a pack that is still wanted is suppressed like a decline.
+            boolean stillDesired = (!removeAfterDownload
+                    && active.getOrDefault(playerId, Set.of()).contains(packId))
+                    || waiting.getOrDefault(playerId, new LinkedHashMap<>()).containsKey(packId);
+            Set<UUID> declinedSet = declined.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet());
+            if (!"DISCARDED".equals(statusName) || stillDesired) declinedSet.add(packId);
+            else declinedSet.remove(packId);
+
             Set<UUID> activeSet = active.get(playerId);
             if (activeSet != null) activeSet.remove(packId);
             Set<UUID> deferred = removeWhenReady.get(playerId);
             if (deferred != null) deferred.remove(packId);
         }
         pump(player);
+        deleteGeneratedFileIfIdle(packId);
     }
 
     public void removePlayer(UUID playerId) {
         baseReady.remove(playerId); baseRequested.remove(playerId); baseDeclined.remove(playerId);
         ready.remove(playerId); requested.remove(playerId); declined.remove(playerId);
         waiting.remove(playerId); active.remove(playerId); removeWhenReady.remove(playerId); inFlight.remove(playerId);
+        for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
     }
 }

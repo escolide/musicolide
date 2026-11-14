@@ -64,7 +64,7 @@ public final class ResourcePackBuilder {
         int index = 0;
         for (Map.Entry<String, String> entry : sounds.entrySet()) {
             soundsJson.append("  \"").append(entry.getKey()).append("\": {\"sounds\":[{\"name\":\"")
-                    .append(entry.getValue()).append("\",\"stream\":false}]}");
+                    .append(namespace).append(':').append(entry.getValue()).append("\",\"stream\":false}]}");
             if (++index < sounds.size()) soundsJson.append(',');
             soundsJson.append('\n');
         }
@@ -79,6 +79,29 @@ public final class ResourcePackBuilder {
                 addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/stereo/" + id + ".ogg",
                         trackDirectory.resolve("stereo").resolve(id + ".ogg"));
             }
+        }
+        return output;
+    }
+
+    /**
+     * Builds a Java Edition pack containing one streamed OGG for an entire track.
+     * Minecraft decodes the long sound incrementally, avoiding per-segment sound
+     * packets and the small silence introduced at each server-side hand-off.
+     */
+    public Path buildStreamed(String namespace, Path audioFile) throws IOException {
+        if (!Files.isRegularFile(audioFile) || Files.size(audioFile) == 0) {
+            throw new IOException("The streamed OGG file is missing or empty.");
+        }
+        Path output = packsDirectory.resolve(namespace + ".zip");
+        String soundsJson = "{\n"
+                + "  \"music\": {\"sounds\":[{\"name\":\"" + namespace
+                + ":music\",\"stream\":true}]}\n"
+                + "}\n";
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
+            add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
+            add(zip, "assets/" + namespace + "/sounds.json", soundsJson.getBytes(StandardCharsets.UTF_8));
+            addFile(zip, "assets/" + namespace + "/sounds/music.ogg", audioFile);
         }
         return output;
     }

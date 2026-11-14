@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.concurrent.*;
 import java.util.regex.Pattern;
 
@@ -46,10 +48,9 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
         }
-        if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
-                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
-                    "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
+                    "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
             return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false), worker);
@@ -62,7 +63,7 @@ public final class AudioProcessor implements AutoCloseable {
     /**
      * Downloads one administrator-authorized URL into a disposable directory, then
      * uses the same local validation/encoding path as a file import. yt-dlp exits
-     * before FFprobe or FFmpeg is launched.
+     * before FFmpeg is launched.
      */
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
         if (!toolchain.isInitialized()) {
@@ -77,10 +78,9 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "yt-dlp is unavailable. Install it or provide a bundled executable."));
         }
-        if (!toolchain.available(NativeToolchain.Tool.FFPROBE)
-                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
-                    "FFprobe and FFmpeg must be installed or bundled before audio can be imported."));
+                    "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
             return CompletableFuture.supplyAsync(() -> {
@@ -130,8 +130,7 @@ public final class AudioProcessor implements AutoCloseable {
             if (Files.size(source) > maxBytes) throw new IOException("Input exceeds configured size limit.");
 
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
-            String ffprobe = toolchain.executable(NativeToolchain.Tool.FFPROBE);
-            long durationMs = probeDuration(ffprobe, source, data);
+            long durationMs = probeDuration(ffmpeg, source, data);
             long maxDuration = plugin.getConfig().getLong("audio.max-track-duration-seconds", 1800);
             if (durationMs <= 0 || durationMs > maxDuration * 1000L) {
                 throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
@@ -140,26 +139,45 @@ public final class AudioProcessor implements AutoCloseable {
             String rawTitle = requestedTitle == null || requestedTitle.isBlank()
                     ? stripExtension(source.getFileName().toString()) : requestedTitle.trim();
             String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
-            String namespace = "mc_" + id.replace('-', '_');
+            // The ms_ namespace marks the new single-file streaming format. The
+            // older mc_ namespace remains readable for tracks imported with segments.
+            String playbackMode = configuredPlaybackMode();
+            boolean segmented = playbackMode.equals("segmented");
+            String namespace = (segmented ? "mc_" : "ms_") + id.replace('-', '_');
             if (!SAFE_ID.matcher(namespace).matches()) throw new IOException("Generated track identifier is invalid.");
 
-            int segmentMs = Math.max(500, plugin.getConfig().getInt("audio.segment-duration-ms", 1000));
-            int count = (int) Math.ceil(durationMs / (double) segmentMs);
             trackDirectory = data.resolve("tracks").resolve(id);
-            Path stereoDirectory = trackDirectory.resolve("stereo");
-            Files.createDirectories(stereoDirectory);
-
+            Files.createDirectories(trackDirectory);
             int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
-            for (int i = 0; i < count; i++) {
-                double start = i * segmentMs / 1000.0;
-                double length = Math.min(segmentMs, durationMs - (long) i * segmentMs) / 1000.0;
-                String name = String.format(Locale.ROOT, "%05d.ogg", i);
-                runFfmpeg(ffmpeg, source, stereoDirectory.resolve(name), start, length, quality);
+            int segmentMs;
+            int segmentCount;
+            if (segmented) {
+                // Legacy mode: encode independently playable OGG chunks.
+                segmentMs = bounded(plugin.getConfig().getInt("audio.segment-duration-ms", 1000), 250, 60000);
+                segmentCount = (int) Math.max(1L, (durationMs + segmentMs - 1L) / segmentMs);
+                Path stereo = trackDirectory.resolve("stereo");
+                Files.createDirectories(stereo);
+                for (int i = 0; i < segmentCount; i++) {
+                    long startMs = (long) i * segmentMs;
+                    long lengthMs = Math.min(segmentMs, durationMs - startMs);
+                    runFfmpeg(ffmpeg, source, stereo.resolve(String.format(Locale.ROOT, "%05d.ogg", i)),
+                            startMs / 1000.0, lengthMs / 1000.0, quality);
+                }
+                generatedPack = packBuilder.build(namespace, trackDirectory, segmentCount, segmentMs);
+            } else {
+                // Both continuous and resumable modes start as one streamed OGG.
+                // Resumable mode regenerates a timestamped remainder when resumed.
+                Path streamedAudio = trackDirectory.resolve("music.ogg");
+                runFfmpegStreamed(ffmpeg, source, streamedAudio, quality);
+                // Base the playback clock on the encoded OGG's actual duration.
+                durationMs = probeDuration(ffmpeg, streamedAudio, data);
+                if (durationMs <= 0) throw new IOException("The streamed OGG has an invalid duration.");
+                segmentMs = (int) Math.min(Integer.MAX_VALUE, durationMs);
+                segmentCount = 1;
+                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio);
             }
 
-            generatedPack = packBuilder.build(namespace, trackDirectory, count, segmentMs);
-
-            // Segment OGGs are build intermediates and must not count against retained library storage.
+            // Audio files are build intermediates; the finished ZIP is retained.
             deleteTree(trackDirectory);
             trackDirectory = null;
 
@@ -172,7 +190,7 @@ public final class AudioProcessor implements AutoCloseable {
 
             String sha1 = sha1(generatedPack);
             MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
-                    sha1, durationMs, segmentMs, count, Files.size(generatedPack));
+                    sha1, durationMs, segmentMs, segmentCount, Files.size(generatedPack));
             if (temporaryUrlImport) {
                 long retentionMinutes = bounded(
                         plugin.getConfig().getInt("audio.url-import-retention-minutes", 15), 1, 1440);
@@ -205,28 +223,170 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
+    private String configuredPlaybackMode() {
+        String mode = plugin.getConfig().getString("audio.playback-mode", "resumable");
+        mode = mode == null ? "resumable" : mode.trim().toLowerCase(Locale.ROOT);
+        if (!List.of("segmented", "continuous", "resumable").contains(mode)) {
+            plugin.getLogger().warning("Unknown audio.playback-mode '" + mode
+                    + "'; using resumable. Valid values: segmented, continuous, resumable.");
+            return "resumable";
+        }
+        return mode;
+    }
+
+    /**
+     * Builds a short-lived streamed resource pack containing the unplayed tail
+     * of an imported streamed track. This runs on the audio worker, never the
+     * Minecraft server thread. The returned track is intentionally not saved
+     * to the catalogue or the Bedrock aggregate pack.
+     */
+    public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs) {
+        if (sourceTrack == null || !sourceTrack.isStreamed()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "Only continuous streamed tracks can use timestamp-based resume."));
+        }
+        if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "FFmpeg is not ready; timestamp-based resume cannot be generated yet."));
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    return processResumeTrack(sourceTrack, startMs);
+                } catch (Exception ex) {
+                    throw new CompletionException(ex);
+                }
+            }, worker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide audio queue is full; resume preparation could not be queued.", ex));
+        }
+    }
+
+    private MusicTrack processResumeTrack(MusicTrack sourceTrack, long requestedStartMs) throws Exception {
+        Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+        Path packs = data.resolve("packs").normalize();
+        Path sourcePack = packs.resolve(sourceTrack.packFileName()).normalize();
+        if (!sourcePack.startsWith(packs) || !Files.isRegularFile(sourcePack)) {
+            throw new IOException("The original resource pack is missing; the remaining audio cannot be generated.");
+        }
+        long startMs = Math.max(0L, Math.min(sourceTrack.durationMs() - 50L, requestedStartMs));
+        if (sourceTrack.durationMs() <= 0 || startMs >= sourceTrack.durationMs()) {
+            throw new IOException("The track has already reached its end.");
+        }
+
+        Path incoming = data.resolve("incoming");
+        Files.createDirectories(incoming);
+        Path work = Files.createTempDirectory(incoming, ".musicolide-resume-");
+        Path outputPack = null;
+        try {
+            Path input = work.resolve("source.ogg");
+            String entryName = "assets/" + sourceTrack.namespace() + "/sounds/music.ogg";
+            try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                ZipEntry entry = zip.getEntry(entryName);
+                if (entry == null || entry.isDirectory()) {
+                    throw new IOException("The original streamed OGG is missing from its resource pack.");
+                }
+                long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+                if (entry.getSize() > maxBytes) {
+                    throw new IOException("The streamed OGG exceeds the configured input-size limit.");
+                }
+                try (var stream = zip.getInputStream(entry)) {
+                    Files.copy(stream, input, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+
+            String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
+            Path remainder = work.resolve("remainder.ogg");
+            runFfmpegRemainder(ffmpeg, input, remainder, startMs, 
+                    bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10));
+            long durationMs = probeDuration(ffmpeg, remainder, data);
+            if (durationMs <= 0) throw new IOException("FFmpeg produced an empty audio remainder.");
+
+            String token = UUID.randomUUID().toString().replace("-", "");
+            String namespace = "mr_" + token;
+            outputPack = packBuilder.buildStreamed(namespace, remainder);
+            String id = "resume_" + token;
+            String checksum = sha1(outputPack);
+            int remainderDuration = (int) Math.min(Integer.MAX_VALUE, durationMs);
+            return new MusicTrack(id, sourceTrack.title(), sourceTrack.artist(), namespace,
+                    outputPack.getFileName().toString(), checksum, durationMs,
+                    Math.max(1, remainderDuration), 1, Files.size(outputPack));
+        } catch (Exception ex) {
+            deleteQuietly(outputPack);
+            throw ex;
+        } finally {
+            deleteQuietly(work);
+        }
+    }
+
+    private void runFfmpegRemainder(String executable, Path source, Path output, long startMs, int quality)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        // Output-side -ss decodes from the beginning before cutting, prioritizing
+        // an accurate resume point over fast keyframe seeking.
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error",
+                "-nostdin", "-y", "-i", source.toString(),
+                "-ss", String.format(Locale.ROOT, "%.3f", startMs / 1000.0),
+                "-vn", "-map", "0:a:0", "-ac", "2", "-ar", Integer.toString(sampleRate),
+                "-c:a", "libvorbis", "-q:a", Integer.toString(quality),
+                "-threads", Integer.toString(threads), output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg resume-tail encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing the resumed OGG.");
+        }
+    }
+
     private long probeDuration(String executable, Path source, Path dataDirectory)
             throws IOException, InterruptedException {
         Path output = Files.createTempFile(dataDirectory, ".musicolide-probe-", ".txt");
         try {
-            Process process = toolchain.start(new ProcessBuilder(executable, "-v", "error", "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1", source.toString())
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+            // FFmpeg reports container duration while opening the input. A zero-length
+            // null output lets us read that metadata without decoding the whole track.
+            Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-nostdin",
+                    "-i", source.toString(), "-t", "0", "-f", "null", "-")
+                    .redirectErrorStream(true)
                     .redirectOutput(output.toFile()));
             try {
                 waitForProcess(process, bounded(plugin.getConfig().getInt(
-                        "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFprobe");
+                        "audio.processing.probe-timeout-seconds", 30), 5, 300), "FFmpeg metadata probe");
             } finally {
                 toolchain.finished(process);
             }
-            String result = Files.readString(output, StandardCharsets.UTF_8).trim();
-            try {
-                return Math.round(Double.parseDouble(result) * 1000.0);
-            } catch (NumberFormatException ex) {
-                throw new IOException("FFprobe returned an invalid duration.", ex);
-            }
+            return FfmpegDurationParser.parseMillis(Files.readString(output, StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(output);
+        }
+    }
+
+    private void runFfmpegStreamed(String executable, Path source, Path output, int quality)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
+                "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
+                output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg streamed-track encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing the streamed OGG file.");
         }
     }
 

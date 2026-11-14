@@ -1,3 +1,8 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import java.sql.Driver
+import java.util.Properties
+import java.util.zip.ZipFile
+
 plugins {
     id 'java'
     id 'com.gradleup.shadow' version '9.2.2'
@@ -19,13 +24,16 @@ repositories {
 }
 
 dependencies {
-    // Compile against the oldest supported API to prevent accidental newer API links.
     compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
-    // Optional at runtime: Geyser is detected before the isolated adapter class is loaded.
     compileOnly 'org.geysermc.geyser:api:2.11.2-SNAPSHOT'
+    // Netty is supplied by Paper/Purpur at runtime; keep it out of the plugin JAR.
+    compileOnly 'io.netty:netty-codec-http:4.1.115.Final'
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
+    implementation 'org.apache.commons:commons-compress:1.28.0'
+    implementation 'org.tukaani:xz:1.10'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'io.netty:netty-codec-http:4.1.115.Final'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
@@ -38,17 +46,25 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
-tasks.named('shadowJar') {
-    archiveClassifier = ''
+// Portable JAR, retaining SQLite's native driver binaries for every upstream platform.
+tasks.named('shadowJar', ShadowJar) {
+    archiveClassifier = 'universal'
     mergeServiceFiles()
-    relocate 'org.sqlite', 'io.github.escolide.musicolide.internal.sqlite'
 }
 
-// Optional license-cleared native builds can be supplied under src/main/native/<platform>/.
-tasks.named('processResources') {
-    from('src/main/native') {
-        into 'native'
-        exclude '**/README.md', '**/LICENSE*', '**/COPYING*', '**/NOTICE*'
+// Default production JAR is optimized for the target MineStrator host (Linux x86_64).
+// Keep only the Linux x86_64 SQLite JNI library; all other operating systems use
+// the separate *-universal.jar artifact.
+tasks.register('linuxShadowJar', ShadowJar) {
+    archiveClassifier = ''
+    configurations = [project.configurations.runtimeClasspath]
+    from sourceSets.main.output
+    mergeServiceFiles()
+    exclude { details ->
+        def entry = details.path
+        boolean otherSqliteNative = entry.startsWith('org/sqlite/native/') &&
+                entry != 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so'
+        otherSqliteNative
     }
 }
 
@@ -56,6 +72,109 @@ tasks.named('jar') {
     enabled = false
 }
 
-tasks.named('build') {
+tasks.register('verifyPluginJarSize') {
+    dependsOn tasks.named('linuxShadowJar')
+    doLast {
+        def pluginJar = tasks.named('linuxShadowJar', ShadowJar).get().archiveFile.get().asFile
+        def maximumBytes = 30L * 1024L * 1024L
+        if (pluginJar.length() > maximumBytes) {
+            throw new GradleException("Linux plugin JAR is ${pluginJar.length()} bytes; maximum allowed is ${maximumBytes} bytes.")
+        }
+
+        def expectedNative = 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so'
+        ZipFile zip = new ZipFile(pluginJar)
+        try {
+            def nativeEntries = zip.entries().toList().findAll {
+                !it.isDirectory() &&
+                        it.name.startsWith('org/sqlite/native/')
+            }.collect { it.name }
+            if (nativeEntries.size() != 1 || nativeEntries[0] != expectedNative) {
+                throw new GradleException("Linux JAR must contain only ${expectedNative}; found: ${nativeEntries}")
+            }
+        } finally {
+            zip.close()
+        }
+
+        // Load the shaded driver in an isolated classloader and open an in-memory DB.
+        // This catches missing/mis-relocated SQLite native payloads before publishing.
+        URLClassLoader loader = new URLClassLoader(
+                [pluginJar.toURI().toURL()] as URL[], ClassLoader.getPlatformClassLoader())
+        try {
+            Class driverType = Class.forName(
+                    'org.sqlite.JDBC', true, loader)
+            Driver driver = (Driver) driverType.getDeclaredConstructor().newInstance()
+            def connection = driver.connect('jdbc:sqlite::memory:', new Properties())
+            if (connection == null) {
+                throw new GradleException('The shaded SQLite driver rejected its in-memory JDBC URL.')
+            }
+            try {
+                def result = connection.createStatement().executeQuery('SELECT 1')
+                try {
+                    if (!result.next() || result.getInt(1) != 1) {
+                        throw new GradleException('The shaded SQLite smoke test returned an unexpected result.')
+                    }
+                } finally {
+                    result.close()
+                }
+            } finally {
+                connection.close()
+            }
+        } finally {
+            loader.close()
+        }
+
+        logger.lifecycle("Linux plugin JAR size: ${String.format('%.2f MiB', pluginJar.length() / 1024.0 / 1024.0)} (limit: 30 MiB)")
+    }
+}
+
+tasks.register('verifyUniversalPluginJarSize') {
     dependsOn tasks.named('shadowJar')
+    doLast {
+        def pluginJar = tasks.named('shadowJar', ShadowJar).get().archiveFile.get().asFile
+        def maximumBytes = 30L * 1024L * 1024L
+        if (pluginJar.length() > maximumBytes) {
+            throw new GradleException('Universal plugin JAR is ' + pluginJar.length() + ' bytes; maximum allowed is ' + maximumBytes + ' bytes.')
+        }
+        ZipFile zip = new ZipFile(pluginJar)
+        try {
+            def names = zip.entries().toList().findAll { !it.isDirectory() }.collect { it.name } as Set
+            def requiredInstallerEntries = [
+                    'io/github/escolide/musicolide/audio/NativeToolDownloader.class',
+                    'org/apache/commons/compress/archivers/tar/TarArchiveInputStream.class',
+                    'org/tukaani/xz/XZInputStream.class'
+            ] as Set
+            def missingInstallerEntries = requiredInstallerEntries - names
+            if (!missingInstallerEntries.isEmpty()) {
+                throw new GradleException('Universal JAR is missing first-start installer dependencies: '
+                        + missingInstallerEntries.sort().join(', '))
+            }
+            if (names.any { it.startsWith('native-bundles/') }) {
+                throw new GradleException('The universal JAR must download native tools at first startup; do not embed platform binaries.')
+            }
+            URLClassLoader loader = new URLClassLoader(
+                    [pluginJar.toURI().toURL()] as URL[], ClassLoader.getPlatformClassLoader())
+            try {
+                Class driverType = Class.forName('org.sqlite.JDBC', true, loader)
+                Driver driver = (Driver) driverType.getDeclaredConstructor().newInstance()
+                def connection = driver.connect('jdbc:sqlite::memory:', new Properties())
+                if (connection == null) throw new GradleException('Universal SQLite driver rejected its in-memory JDBC URL.')
+                try {
+                    def result = connection.createStatement().executeQuery('SELECT 1')
+                    try {
+                        if (!result.next() || result.getInt(1) != 1) {
+                            throw new GradleException('Universal SQLite smoke test returned an unexpected result.')
+                        }
+                    } finally { result.close() }
+                } finally { connection.close() }
+            } finally { loader.close() }
+        } finally { zip.close() }
+
+        logger.lifecycle('Universal plugin JAR size: '
+                + String.format('%.2f MiB', pluginJar.length() / 1024.0 / 1024.0) + ' (limit: 30 MiB)')
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('shadowJar'), tasks.named('linuxShadowJar'),
+            tasks.named('verifyPluginJarSize'), tasks.named('verifyUniversalPluginJarSize')
 }

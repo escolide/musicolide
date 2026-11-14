@@ -9,9 +9,11 @@ import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
 import io.github.escolide.musicolide.resource.PackHttpServer;
+import io.github.escolide.musicolide.resource.SharedPortPackServer;
 import io.github.escolide.musicolide.resource.PackManager;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
 import io.github.escolide.musicolide.resource.ResourcePackFormat;
+import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -36,13 +38,19 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private PlaybackEngine playback;
     private GeyserBridge geyserBridge;
     private Object geyserPackIntegration;
-    private PackHttpServer packServer;
+    private AutoCloseable packServer;
     private ResourcePackBuilder resourcePackBuilder;
     private BukkitTask temporaryTrackCleanupTask;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        // Older config.yml files are not overwritten on upgrades; add this new
+        // selector once so administrators can choose a playback format explicitly.
+        if (!getConfig().contains("audio.playback-mode")) {
+            getConfig().set("audio.playback-mode", "resumable");
+            saveConfig();
+        }
         try {
             Path data = getDataFolder().toPath();
             Files.createDirectories(data.resolve("incoming"));
@@ -63,6 +71,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                     + packFormat.displayName() + ".");
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
             resourcePackBuilder = builder;
+            SoundPackNamespaceMigration.migrate(data.resolve("packs"), repository, getLogger());
             ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
@@ -82,14 +91,30 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 return null;
             });
             processor = new AudioProcessor(this, repository, builder, nativeToolchain);
-            packManager = new PackManager(this, basePack);
             geyserBridge = new GeyserBridge(this, builder.bedrockPackPath());
             initializeGeyserPackIntegration(builder.bedrockPackPath());
-            String bind = getConfig().getString("server.bind-address", "0.0.0.0");
-            int port = getConfig().getInt("server.port", 8765);
+
+            String hostingMode = getConfig().getString("server.hosting-mode", "shared-port")
+                    .trim().toLowerCase(java.util.Locale.ROOT);
             String prefix = getConfig().getString("server.path-prefix", "/packs");
             long maxPackBytes = getConfig().getLong("server.max-download-mb", 100) * 1024L * 1024L;
-            packServer = new PackHttpServer(bind, port, prefix, data.resolve("packs"), maxPackBytes);
+            int publicPort;
+            if (hostingMode.equals("shared-port")) {
+                SharedPortPackServer sharedServer = SharedPortPackServer.install(
+                        this, data.resolve("packs"), prefix, maxPackBytes);
+                packServer = sharedServer;
+                publicPort = sharedServer.listeningPort();
+            } else if (hostingMode.equals("dedicated-port")) {
+                String bind = getConfig().getString("server.bind-address", "0.0.0.0");
+                int port = getConfig().getInt("server.port", 8765);
+                packServer = new PackHttpServer(bind, port, prefix, data.resolve("packs"), maxPackBytes);
+                publicPort = port;
+                getLogger().info("Dedicated-port resource-pack hosting is active on TCP port " + port + ".");
+            } else {
+                throw new IllegalArgumentException("Unknown server.hosting-mode '" + hostingMode
+                        + "'. Use 'shared-port' or 'dedicated-port'.");
+            }
+            packManager = new PackManager(this, basePack, publicPort);
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {
@@ -102,13 +127,17 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             if (getConfig().getBoolean("worldguard.require-plugin", false) && worldGuard == null) {
                 throw new IllegalStateException("WorldGuard is required but unavailable.");
             }
-            playback = new PlaybackEngine(this, repository, packManager, worldGuard, geyserBridge);
+            playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
             scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);
             if (getCommand("music") != null) {
                 getCommand("music").setExecutor(command);
                 getCommand("music").setTabCompleter(command);
+            }
+            if (getCommand("play") != null) {
+                getCommand("play").setExecutor(command::onPlayCommand);
+                getCommand("play").setTabCompleter(command::onPlayTabComplete);
             }
             Bukkit.getPluginManager().registerEvents(this, this);
             getLogger().info("Musicolide enabled. Import rights-cleared audio into plugins/Musicolide/incoming/.");
@@ -228,7 +257,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (playback != null) playback.stopAll();
         if (processor != null) processor.close();
         else if (nativeToolchain != null) nativeToolchain.close();
-        if (packServer != null) packServer.close();
+        if (packServer != null) {
+            try {
+                packServer.close();
+            } catch (Exception ex) {
+                getLogger().warning("Could not fully close the resource-pack server: " + ex.getMessage());
+            }
+        }
         if (repository != null) {
             try { repository.close(); }
             catch (Exception ex) { getLogger().warning("Error closing database: " + ex.getMessage()); }

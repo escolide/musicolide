@@ -7,38 +7,62 @@ general:
   shutdown-stop-playback: true
 
 server:
+  # Default: serve packs through the existing Minecraft TCP listener.
+  # This avoids needing another public port on managed Minecraft hosts.
+  # Use "dedicated-port" only when your host provides another public TCP port.
+  hosting-mode: "shared-port"
   bind-address: "0.0.0.0"
   port: 8765
-  public-base-url: "http://127.0.0.1:8765"
+  # Set this to the public IP address or hostname players use to join.
+  # The port is detected from the Minecraft listener unless public-port overrides it.
+  public-base-url: "http://127.0.0.1"
+  auto-detect-port: true
+  # Set to a positive value only if your host maps the external port differently.
+  public-port: -1
   path-prefix: "/packs"
   max-download-mb: 100
 
 audio:
-  # Bundled binaries are optional. When present, they are extracted to plugins/Musicolide/native/.
-  # Otherwise executable names below are resolved using the server process PATH.
   tools:
-    bundled-first: true
+    # Download pinned yt-dlp, FFmpeg and QuickJS builds over HTTPS on first startup.
+    # The download, checksum verification and extraction run in a background worker.
+    # Installed tools remain in plugins/Musicolide/native/ across server restarts.
+    # Set false only when you manage all required executables yourself.
+    download-on-first-start: true
   ffmpeg:
     executable: "ffmpeg"
-    ffprobe-executable: "ffprobe"
     required: false
+  # Controls how NEW imports are encoded. Existing catalogue tracks keep their format.
+  # segmented: legacy short OGG segments; pause/resume preserves position at segment timing.
+  # continuous: one streamed OGG; resume restarts at the beginning (Minecraft exposes no stream seek).
+  # resumable: one streamed OGG; resume creates a timestamped OGG tail with FFmpeg and a temporary pack.
+  # Timestamp-based resume is for Java clients. Mixed sessions with online Bedrock players use the
+  # compatible restart-from-beginning fallback because Geyser's aggregate pack is fixed at join time.
+  playback-mode: "resumable"
   yt-dlp:
-    enabled: false
+    enabled: true
     executable: "yt-dlp"
+    # When enabled by an administrator, /play <url> imports a YouTube URL.
+    # Imports remain admin-only and must be authorized for download and redistribution.
+    # Keep false unless the server operator has confirmed those rights.
+    auto-import-on-play: false
+    # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
+    js-runtime-executable: "qjs"
     # URL-imported packs become eligible for expiry this many minutes after import.
     # Active playback sessions and in-flight Java pack downloads delay deletion.
     url-import-retention-minutes: 15
-    # Add only domains from which you are authorized to download and redistribute audio.
-    # YouTube, YouTube Music, Spotify and SoundCloud are blocked regardless of this list.
-    allowed-hosts: []
-    blocked-hosts:
+    # Add only domains from which the server has permission to download and redistribute audio.
+    # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
+    # For a one-time import, use /music import-url <url> --rights-confirmed.
+    allowed-hosts:
       - "youtube.com"
       - "youtu.be"
-      - "youtube-nocookie.com"
+    blocked-hosts:
       - "spotify.com"
       - "soundcloud.com"
   format: "ogg"
   sample-rate: 44100
+  # Used only when audio.playback-mode is 'segmented'.
   segment-duration-ms: 1000
   stereo-quality: 5
   max-track-duration-seconds: 1800
@@ -69,7 +93,6 @@ resource-packs:
 playback:
   default-volume: 100
   default-mode: "stereo"
-  category: "MUSIC"
   overlap:
     enabled: true
     priority-policy: "first-started"
@@ -136,6 +159,7 @@ messages:
   import-failed: "&cAudio import failed: {reason}"
   bedrock-not-supported: "&eMusicolide Bedrock audio is unavailable until a Bedrock music pack has been generated."
   bedrock-pack-reconnect: "&eThe Bedrock music pack changed after you joined. Reconnect to receive the latest music library."
+  bedrock-resume-unsupported: "&eThis track resumed at a timestamp using a temporary Java pack. Bedrock playback is unavailable until the next track."
   playback-started: "&aNow playing: &f{title}"
   playback-paused: "&ePlayback paused."
   playback-resumed: "&aPlayback resumed."

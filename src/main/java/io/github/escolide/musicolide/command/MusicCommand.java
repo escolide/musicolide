@@ -17,6 +17,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -38,6 +39,20 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         this.repository = repository;
         this.processor = processor;
         this.playback = playback;
+    }
+
+    public boolean onPlayCommand(CommandSender sender, Command command, String label, String[] args) {
+        String[] delegated = new String[args.length + 1];
+        delegated[0] = "play";
+        System.arraycopy(args, 0, delegated, 1, args.length);
+        return onCommand(sender, command, "music", delegated);
+    }
+
+    public List<String> onPlayTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        String[] delegated = new String[args.length + 1];
+        delegated[0] = "play";
+        System.arraycopy(args, 0, delegated, 1, args.length);
+        return onTabComplete(sender, command, "music", delegated);
     }
 
     @Override
@@ -98,11 +113,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length < 3 || !args[2].equalsIgnoreCase("--rights-confirmed")) {
             sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> --rights-confirmed [title]"));
             sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. "
-                    + "YouTube/Spotify links are metadata aliases only."));
+                    + "YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
             return;
         }
         String title = args.length >= 4 ? String.join(" ", Arrays.copyOfRange(args, 3, args.length)) : null;
-        sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFprobe/FFmpeg start."));
+        sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFmpeg starts."));
         processor.importUrl(args[1], title).whenComplete((track, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
@@ -126,6 +141,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                         + " unavailable &7- " + status.detail()));
             }
         }
+        boolean remoteEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
+        boolean autoImport = plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
+        List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");
+        sender.sendMessage(msg("&7URL importer: " + (remoteEnabled ? "&aenabled" : "&cdisabled")
+                + " &8| &7/play auto-import: " + (autoImport ? "&aenabled" : "&cdisabled")));
+        sender.sendMessage(msg("&7Allowlisted source hosts: &f"
+                + (allowedHosts.isEmpty() ? "(none)" : String.join(", ", allowedHosts))));
+        sender.sendMessage(msg("&7URL imports are admin-only and require redistribution rights."));
         sender.sendMessage(msg("&7Geyser detection is optional; Bedrock playback requires its separate pack adapter."));
     }
 
@@ -214,6 +237,31 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&cTrack not found. Import an authorized audio file first."));
             return;
         }
+        if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            // The server administrator opts in globally through config.yml and
+            // restricts source hosts. DJ permission controls who may start a URL import.
+            if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+                sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
+                return;
+            }
+            sender.sendMessage(msg("&eImporting this allowlisted URL. URL auto-import is admin-only; confirm that your server may distribute this audio."));
+            processor.importUrl(input, null).whenComplete((imported, error) ->
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (error != null) {
+                            sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
+                        } else {
+                            sender.sendMessage(msg("&aImported &f" + imported.title() + "&a; starting playback."));
+                            start(sender, imported, request);
+                        }
+                    }));
+            return;
+        }
+        if (isYouTubeUrl(input)) {
+            sender.sendMessage(msg("&cYouTube URL auto-import is disabled."));
+            sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play and allow youtube.com/youtu.be in config.yml."));
+            sender.sendMessage(msg("&7For a one-time authorized import, use /music import-url <url> --rights-confirmed, then /music play <track-id>."));
+            return;
+        }
         if (!plugin.getConfig().getBoolean("matching.enabled", true)
                 || !plugin.getConfig().getBoolean("matching.metadata-lookup", true)) {
             sender.sendMessage(msg("&cNo saved alias exists for this URL. Ask an administrator to add one."));
@@ -272,7 +320,28 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return repository.search(token, 1).stream().findFirst();
     }
 
-    private boolean isExternal(String token) { return token != null && (token.startsWith("http://") || token.startsWith("https://")); }
+    private boolean isExternal(String token) {
+        if (token == null) return false;
+        try {
+            String scheme = URI.create(token).getScheme();
+            return scheme != null && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"));
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private boolean isYouTubeUrl(String token) {
+        if (token == null) return false;
+        try {
+            String host = URI.create(token).getHost();
+            if (host == null) return false;
+            host = host.toLowerCase(Locale.ROOT);
+            if (host.startsWith("www.")) host = host.substring(4);
+            return host.equals("youtube.com") || host.endsWith(".youtube.com") || host.equals("youtu.be");
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
 
     private PlayRequest parseRequest(CommandSender sender, String[] args) {
         boolean global = false;
@@ -352,8 +421,26 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
         if (actor == null) { sender.sendMessage(msg("&cConsole control is not supported; use an in-game DJ.")); return; }
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
-        if (!playback.control(actor, admin, action)) sender.sendMessage(msg("&cNo controllable session was found."));
-        else sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+        if (action.equals("resume")) {
+            PlaybackEngine.ResumeStart result = playback.resume(actor, admin, notification -> {
+                if (sender instanceof Player player && player.isOnline()) sender.sendMessage(msg(notification));
+            });
+            switch (result) {
+                case NOT_FOUND -> sender.sendMessage(msg("&cNo controllable session was found."));
+                case RESUMED -> sender.sendMessage(msg("&aPlayback resumed."));
+                case PREPARING -> sender.sendMessage(msg(
+                        "&ePreparing the remaining audio. Playback will continue after its temporary pack is ready."));
+                case BEDROCK_FALLBACK -> sender.sendMessage(msg(
+                        "&eA Bedrock player is in this session, so playback restarted from the beginning for compatibility."));
+                case ALREADY_PREPARING -> sender.sendMessage(msg("&eThe remaining audio is already being prepared."));
+            }
+            return;
+        }
+        if (!playback.control(actor, admin, action)) {
+            sender.sendMessage(msg("&cNo controllable session was found."));
+        } else {
+            sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+        }
     }
 
     private void queue(CommandSender sender, String[] args) throws SQLException {
@@ -396,10 +483,24 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
         if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music seek <seconds>")); return; }
         double seconds = Double.parseDouble(args[1]);
-        if (!Double.isFinite(seconds) || seconds < 0) throw new IllegalArgumentException("Seek position must be finite and non-negative.");
-        PlaybackSession session = playback.findOwned(player.getUniqueId()).orElseThrow(() -> new IllegalArgumentException("No session found."));
-        session.seek((long) (seconds * 1000));
-        sender.sendMessage(msg("&aSeeked to " + format((long) (seconds * 1000)) + "."));
+        if (!Double.isFinite(seconds) || seconds < 0 || seconds > Long.MAX_VALUE / 1000.0)
+            throw new IllegalArgumentException("Seek position must be finite and non-negative.");
+        long targetMs = (long) (seconds * 1000.0);
+        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
+        PlaybackEngine.SeekStart result = playback.seek(player.getUniqueId(), admin, targetMs, notification -> {
+            if (player.isOnline()) sender.sendMessage(msg(notification));
+        });
+        switch (result) {
+            case NOT_FOUND -> throw new IllegalArgumentException("No controllable session found.");
+            case SEEKED -> sender.sendMessage(msg("&aSeeked to " + format(targetMs) + "."));
+            case PREPARING -> sender.sendMessage(msg(
+                    "&ePreparing audio from " + format(targetMs) + ". Playback will continue after its temporary pack loads."));
+            case BEDROCK_UNSUPPORTED -> throw new IllegalArgumentException(
+                    "Timestamp-based seeking is not available while a Bedrock player is in this session. Use segmented mode for Bedrock-compatible seeking.");
+            case UNSUPPORTED -> throw new IllegalArgumentException(
+                    "Streamed seeking requires audio.playback-mode: resumable. The continuous mode can only restart from the beginning.");
+            case ALREADY_PREPARING -> sender.sendMessage(msg("&eAn audio seek or resume is already being prepared."));
+        }
     }
 
     private void playlist(CommandSender sender, String[] args) throws SQLException {
@@ -494,6 +595,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] &7- import an allowlisted source"));
         sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
+        sender.sendMessage(msg("&f/play <track-or-url> [zone options] &7- short playback command"));
         sender.sendMessage(msg("&f/music play <track-or-url> [--all|--player name|--circle r|--square WxL] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
