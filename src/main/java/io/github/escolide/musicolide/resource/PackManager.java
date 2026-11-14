@@ -57,18 +57,34 @@ public final class PackManager {
     }
 
     public boolean isReady(Player player, MusicTrack track) {
-        if (isTemporary(track)) {
-            return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
+        if (track == null) return false;
+        if (packBuilder.containsInBasePack(track)) {
+            String hash = currentLibraryHash();
+            return hash != null && hash.equals(libraryReadyHash.get(player.getUniqueId()));
         }
-        String hash = currentLibraryHash();
-        return hash != null && hash.equals(libraryReadyHash.get(player.getUniqueId()));
+        return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
     }
 
     public boolean isDeclined(Player player, MusicTrack track) {
-        if (isTemporary(track)) {
-            return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
-        }
-        return isBaseDeclined(player);
+        if (track == null) return false;
+        if (packBuilder.containsInBasePack(track)) return isBaseDeclined(player);
+        return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
+    }
+
+    /** Explicitly retries a catalogue track pack when it is not in the startup library. */
+    public boolean retryTrack(Player player, MusicTrack track) {
+        if (player == null || !player.isOnline() || track == null) return false;
+        if (packBuilder.containsInBasePack(track)) return requestLibrary(player, true);
+        UUID playerId = player.getUniqueId();
+        declined.computeIfPresent(playerId, (id, values) -> {
+            values.remove(track.packId());
+            return values.isEmpty() ? null : values;
+        });
+        LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
+                playerId, ignored -> new LinkedHashMap<>());
+        enqueueIfNeeded(playerId, queue, track);
+        pump(player);
+        return true;
     }
 
     /**
@@ -107,18 +123,19 @@ public final class PackManager {
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming, int tracksAhead) {
         if (!ensureLibrary(player)) return;
 
-        // Normal tracks are already in the single library pack. Only FFmpeg
-        // generated resume/synchronization tails need their own temporary pack.
+        // Tracks included in the immutable startup library need no separate
+        // request. Newly imported tracks and FFmpeg remainder packs are sent
+        // incrementally, without rebuilding or retransmitting the full library.
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 player.getUniqueId(), ignored -> new LinkedHashMap<>());
         Set<UUID> desired = new HashSet<>();
-        if (isTemporary(current)) {
+        if (needsIncrementalPack(current)) {
             desired.add(current.packId());
             enqueueIfNeeded(player.getUniqueId(), queue, current);
         }
         if (upcoming != null) {
             for (MusicTrack track : upcoming.stream().limit(Math.max(0, tracksAhead)).toList()) {
-                if (isTemporary(track)) {
+                if (needsIncrementalPack(track)) {
                     desired.add(track.packId());
                     enqueueIfNeeded(player.getUniqueId(), queue, track);
                 }
@@ -204,6 +221,10 @@ public final class PackManager {
         boolean sharedPortMode = plugin.getConfig().getString("server.hosting-mode", "shared-port")
                 .equalsIgnoreCase("shared-port");
         return PackUrlBuilder.build(base, prefix, fileName, detected, configured, sharedPortMode);
+    }
+
+    private boolean needsIncrementalPack(MusicTrack track) {
+        return track != null && !packBuilder.containsInBasePack(track);
     }
 
     private boolean isTemporary(MusicTrack track) {
