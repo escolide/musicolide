@@ -206,14 +206,41 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (cleaned.length() < 2 || cleaned.length() > 100) {
             return CompletableFuture.completedFuture(List.of());
         }
-        return processor.searchYouTube(cleaned).thenApply(results -> {
-            List<DiscordPlaySuggestion> suggestions = new ArrayList<>();
+
+        final List<DiscordPlaySuggestion> local;
+        try {
+            local = repository.search(cleaned, 25).stream()
+                    .map(track -> new DiscordPlaySuggestion(
+                            TextUtil.truncate(track.title()
+                                    + (track.artist() == null || track.artist().isBlank()
+                                    ? "" : " — " + track.artist()), 100),
+                            track.id()))
+                    .toList();
+        } catch (SQLException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+
+        // Remote autocomplete choices are only actionable when the server
+        // administrator explicitly enabled automatic importing of allowlisted
+        // YouTube URLs. Otherwise, expose only tracks already in the local
+        // authorized catalogue, matching /play's existing safety policy.
+        boolean allowRemote = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
+                && plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
+        if (!allowRemote) return CompletableFuture.completedFuture(local);
+        if (local.size() >= 25) return CompletableFuture.completedFuture(local);
+
+        return processor.searchYouTube(cleaned).handle((results, error) -> {
+            List<DiscordPlaySuggestion> suggestions = new ArrayList<>(local);
+            if (error != null || results == null) return List.copyOf(suggestions);
+            Set<String> existing = new HashSet<>();
+            for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
             for (YtDlpDownloader.SearchResult result : results) {
                 if (suggestions.size() >= 25) break;
                 String url = result.url();
                 if (url == null || url.isBlank()) {
                     url = "https://www.youtube.com/watch?v=" + result.videoId();
                 }
+                if (!existing.add(url)) continue;
                 String title = result.title() == null ? "Untitled" : result.title();
                 String uploader = result.uploader() == null ? "" : result.uploader();
                 String label = title + (uploader.isBlank() ? "" : " — " + uploader);
