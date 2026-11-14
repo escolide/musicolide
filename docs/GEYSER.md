@@ -13,6 +13,13 @@ The branch now:
 - Keeps Bedrock readiness independent of Java pack waits. A Bedrock client that is not ready never delays Java playback; a Bedrock listener with the current aggregate pack can release the shared session clock while pending Java listeners are caught up individually.
 - Uses the shared Musicolide playback session engine for Bedrock clients without sending them Java Edition resource packs.
 - Requires Bedrock players to reconnect when a new import changes the aggregate pack.
+- Supports the opt-in `geyser.ignore-bedrock-players` setting. When enabled, the pack-registration event returns without registering Musicolide's Bedrock pack, Bedrock UUIDs are excluded from playback selection/barriers, and Musicolide command responses are suppressed for those players.
+
+## Complete Bedrock exclusion
+
+Set `geyser.ignore-bedrock-players: true` in `config.yml` to make Geyser-identified Bedrock connections invisible to Musicolide's client-output pipeline. No Musicolide Bedrock or Java resource packs are requested for them, no music sound/action-bar output is scheduled, and their Musicolide commands receive no plugin feedback. The option defaults to `false` and requires Geyser's API to be available on the same Paper server. Excluded Bedrock sessions do not trigger the mixed-session resume fallback and do not participate in the Java start barrier.
+
+Set the option before Bedrock users connect. If changed while a player is already connected, Musicolide stops an existing Musicolide sound and suppresses subsequent output, but it cannot revoke a pack Geyser has already offered without a client-facing pack update/removal. Reconnect those players after changing the setting.
 
 This is not a release-level compatibility claim: the repository's CI does not run a Bedrock client, and no live client test has been completed.
 
