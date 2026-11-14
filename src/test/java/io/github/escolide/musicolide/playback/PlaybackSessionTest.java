@@ -23,6 +23,53 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void segmentedResumePreservesAbsoluteTimestampUntilSharedClockStarts() {
+        MusicTrack track = new MusicTrack("segmented-resume", "Segmented resume", "", "mc_segmented_resume",
+                "segmented-resume.zip", "0000000000000000000000000000000000000000",
+                10000, 250, 40, 1000);
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(track), 0);
+
+        session.startClockIfNeeded();
+        session.seek(4250);
+        assertEquals(17, session.segmentIndex());
+        assertFalse(session.clockStarted());
+
+        session.startClockIfNeeded();
+        assertEquals(17, session.segmentIndex());
+        session.pause();
+        long pausedAt = session.elapsedMs();
+        session.resume();
+
+        assertFalse(session.clockStarted());
+        assertEquals(pausedAt, session.elapsedMs());
+        assertEquals(17, session.segmentIndex());
+
+        session.startClockIfNeeded();
+        assertTrue(session.clockStarted());
+        assertTrue(session.elapsedMs() >= pausedAt);
+        assertEquals(17, session.segmentIndex());
+    }
+
+    @Test
+    void continuousResumeResetsToZeroButWaitsForSharedStartBarrier() {
+        MusicTrack track = new MusicTrack("continuous-resume", "Continuous resume", "", "ms_continuous_resume",
+                "continuous-resume.zip", "0000000000000000000000000000000000000000",
+                60000, 60000, 1, 1000);
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(track), 0);
+        session.startClockIfNeeded();
+        session.pause();
+        session.resume();
+
+        assertFalse(session.clockStarted());
+        assertEquals(0, session.elapsedMs());
+        session.startClockIfNeeded();
+        assertTrue(session.clockStarted());
+        assertTrue(session.elapsedMs() >= 0);
+    }
+
+    @Test
     void streamedTrackResumeRestartsItsClockAndDoesNotPretendToSeek() throws Exception {
         MusicTrack track = new MusicTrack("stream-demo", "Stream demo", "", "ms_stream_demo",
                 "ms_stream_demo.zip", "0000000000000000000000000000000000000000",
