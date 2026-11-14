@@ -18,6 +18,11 @@ public final class BedrockPackReadiness {
         offered.put(identity, revision);
     }
 
+    public void associate(String identity, String playerId) {
+        if (identity == null || identity.isBlank() || playerId == null || playerId.isBlank()) return;
+        identityByPlayer.put(playerId, identity);
+    }
+
     public boolean markReady(String identity, String playerId) {
         if (identity == null || identity.isBlank() || playerId == null || playerId.isBlank()) return false;
         String revision = offered.get(identity);
