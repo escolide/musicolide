@@ -82,21 +82,19 @@ public final class PlaybackEngine {
     public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
                                                       boolean allPlayers, Collection<UUID> listeners,
                                                       MusicTrack track, int priority) {
-        if (owner != null) {
-            PlaybackSession existing = sessions.stream()
-                    .filter(session -> owner == null
-                            ? session.owner() == null && session.ownerName().equals(ownerName)
-                            : session.isOwner(owner))
-                    .filter(session -> !session.paused() && !session.resumePreparing())
-                    .filter(session -> session.matchesPlaybackRequest(allPlayers, listeners, zone))
-                    .max(Comparator.comparingLong(PlaybackSession::startedAt))
-                    .orElse(null);
-            if (existing != null && !existing.isEmpty()) {
-                int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
-                if (existing.queueSize() >= maximumQueue) return PlayDisposition.QUEUE_FULL;
-                existing.enqueue(track);
-                return PlayDisposition.QUEUED;
-            }
+        PlaybackSession existing = sessions.stream()
+                .filter(session -> owner == null
+                        ? session.owner() == null && session.ownerName().equals(ownerName)
+                        : session.isOwner(owner))
+                .filter(session -> !session.paused() && !session.resumePreparing())
+                .filter(session -> session.matchesPlaybackRequest(allPlayers, listeners, zone))
+                .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                .orElse(null);
+        if (existing != null && !existing.isEmpty()) {
+            int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
+            if (existing.queueSize() >= maximumQueue) return PlayDisposition.QUEUE_FULL;
+            existing.enqueue(track);
+            return PlayDisposition.QUEUED;
         }
         startSession(owner, ownerName, zone, allPlayers, listeners, List.of(track), priority);
         return PlayDisposition.STARTED;
