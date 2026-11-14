@@ -110,6 +110,32 @@ public final class PlaybackEngine {
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
 
     /**
+     * Returns a read-only server-clock snapshot for the single configured Discord
+     * voice channel. Since Discord has no Minecraft position/zone, simultaneous
+     * sessions are resolved globally using Musicolide's priority/oldest-session
+     * ordering. This method never changes, advances, pauses, or controls a session.
+     */
+    public synchronized Optional<DiscordPlaybackSnapshot> discordBroadcastSnapshot() {
+        boolean manualPriority = plugin.getConfig().getBoolean(
+                "playback.overlap.manual-priority-enabled", true);
+        PlaybackSession selected = sessions.stream()
+                .filter(session -> session.current() != null && !session.isEmpty())
+                .min((first, second) -> {
+                    if (manualPriority && first.priority() != second.priority()) {
+                        return Integer.compare(second.priority(), first.priority());
+                    }
+                    int started = Long.compare(first.startedAt(), second.startedAt());
+                    return started != 0 ? started : first.id().compareTo(second.id());
+                })
+                .orElse(null);
+        if (selected == null) return Optional.empty();
+        return Optional.of(new DiscordPlaybackSnapshot(
+                selected.id(), selected.timelineGeneration(), selected.current(),
+                selected.elapsedMs(), selected.paused(), selected.resumePreparing(),
+                selected.clockStarted(), selected.speed()));
+    }
+
+    /**
      * Used by retention cleanup to avoid deleting a temporary pack while a
      * session still references it as the current, queued, or repeating track.
      */
