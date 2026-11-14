@@ -57,6 +57,18 @@ public final class PlaybackEngine {
         this.geyser = geyser;
     }
 
+    /**
+     * Exposes the single Bedrock exclusion decision to command and lifecycle
+     * handlers. When disabled, all existing Bedrock behavior is preserved.
+     */
+    public boolean isIgnoredBedrockPlayer(UUID playerId) {
+        return geyser != null && geyser.isIgnoredBedrockPlayer(playerId);
+    }
+
+    private boolean isIgnoredBedrockPlayer(Player player) {
+        return player != null && isIgnoredBedrockPlayer(player.getUniqueId());
+    }
+
     public void start() {
         long interval = Math.max(1, plugin.getConfig().getLong("general.check-interval-ticks", 5));
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 1L, interval);
@@ -264,7 +276,8 @@ public final class PlaybackEngine {
     private boolean hasOnlineBedrockTarget(PlaybackSession session) {
         return geyser != null && Bukkit.getOnlinePlayers().stream()
                 .anyMatch(player -> session.targets(player.getUniqueId())
-                        && geyser.isBedrockPlayer(player.getUniqueId()));
+                        && geyser.isBedrockPlayer(player.getUniqueId())
+                        && !isIgnoredBedrockPlayer(player));
     }
 
     private void generateAndInstallRemainder(PlaybackSession session, MusicTrack original,
@@ -346,6 +359,7 @@ public final class PlaybackEngine {
      * can optionally restart their current segment.
      */
     public VolumeChangeResult setPlayerVolume(Player player, int volume, Consumer<String> completion) {
+        if (isIgnoredBedrockPlayer(player)) return VolumeChangeResult.SAVED;
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         pref.volume(volume);
         savePreferences(player.getUniqueId(), pref);
@@ -359,6 +373,7 @@ public final class PlaybackEngine {
     }
 
     public VolumeChangeResult setPlayerMuted(Player player, boolean muted, Consumer<String> completion) {
+        if (isIgnoredBedrockPlayer(player)) return VolumeChangeResult.SAVED;
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         Candidate beforeMute = muted ? findCandidate(player) : null;
         pref.muted(muted);
@@ -463,7 +478,7 @@ public final class PlaybackEngine {
 
     /** Explicitly retries the Java music-library request for this player. */
     public boolean requestLibrary(Player player) {
-        return packs.requestLibrary(player, true);
+        return !isIgnoredBedrockPlayer(player) && packs.requestLibrary(player, true);
     }
 
     public enum SpeedChangeResult { NO_SESSION, APPLIED_NOW, NEXT_TRACK }
@@ -481,7 +496,7 @@ public final class PlaybackEngine {
 
     /** Force reconnecting listeners through the timestamp-aligned late-join path. */
     public void onJoin(Player player) {
-        if (player == null) return;
+        if (player == null || isIgnoredBedrockPlayer(player)) return;
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!player.isOnline()) return;
             Candidate candidate = findCandidate(player);
@@ -505,6 +520,7 @@ public final class PlaybackEngine {
      */
     public SyncStart synchronizePlayer(Player player, Consumer<String> completion) {
         if (player == null || !player.isOnline()) return SyncStart.NO_SESSION;
+        if (isIgnoredBedrockPlayer(player)) return SyncStart.BEDROCK_UNSUPPORTED;
         Candidate candidate = findCandidate(player);
         if (candidate == null) return SyncStart.NO_SESSION;
 
@@ -658,6 +674,7 @@ public final class PlaybackEngine {
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
+            if (isIgnoredBedrockPlayer(player)) continue;
             Candidate winner = null;
             for (PlaybackSession session : active) {
                 if (!session.targets(player.getUniqueId()) || session.current() == null
@@ -735,13 +752,22 @@ public final class PlaybackEngine {
                 long last = warningTimes.getOrDefault(session.id(), 0L);
                 if (System.currentTimeMillis() - last >= cooldown) {
                     Player owner = Bukkit.getPlayer(session.owner());
-                    if (owner != null) owner.sendMessage(message("messages.overlap-warning"));
+                    if (owner != null && !isIgnoredBedrockPlayer(owner)) {
+                        owner.sendMessage(message("messages.overlap-warning"));
+                    }
                     warningTimes.put(session.id(), System.currentTimeMillis());
                 }
             }
         }
 
         for (Player player : online) {
+            if (isIgnoredBedrockPlayer(player)) {
+                // Normally there is no state for an excluded player. If the
+                // setting was enabled while they were already listening, stop
+                // that one existing sound and never send further playback data.
+                if (playerPlayback.containsKey(player.getUniqueId())) stopPlayer(player);
+                continue;
+            }
             Candidate winner = winners.get(player.getUniqueId());
             if (winner == null) {
                 stopPlayer(player);
@@ -928,6 +954,10 @@ public final class PlaybackEngine {
 
             Player player = Bukkit.getPlayer(playerId);
             if (player == null || !player.isOnline()) continue;
+            if (isIgnoredBedrockPlayer(player)) {
+                stopPlayer(player);
+                continue;
+            }
 
             PlaybackSession session = activeById.get(state.sessionId);
             if (session == null || session.paused() || !session.targets(playerId)
@@ -1130,7 +1160,7 @@ public final class PlaybackEngine {
     }
 
     private void warnPackDeclined(Player player, MusicTrack originalTrack, MusicTrack playbackTrack) {
-        if (playbackTrack == null) return;
+        if (playbackTrack == null || isIgnoredBedrockPlayer(player)) return;
         // One rejection notice per catalogue song, even if the playback tick
         // repeats hundreds of times. A different song gets its own notice.
         String songId = originalTrack == null ? playbackTrack.id() : originalTrack.id();
@@ -1141,6 +1171,7 @@ public final class PlaybackEngine {
     }
 
     private void warnBedrockUnavailable(Player player, String messagePath) {
+        if (isIgnoredBedrockPlayer(player)) return;
         long now = System.currentTimeMillis();
         long lastWarning = bedrockWarnings.getOrDefault(player.getUniqueId(), 0L);
         if (now - lastWarning > 300000L) {
@@ -1222,7 +1253,8 @@ public final class PlaybackEngine {
      * once the original track's pack is finally available.
      */
     private void startAutomaticCatchUpIfNeeded(Player player, Candidate candidate) {
-        if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) return;
+        if (isIgnoredBedrockPlayer(player)
+                || (geyser != null && geyser.isBedrockPlayer(player.getUniqueId()))) return;
         UUID playerId = player.getUniqueId();
         MusicTrack sessionTrack = candidate.session.playbackTrack();
         MusicTrack catalogueTrack = candidate.session.current();
@@ -1258,6 +1290,7 @@ public final class PlaybackEngine {
     }
 
     private Candidate findCandidate(Player player) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return null;
         Candidate winner = null;
         for (PlaybackSession session : sessions()) {
             if (!session.targets(player.getUniqueId()) || session.current() == null
