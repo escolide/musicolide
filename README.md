@@ -85,7 +85,7 @@ Keep the real token private. Do not commit it to a repository or share it in log
 
 The Minecraft session clock is authoritative. Pause, resume, seek, skip, track changes, playback speed and reconnect recovery are derived from read-only snapshots of that clock. If the bot disconnects, Minecraft continues uninterrupted. With `reconnect-and-resync: true`, the bot rejoins and starts from the current server timer instead of replaying stale buffered audio. Discord members joining or leaving the voice channel do not change the session.
 
-A single configured Discord channel can broadcast only one global session at a time. When more than one spatial/session playback exists, Musicolide selects a currently audible session first, then applies the configured overlap priority/oldest-session ordering. Discord cannot reproduce different per-player zone mixes because it has no Minecraft player position. This feature requires FFmpeg and DAVE-compatible native support for Linux x86_64 or Windows x86_64 in this build; unsupported native platforms disable Discord output only.
+A single configured Discord channel can broadcast only one global session at a time. When more than one spatial/session playback exists, Musicolide selects a currently audible session first, then applies the configured overlap priority/oldest-session ordering. Discord cannot reproduce different per-player zone mixes because it has no Minecraft player position. This feature requires FFmpeg and the DAVE native runtime. In this build, the Linux x86_64 production JAR bundles the full Discord voice runtime; the size-limited universal JAR intentionally omits this optional runtime, so Discord broadcasting is available with the Linux production JAR only.
 
 ## Server setup
 
