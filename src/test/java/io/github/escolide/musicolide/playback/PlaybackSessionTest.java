@@ -280,13 +280,13 @@ class PlaybackSessionTest {
     void speedCanBeChangedWhilePausedAndRejectsOutOfRangeValues() {
         PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
                 MusicZone.global(), true, List.of(), List.of(sampleTrack("speed-paused")), 0);
-        assertTrue(session.setSpeed(0.25));
+        assertTrue(session.setSpeed(0.5));
         session.startClockIfNeeded();
         session.pause();
 
         assertTrue(session.setSpeed(1.5));
         assertEquals(1.5, session.speed(), 0.0001);
-        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(0.24));
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(0.49));
         assertThrows(IllegalArgumentException.class, () -> session.setSpeed(2.01));
         assertThrows(IllegalArgumentException.class, () -> session.setSpeed(Double.NaN));
     }
