@@ -115,8 +115,9 @@ final class DiscordTrackStreamer implements AutoCloseable {
 
             List<String> command = new ArrayList<>();
             command.add(toolchain.executable(NativeToolchain.Tool.FFMPEG));
+            command.addAll(List.of("-hide_banner", "-loglevel", "error", "-nostdin"));
+            if (!current.track().isStreamed()) command.addAll(List.of("-f", "concat", "-safe", "0"));
             command.addAll(List.of(
-                    "-hide_banner", "-loglevel", "error", "-nostdin",
                     "-i", input.toString(),
                     "-ss", String.format(Locale.ROOT, "%.3f", offsetMs / 1000.0),
                     "-map", "0:a:0", "-vn", "-sn", "-dn",
@@ -146,9 +147,12 @@ final class DiscordTrackStreamer implements AutoCloseable {
             }
 
             if (isCurrent(token) && started.isAlive()) {
-                if (!started.waitFor(2, TimeUnit.SECONDS)) started.destroyForcibly();
+                if (!started.waitFor(2, TimeUnit.SECONDS)) {
+                    started.destroyForcibly();
+                    started.waitFor(1, TimeUnit.SECONDS);
+                }
             }
-            if (isCurrent(token) && started.exitValue() != 0) {
+            if (isCurrent(token) && !started.isAlive() && started.exitValue() != 0) {
                 logger.warning("Discord audio decoder exited with code " + started.exitValue()
                         + "; Minecraft playback is continuing independently.");
             }
@@ -275,10 +279,9 @@ final class DiscordTrackStreamer implements AutoCloseable {
         return startPositionMs + Math.round(sendHandler.providedFrames() * 20.0 * playbackSpeed);
     }
 
-    boolean isDecoding() {
-        Process active = process;
+    boolean isActive() {
         Thread activeWorker = worker;
-        return active != null && active.isAlive() && activeWorker != null && activeWorker.isAlive();
+        return activeWorker != null && activeWorker.isAlive();
     }
 
     private String safeMessage(Exception ex) {
