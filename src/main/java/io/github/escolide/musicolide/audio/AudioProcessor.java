@@ -297,14 +297,15 @@ public final class AudioProcessor implements AutoCloseable {
 
     /**
      * Builds a short-lived streamed resource pack containing the unplayed tail
-     * of an imported streamed track. This runs on the audio worker, never the
-     * Minecraft server thread. The returned track is intentionally not saved
-     * to the catalogue or the Bedrock aggregate pack.
+     * of an imported track. Streamed tracks use their OGG directly; segmented
+     * tracks are concatenated before extracting the requested timestamp.
+     * This runs on the audio worker and is not saved to the catalogue or the
+     * Bedrock aggregate pack.
      */
     public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs) {
-        if (sourceTrack == null || !sourceTrack.isStreamed()) {
+        if (sourceTrack == null) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
-                    "Only continuous streamed tracks can use timestamp-based resume."));
+                    "A source track is required for timestamp-based synchronization."));
         }
         if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -341,26 +342,59 @@ public final class AudioProcessor implements AutoCloseable {
         Path work = Files.createTempDirectory(incoming, ".musicolide-resume-");
         Path outputPack = null;
         try {
-            Path input = work.resolve("source.ogg");
-            String entryName = "assets/" + sourceTrack.namespace() + "/sounds/music.ogg";
-            try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
-                ZipEntry entry = zip.getEntry(entryName);
-                if (entry == null || entry.isDirectory()) {
-                    throw new IOException("The original streamed OGG is missing from its resource pack.");
-                }
-                long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
-                if (entry.getSize() > maxBytes) {
-                    throw new IOException("The streamed OGG exceeds the configured input-size limit.");
-                }
-                try (var stream = zip.getInputStream(entry)) {
-                    Files.copy(stream, input, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
             Path remainder = work.resolve("remainder.ogg");
-            runFfmpegRemainder(ffmpeg, input, remainder, startMs, 
-                    bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10));
+            int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            if (sourceTrack.isStreamed()) {
+                Path input = work.resolve("source.ogg");
+                String entryName = "assets/" + sourceTrack.namespace() + "/sounds/music.ogg";
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    ZipEntry entry = zip.getEntry(entryName);
+                    if (entry == null || entry.isDirectory()) {
+                        throw new IOException("The original streamed OGG is missing from its resource pack.");
+                    }
+                    long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+                    if (entry.getSize() > maxBytes) {
+                        throw new IOException("The streamed OGG exceeds the configured input-size limit.");
+                    }
+                    try (var stream = zip.getInputStream(entry)) {
+                        Files.copy(stream, input, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                runFfmpegRemainder(ffmpeg, input, remainder, startMs, quality);
+            } else {
+                Path concatList = work.resolve("segments.txt");
+                List<String> entries = new ArrayList<>();
+                long maximumBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+                long extractedBytes = 0L;
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    for (int i = 0; i < sourceTrack.segmentCount(); i++) {
+                        String segmentId = String.format(Locale.ROOT, "%05d", i);
+                        String entryName = "assets/" + sourceTrack.namespace() + "/sounds/"
+                                + sourceTrack.namespace() + "/stereo/" + segmentId + ".ogg";
+                        ZipEntry entry = zip.getEntry(entryName);
+                        if (entry == null || entry.isDirectory()) {
+                            throw new IOException("A segmented audio asset is missing: " + segmentId + ".ogg");
+                        }
+                        if (entry.getSize() > 0) {
+                            extractedBytes += entry.getSize();
+                            if (extractedBytes > maximumBytes) {
+                                throw new IOException("The segmented audio exceeds the configured input-size limit.");
+                            }
+                        }
+                        Path segmentFile = work.resolve("segment-" + segmentId + ".ogg");
+                        try (var stream = zip.getInputStream(entry)) {
+                            Files.copy(stream, segmentFile, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        String escapedPath = segmentFile.toAbsolutePath().toString()
+                                .replace("\\", "\\\\").replace("'", "\\'");
+                        entries.add("file '" + escapedPath + "'");
+                    }
+                }
+                if (entries.isEmpty()) throw new IOException("The segmented resource pack contains no audio segments.");
+                Files.writeString(concatList, String.join("\n", entries) + "\n", StandardCharsets.UTF_8);
+                runFfmpegSegmentedRemainder(ffmpeg, concatList, remainder, startMs, quality);
+            }
             long durationMs = probeDuration(ffmpeg, remainder, data);
             if (durationMs <= 0) throw new IOException("FFmpeg produced an empty audio remainder.");
 
@@ -403,6 +437,30 @@ public final class AudioProcessor implements AutoCloseable {
         }
         if (!Files.isRegularFile(output) || Files.size(output) == 0) {
             throw new IOException("FFmpeg completed without producing the resumed OGG.");
+        }
+    }
+
+    private void runFfmpegSegmentedRemainder(String executable, Path concatList, Path output,
+                                               long startMs, int quality)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error",
+                "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", concatList.toString(),
+                "-ss", String.format(Locale.ROOT, "%.3f", startMs / 1000.0),
+                "-vn", "-map", "0:a:0", "-ac", "2", "-ar", Integer.toString(sampleRate),
+                "-c:a", "libvorbis", "-q:a", Integer.toString(quality),
+                "-threads", Integer.toString(threads), output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg segmented synchronization-tail encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing the synchronized OGG remainder.");
         }
     }
 
