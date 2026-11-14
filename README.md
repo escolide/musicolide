@@ -35,7 +35,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
-- FFmpeg probes input duration and prepares audio according to `audio.playback-mode`: legacy OGG segments, one continuous streamed OGG, or a streamed OGG with timestamp-based resume generation. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
+- FFmpeg probes input duration and prepares audio according to `audio.playback-mode`: legacy OGG segments, one continuous streamed OGG, or a streamed OGG with timestamp-based resume generation. Player-specific `/music sync` can build a temporary tail from either the streamed OGG or the stored legacy segments without pausing other listeners. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
 - By default, generated resource packs are served locally through the existing Minecraft TCP listener. Musicolide inspects the first bytes of each accepted connection before Minecraft's packet handlers: HTTP GET/HEAD requests for the configured pack path are served from the local packs directory, while all other connections are passed to Paper unchanged. No second public port, external storage, VPS or upload account is required. A legacy dedicated-port HTTP mode remains available.
 - Resource packs are requested only for the current track and a rolling prefetch window (four upcoming tracks by default). Client-side pack hashes allow cached packs to be reused.
 - Spatial zones support circles, world-aligned or player-facing squares, optional vertical limits, and optional volume-based stereo fade outside the main zone.
@@ -112,6 +112,8 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 - /music nowplaying, /music progress
 - /music volume <0-100>, /music mute, /music unmute
 - /music seek <seconds>
+- /music sync (player; rebuilds only your audio from the active session timeline)
+- /music sync <seconds> (admin; updates the shared `playback.synchronization.late-join.delay-seconds` offset, default 4 seconds)
 - /music alias add <external-url> <track-id> (admin)
 - /music reload (admin)
 
