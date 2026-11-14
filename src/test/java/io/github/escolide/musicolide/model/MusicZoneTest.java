@@ -8,6 +8,19 @@ class MusicZoneTest {
     private final UUID world = UUID.randomUUID();
 
     @Test
+    void equivalentGlobalAndSpatialZonesMatchExactly() {
+        assertTrue(MusicZone.global().sameAs(MusicZone.global()));
+        assertFalse(MusicZone.global().sameAs(
+                MusicZone.circle(world, 0, 64, 0, 60, false, 0, false, 0)));
+
+        MusicZone first = MusicZone.circle(world, 10, 64, 20, 60, true, 16, true, 8);
+        MusicZone same = MusicZone.circle(world, 10, 64, 20, 60, true, 16, true, 8);
+        MusicZone different = MusicZone.circle(world, 10, 64, 20, 61, true, 16, true, 8);
+        assertTrue(first.sameAs(same));
+        assertFalse(first.sameAs(different));
+    }
+
+    @Test
     void circleUsesHorizontalRadius() {
         MusicZone zone = MusicZone.circle(world, 0, 64, 0, 10, false, 0, false, 0);
         assertTrue(zone.containsBase(world, 10, 200, 0));
