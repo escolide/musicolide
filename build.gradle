@@ -128,8 +128,7 @@ tasks.register('generateDiscordRuntimeManifest') {
                 throw new GradleException('Unexpected DAVE native artifact: ' + file.name)
             }
             def artifactId = file.name.substring(0, file.name.lastIndexOf('-0.1.2.jar'))
-            def url = 'https://repo.maven.apache.org/maven2/moe/kyokobot/libdave/' + artifactId
-                    + '/0.1.2/' + file.name
+            def url = 'https://repo.maven.apache.org/maven2/moe/kyokobot/libdave/' + artifactId + '/0.1.2/' + file.name
             platform + '|' + file.name + '|' + sha256(file) + '|' + url
         }
         def nativeManifest = discordNativeManifestFile.get().asFile
