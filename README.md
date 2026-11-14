@@ -35,6 +35,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 - Java plugin owns commands, sessions, permissions, zones, queues and player arbitration.
 - SQLite stores track metadata, external URL aliases, playlists and user preferences.
+- `/music search <query>` and an unmatched `/play <query>` use yt-dlp's YouTube search extractor to show a small, player-private result list. Search fetches metadata only; `/music select <number>` is the explicit import/play action. Results expire after five minutes. `audio.yt-dlp.search.result-count` defaults to six (bounded to 1–20), and `audio.yt-dlp.search.prioritize-songs` defaults to true. Song prioritization is a heuristic that boosts official audio/music videos, lyrics and Topic channels while de-emphasizing reaction/tutorial/compilation results; turn it off to preserve YouTube's returned order.
 - FFmpeg probes input duration and prepares audio according to `audio.playback-mode`: legacy OGG segments, one continuous streamed OGG, or a streamed OGG with timestamp-based resume generation. Player-specific `/music sync` and optional `precise` Java volume changes can build a temporary tail from either the streamed OGG or stored legacy segments without pausing other listeners. The default `playback.volume-change-mode: next-track` changes the saved volume without generating a file; the currently playing sound keeps its original volume until the next track. The optional `restart-segment` mode can apply volume immediately in legacy segmented mode by restarting the current segment; streamed tracks fall back to next-track. Bedrock volume changes always take effect on the next track. Fade zones adjust per-player stereo volume instead of generating duplicate mono audio.
 - `/music speed <0.5-2.0>` adjusts the session's playback rate through Minecraft's sound-pitch parameter, without creating or downloading audio files. A live change is staged for the next track because an already-playing sound cannot have its pitch changed in place. This also changes the music's tonal pitch. Vanilla Java clients clamp sound pitch below 0.5, so accurate 0.25x playback is not available without client-side support or separately processed audio. The session clock and track transitions follow the selected speed.
 - By default, generated resource packs are served locally through the existing Minecraft TCP listener. Musicolide inspects the first bytes of each accepted connection before Minecraft's packet handlers: HTTP GET/HEAD requests for the configured pack path are served from the local packs directory, while all other connections are passed to Paper unchanged. No second public port, external storage, VPS or upload account is required. A legacy dedicated-port HTTP mode remains available.
@@ -48,6 +49,7 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once an administrator enables that setting and configures authorized hosts, users with the DJ permission can run /play <url> in-game to import the source and start playback after the resource pack is generated. From console, specify --all or --player <name>. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
 
 Import only audio that you own or are authorized to distribute to your players. The presence of yt-dlp does not grant redistribution rights.
+YouTube search itself does not download audio. Selecting a result follows the same `audio.yt-dlp.auto-import-on-play` opt-in, allowed-host checks and redistribution-rights responsibility as `/play <YouTube URL>`. When auto-import is disabled, players can still inspect the metadata results, but selection is blocked until an administrator enables the setting.
 
 ## Build and native-tool setup
 
@@ -88,6 +90,9 @@ audio:
   yt-dlp:
     enabled: true
     auto-import-on-play: false
+    search:
+      result-count: 6
+      prioritize-songs: true
     allowed-hosts:
       - "youtube.com"
       - "youtu.be"
@@ -104,6 +109,8 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 - /play <track-or-url> (DJ for saved tracks; appends to the sender's existing session when its audience and zone match; URL auto-import additionally requires the administrator to enable audio.yt-dlp.auto-import-on-play and allow the source host)
 - /music diagnostics (admin; reports native audio-tool availability)
 - /music list [search]
+- /music search <query> (DJ; YouTube metadata search, no audio download)
+- /music select <number> (DJ; imports and plays one result from your latest search)
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
 - /music playlist create <name>
 - /music playlist add <name> <track-id>
@@ -149,7 +156,7 @@ Minecraft's vanilla sound API does not expose a true pause/seek operation for an
 
 See the fully commented config.yml for all available settings. The resource-pack format and shared Minecraft listener port are detected automatically; do not manually set a pack format or the Minecraft port. Set server.public-base-url to the public host players use. If external port mapping differs from the local Minecraft listener, set server.public-port explicitly. Use /music reload after changing reloadable settings. Hosting mode and shared-listener injection require a full server restart.
 
-Important settings include `audio.playback-mode` (`segmented`, `continuous`, or `resumable`), range geometry, prefetch depth, legacy segment duration, resource-pack hosting mode, public host/optional port override, overlap priority, fade behavior, permissions and messages. URL auto-import is off by default. The server operator must explicitly enable `audio.yt-dlp.auto-import-on-play` after confirming redistribution rights; once enabled, users with the DJ permission can run `/play <url>`. The separate `/music import-url` command remains admin-only and requires `--rights-confirmed`. Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
+YouTube search settings are `audio.yt-dlp.search.result-count` (default 6, maximum 20) and `audio.yt-dlp.search.prioritize-songs` (default true). Song ranking is approximate and can be disabled. Search only reads result metadata; selecting a result is subject to the existing URL auto-import opt-in and allowlist.\n\nImportant settings include `audio.playback-mode` (`segmented`, `continuous`, or `resumable`), range geometry, prefetch depth, legacy segment duration, resource-pack hosting mode, public host/optional port override, overlap priority, fade behavior, permissions and messages. URL auto-import is off by default. The server operator must explicitly enable `audio.yt-dlp.auto-import-on-play` after confirming redistribution rights; once enabled, users with the DJ permission can run `/play <url>`. The separate `/music import-url` command remains admin-only and requires `--rights-confirmed`. Spotify and SoundCloud remain blocked as direct audio sources. URL-imported tracks are temporary by default and become eligible for expiry 15 minutes after a successful import (configurable with audio.url-import-retention-minutes); active sessions and in-flight Java pack downloads delay deletion until the track is safe to remove. Local file imports remain in the catalogue. On startup, Musicolide also removes abandoned processing intermediates from interrupted imports while preserving ordinary incoming uploads and finished packs. Cloud processing remains a design only and is not implemented.
 
 ## Status
 
