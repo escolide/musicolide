@@ -45,6 +45,9 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
     }
 
     private void onSessionLoad(SessionLoadResourcePacksEvent event) {
+        // Do not register or send any Musicolide resource pack to Bedrock when
+        // the server has opted to exclude Bedrock clients entirely.
+        if (bridge.shouldIgnoreBedrockPlayers()) return;
         if (!Files.isRegularFile(packFile)) return;
         try {
             ResourcePack pack = ResourcePack.create(PackCodec.path(packFile));
@@ -64,7 +67,8 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
     private void onSessionJoin(SessionJoinEvent event) {
         UUID playerId = event.connection().javaUuid();
         String identity = identity(event);
-        if (playerId != null && bridge.recordSessionReady(playerId, identity)) {
+        if (playerId != null && !bridge.shouldIgnoreBedrockPlayers()
+                && bridge.recordSessionReady(playerId, identity)) {
             plugin.getLogger().fine("Bedrock music library is ready for " + event.connection().bedrockUsername() + ".");
         }
     }
