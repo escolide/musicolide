@@ -60,6 +60,24 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("resource-packs.download-mode", "on-play");
             migratedConfig = true;
         }
+        // Add optional Discord settings to existing installations without
+        // overwriting any token, channel ID, or administrator preference.
+        if (!getConfig().contains("discord.enabled")) {
+            getConfig().set("discord.enabled", false);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.bot-token")) {
+            getConfig().set("discord.bot-token", "");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.voice-channel-id")) {
+            getConfig().set("discord.voice-channel-id", "");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.reconnect-and-resync")) {
+            getConfig().set("discord.reconnect-and-resync", true);
+            migratedConfig = true;
+        }
         if (migratedConfig) saveConfig();
         try {
             Path data = getDataFolder().toPath();
@@ -177,8 +195,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 } catch (Throwable discordError) {
                     // Discord is an optional output. Even a linkage/configuration error must
                     // never abort the Minecraft plugin or stop a server playback session.
+                    String artifactGuidance = discordError instanceof NoClassDefFoundError
+                            ? " The selected universal JAR omits the optional Discord runtime; use the Linux x86_64 production JAR."
+                            : "";
                     getLogger().warning("Discord broadcasting could not be started ("
-                            + discordError.getClass().getSimpleName() + "). Minecraft playback is unaffected.");
+                            + discordError.getClass().getSimpleName() + "). Minecraft playback is unaffected."
+                            + artifactGuidance);
                     if (discordBroadcastService != null) discordBroadcastService.close();
                     discordBroadcastService = null;
                 }
