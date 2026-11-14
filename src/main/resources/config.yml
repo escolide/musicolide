@@ -17,6 +17,31 @@ discord:
   voice-channel-id: ""
   # Rejoin after an unexpected voice disconnect and restart from Minecraft's current timer.
   reconnect-and-resync: true
+  # Discord rich-presence text. {title}, {artist}, {elapsed}, {duration}, and {state} are supported.
+  presence:
+    enabled: true
+    template: "{title} • {elapsed}"
+    idle-text: ""
+    # Discord presence is rate-limited; values below 15 seconds are raised to 15.
+    update-interval-seconds: 15
+  # Bot replies use this accent colour (six-digit hex).
+  embed-color: "#9B59B6"
+  info:
+    enabled: true
+    server-name: "Minecraft Server"
+    # Server address is hidden unless explicitly enabled.
+    show-server-address: false
+    server-ip: ""
+    server-port: 25565
+  commands:
+    enabled: true
+    # Leave blank for global slash commands, or set a guild ID for faster development registration.
+    guild-id: ""
+    # minecraft-op | discord-administrator | either | both
+    # minecraft-op checks the linked player's actual OP/admin permission in Bukkit.
+    # discord-administrator checks Discord Administrator permission or a configured role ID.
+    admin-authorization: "minecraft-op"
+    admin-role-ids: []
 
 geyser:
   # Completely exclude Geyser-identified Bedrock players from Musicolide:
