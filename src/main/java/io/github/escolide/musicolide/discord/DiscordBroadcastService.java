@@ -64,6 +64,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private long lastRestartAttemptNanos;
     private long lastPresenceUpdateNanos;
     private String lastPresenceText = "";
+    private String lastPresenceIdentity = "";
 
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
                                    PlaybackEngine playback, NativeToolchain toolchain,
@@ -319,6 +320,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
             if (!lastPresenceText.isEmpty()) {
                 client.getPresence().setActivity(null);
                 lastPresenceText = "";
+                lastPresenceIdentity = "";
                 lastPresenceUpdateNanos = System.nanoTime();
             }
             return;
@@ -326,7 +328,13 @@ public final class DiscordBroadcastService implements AutoCloseable {
         long now = System.nanoTime();
         long intervalSeconds = Math.max(15L,
                 plugin.getConfig().getLong("discord.presence.update-interval-seconds", 15L));
-        if (now - lastPresenceUpdateNanos < TimeUnit.SECONDS.toNanos(intervalSeconds)) return;
+        String identity = selected.filter(snapshot -> snapshot.track() != null)
+                .map(snapshot -> snapshot.sessionId() + ":" + snapshot.track().id()
+                        + ":" + snapshot.paused() + ":" + snapshot.preparing()
+                        + ":" + snapshot.clockStarted())
+                .orElse("idle");
+        boolean stateChanged = !identity.equals(lastPresenceIdentity);
+        if (!stateChanged && now - lastPresenceUpdateNanos < TimeUnit.SECONDS.toNanos(intervalSeconds)) return;
 
         String text;
         if (selected.isPresent() && selected.get().track() != null) {
@@ -345,11 +353,13 @@ public final class DiscordBroadcastService implements AutoCloseable {
         }
         if (text.length() > 128) text = text.substring(0, 127) + "…";
         if (text.equals(lastPresenceText)) {
+            lastPresenceIdentity = identity;
             lastPresenceUpdateNanos = now;
             return;
         }
         client.getPresence().setActivity(text.isBlank() ? null : Activity.listening(text));
         lastPresenceText = text;
+        lastPresenceIdentity = identity;
         lastPresenceUpdateNanos = now;
     }
 
