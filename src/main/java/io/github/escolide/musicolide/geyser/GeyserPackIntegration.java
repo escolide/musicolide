@@ -11,6 +11,7 @@ import org.geysermc.geyser.api.pack.ResourcePack;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -46,8 +47,7 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
         try {
             ResourcePack pack = ResourcePack.create(PackCodec.path(packFile));
             event.register(pack);
-            UUID playerId = event.connection().javaUuid();
-            if (playerId != null) bridge.recordPackOffered(playerId);
+            bridge.recordPackOffered(identity(event));
         } catch (RuntimeException ex) {
             plugin.getLogger().warning("Could not register the Musicolide Bedrock resource pack for "
                     + event.connection().bedrockUsername() + ": " + ex.getMessage());
@@ -56,14 +56,33 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
 
     private void onSessionJoin(SessionJoinEvent event) {
         UUID playerId = event.connection().javaUuid();
-        if (playerId != null && bridge.recordSessionReady(playerId)) {
+        String identity = identity(event);
+        if (playerId != null && bridge.recordSessionReady(playerId, identity)) {
             plugin.getLogger().fine("Bedrock music library is ready for " + event.connection().bedrockUsername() + ".");
         }
     }
 
     private void onSessionDisconnect(SessionDisconnectEvent event) {
         UUID playerId = event.connection().javaUuid();
-        if (playerId != null) bridge.removePlayer(playerId);
+        bridge.removePlayer(playerId, identity(event));
+    }
+
+    private String identity(SessionLoadResourcePacksEvent event) {
+        return identity(event.connection().xuid(), event.connection().bedrockUsername());
+    }
+
+    private String identity(SessionJoinEvent event) {
+        return identity(event.connection().xuid(), event.connection().bedrockUsername());
+    }
+
+    private String identity(SessionDisconnectEvent event) {
+        return identity(event.connection().xuid(), event.connection().bedrockUsername());
+    }
+
+    private String identity(String xuid, String username) {
+        if (xuid != null && !xuid.isBlank()) return "xuid:" + xuid;
+        if (username != null && !username.isBlank()) return "name:" + username.toLowerCase(Locale.ROOT);
+        return null;
     }
 
     @Override
