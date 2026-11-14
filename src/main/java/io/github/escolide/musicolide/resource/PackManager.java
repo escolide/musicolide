@@ -5,6 +5,10 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,6 +28,7 @@ public final class PackManager {
     // Remove them from the active client stack as soon as the status event arrives.
     private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
+    private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
 
     public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort) {
         this.plugin = plugin;
@@ -162,6 +167,46 @@ public final class PackManager {
         }
     }
 
+    /**
+     * Releases a temporary regenerated-audio pack after the session stops using it.
+     * A pending client download is allowed to finish before its file is deleted.
+     */
+    public void releaseGeneratedTrack(MusicTrack track) {
+        if (track == null || track.namespace() == null || !track.namespace().startsWith("mr_")) return;
+        UUID packId = track.packId();
+        Path directory = plugin.getDataFolder().toPath().resolve("packs").toAbsolutePath().normalize();
+        Path file = directory.resolve(track.packFileName()).normalize();
+        if (!file.startsWith(directory) || !track.packFileName().matches("[A-Za-z0-9_-]+\\.zip")) return;
+
+        // Remove queued-but-not-yet-sent references before deleting the file.
+        for (LinkedHashMap<UUID, MusicTrack> queue : waiting.values()) queue.remove(packId);
+        for (Map.Entry<UUID, Set<UUID>> entry : active.entrySet()) {
+            UUID playerId = entry.getKey();
+            if (!entry.getValue().contains(packId)) continue;
+            if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            } else {
+                Player player = Bukkit.getPlayer(playerId);
+                if (player != null) removePack(player, playerId, packId);
+                else entry.getValue().remove(packId);
+            }
+        }
+        deleteGeneratedWhenIdle.put(packId, file);
+        deleteGeneratedFileIfIdle(packId);
+    }
+
+    private void deleteGeneratedFileIfIdle(UUID packId) {
+        if (isDownloadInProgress(packId)) return;
+        Path file = deleteGeneratedWhenIdle.remove(packId);
+        if (file == null) return;
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not delete temporary resumed-audio pack "
+                    + file.getFileName() + ": " + ex.getMessage());
+        }
+    }
+
     public void releaseAll(Player player) {
         UUID playerId = player.getUniqueId();
         Set<UUID> activeSet = active.get(playerId);
@@ -258,11 +303,13 @@ public final class PackManager {
             if (deferred != null) deferred.remove(packId);
         }
         pump(player);
+        deleteGeneratedFileIfIdle(packId);
     }
 
     public void removePlayer(UUID playerId) {
         baseReady.remove(playerId); baseRequested.remove(playerId); baseDeclined.remove(playerId);
         ready.remove(playerId); requested.remove(playerId); declined.remove(playerId);
         waiting.remove(playerId); active.remove(playerId); removeWhenReady.remove(playerId); inFlight.remove(playerId);
+        for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
     }
 }
