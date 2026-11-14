@@ -4,6 +4,7 @@ import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.audio.TemporaryStorageCleaner;
 import io.github.escolide.musicolide.command.MusicCommand;
+import io.github.escolide.musicolide.discord.DiscordBroadcastService;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
@@ -38,6 +39,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private NativeToolchain nativeToolchain;
     private PackManager packManager;
     private PlaybackEngine playback;
+    private DiscordBroadcastService discordBroadcastService;
     private GeyserBridge geyserBridge;
     private Object geyserPackIntegration;
     private AutoCloseable packServer;
@@ -168,6 +170,19 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             }
             playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
+            if (getConfig().getBoolean("discord.enabled", false)) {
+                try {
+                    discordBroadcastService = new DiscordBroadcastService(this, playback, nativeToolchain);
+                    discordBroadcastService.start();
+                } catch (Throwable discordError) {
+                    // Discord is an optional output. Even a linkage/configuration error must
+                    // never abort the Minecraft plugin or stop a server playback session.
+                    getLogger().warning("Discord broadcasting could not be started ("
+                            + discordError.getClass().getSimpleName() + "). Minecraft playback is unaffected.");
+                    if (discordBroadcastService != null) discordBroadcastService.close();
+                    discordBroadcastService = null;
+                }
+            }
             scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);
             if (getCommand("music") != null) {
@@ -308,6 +323,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     public void onDisable() {
         if (temporaryTrackCleanupTask != null) temporaryTrackCleanupTask.cancel();
         closeGeyserPackIntegration();
+        if (discordBroadcastService != null) {
+            discordBroadcastService.close();
+            discordBroadcastService = null;
+        }
         if (playback != null) playback.stopAll();
         if (processor != null) processor.close();
         else if (nativeToolchain != null) nativeToolchain.close();
