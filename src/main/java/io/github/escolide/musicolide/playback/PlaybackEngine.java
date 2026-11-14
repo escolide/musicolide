@@ -153,31 +153,38 @@ public final class PlaybackEngine {
         for (PlaybackSession session : active) {
             if (!zoneAware && !session.isServerWideGlobalSession()) continue;
             if (session.current() == null || session.isEmpty() || session.finished()
-                    || !session.clockStarted() || session.paused() || session.resumePreparing()) {
+                    || !session.clockStarted()) {
                 continue;
             }
 
             MusicTrack playbackTrack = session.playbackTrack();
             MusicTrack catalogueTrack = session.current();
             if (playbackTrack == null || catalogueTrack == null) continue;
-            boolean hasEligibleJavaListener = false;
-            for (Player player : online) {
-                Candidate candidate = winners.get(player.getUniqueId());
-                if (candidate == null || candidate.session != session || isIgnoredBedrockPlayer(player)
-                        || (geyser != null && geyser.isBedrockPlayer(player.getUniqueId()))
-                        || isPlayerMuted(player)) {
-                    continue;
+
+            // A genuinely paused session must keep the existing Discord voice
+            // connection alive even though there are no active Minecraft
+            // winners while paused. It sends no audio until resumed.
+            boolean holdingVoiceWhilePaused = session.paused() || session.resumePreparing();
+            boolean hasEligibleJavaListener = holdingVoiceWhilePaused;
+            if (!holdingVoiceWhilePaused) {
+                for (Player player : online) {
+                    Candidate candidate = winners.get(player.getUniqueId());
+                    if (candidate == null || candidate.session != session || isIgnoredBedrockPlayer(player)
+                            || (geyser != null && geyser.isBedrockPlayer(player.getUniqueId()))
+                            || isPlayerMuted(player)) {
+                        continue;
+                    }
+                    if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
+                    if (packs.isBaseDeclined(player) || packs.isDeclined(player, catalogueTrack)) continue;
+                    // Discord reads the original catalogue archive at the shared
+                    // session clock. A Java entrant may still be downloading a
+                    // private timestamp tail, so requiring the session's temporary
+                    // playback pack here would wrongly suppress zone-only sessions.
+                    if (!packs.isReady(player, catalogueTrack,
+                            isAlreadyPlayingTrack(player, session, playbackTrack))) continue;
+                    hasEligibleJavaListener = true;
+                    break;
                 }
-                if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
-                if (packs.isBaseDeclined(player) || packs.isDeclined(player, catalogueTrack)) continue;
-                // Discord reads the original catalogue archive at the shared
-                // session clock. A Java entrant may still be downloading a
-                // private timestamp tail, so requiring the session's temporary
-                // playback pack here would wrongly suppress zone-only sessions.
-                if (!packs.isReady(player, catalogueTrack,
-                        isAlreadyPlayingTrack(player, session, playbackTrack))) continue;
-                hasEligibleJavaListener = true;
-                break;
             }
             if (!hasEligibleJavaListener) continue;
             if (selected == null) {
