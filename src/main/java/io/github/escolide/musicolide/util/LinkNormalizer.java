@@ -10,6 +10,7 @@ public final class LinkNormalizer {
     private LinkNormalizer() {}
 
     public static Optional<String> normalize(String input) {
+        if (input == null || input.isBlank()) return Optional.empty();
         try {
             URI uri = URI.create(input.trim());
             String host = uri.getHost();

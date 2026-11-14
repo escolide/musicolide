@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -27,12 +29,51 @@ class YtDlpDownloaderTest {
                 Path.of("incoming/source.%(ext)s"));
 
         assertTrue(command.contains("--no-playlist"));
+        assertTrue(command.contains("--write-info-json"));
         assertTrue(command.contains("--js-runtimes"));
         assertTrue(command.contains("quickjs:qjs"));
         assertTrue(command.contains("--remote-components"));
         assertTrue(command.contains("ejs:github"));
         assertFalse(command.contains("--max-downloads"));
         assertEquals("https://youtu.be/example123", command.get(command.size() - 1));
+    }
+
+
+    @Test
+    void parsesMultilingualTitleArtistAndYoutubeSourceIdFromInfoJson(@org.junit.jupiter.api.io.TempDir Path temporary)
+            throws Exception {
+        Path info = temporary.resolve("source.info.json");
+        String json = """
+                {
+                  "title": "夜に駆ける / مرحبا",
+                  "artist": ["YOASOBI", "ضيف"],
+                  "id": "abc123",
+                  "extractor_key": "Youtube"
+                }
+                """;
+        Files.writeString(info, json, StandardCharsets.UTF_8);
+
+        YtDlpDownloader.Metadata metadata = YtDlpDownloader.readMetadata(info);
+
+        assertEquals("夜に駆ける / مرحبا", metadata.title());
+        assertEquals("YOASOBI, ضيف", metadata.artist());
+        assertEquals("abc123", metadata.sourceId());
+        assertEquals("Youtube", metadata.extractor());
+    }
+
+    @Test
+    void missingOrMalformedInfoJsonDoesNotPreventFallbackMetadata() throws Exception {
+        Path missing = temporaryPath("missing-info");
+        assertEquals("", YtDlpDownloader.readMetadata(missing).title());
+
+        Path malformed = temporaryPath("malformed-info");
+        Files.writeString(malformed, "{not valid json", StandardCharsets.UTF_8);
+        assertEquals("", YtDlpDownloader.readMetadata(malformed).title());
+    }
+
+    private Path temporaryPath(String name) throws IOException {
+        Path directory = java.nio.file.Files.createTempDirectory("musicolide-ytdlp-test-");
+        return directory.resolve(name + ".info.json");
     }
 
     @Test
