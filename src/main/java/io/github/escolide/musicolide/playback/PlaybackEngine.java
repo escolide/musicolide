@@ -559,6 +559,8 @@ public final class PlaybackEngine {
             if (track == null) continue;
 
             boolean allJavaRecipientsSettled = true;
+            boolean hasReadyJavaRecipient = false;
+            boolean hasPendingJavaRecipient = false;
             for (Player player : online) {
                 Candidate candidate = winners.get(player.getUniqueId());
                 if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
@@ -567,7 +569,10 @@ public final class PlaybackEngine {
                 // Bedrock readiness is deliberately independent of the Java barrier.
                 if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
 
-                if (!packs.isReady(player, track) && !packs.isDeclined(player, track)) {
+                if (packs.isReady(player, track)) {
+                    hasReadyJavaRecipient = true;
+                } else if (!packs.isDeclined(player, track)) {
+                    hasPendingJavaRecipient = true;
                     allJavaRecipientsSettled = false;
                 }
             }
@@ -585,6 +590,13 @@ public final class PlaybackEngine {
             }
 
             if (now - wait.startedAtMillis() >= timeoutMillis) {
+                // Do not consume the song while every Java recipient is still
+                // downloading. The timeout caps the wait for lagging clients,
+                // not the wait for the first client that can actually play.
+                // As soon as one Java recipient is ready, release the cohort and
+                // let late clients use the automatic per-player catch-up path.
+                if (hasPendingJavaRecipient && !hasReadyJavaRecipient) continue;
+
                 String trackKey = barrierTrackKey(session, track);
                 for (Player player : online) {
                     Candidate candidate = winners.get(player.getUniqueId());
