@@ -95,6 +95,62 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.reconnect-and-resync", true);
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.presence.enabled")) {
+            getConfig().set("discord.presence.enabled", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.presence.template")) {
+            getConfig().set("discord.presence.template", "{title} • {elapsed}");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.presence.idle-text")) {
+            getConfig().set("discord.presence.idle-text", "");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.presence.update-interval-seconds")) {
+            getConfig().set("discord.presence.update-interval-seconds", 15);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.embed-color")) {
+            getConfig().set("discord.embed-color", "#9B59B6");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.info.enabled")) {
+            getConfig().set("discord.info.enabled", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.info.server-name")) {
+            getConfig().set("discord.info.server-name", "Minecraft Server");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.info.show-server-address")) {
+            getConfig().set("discord.info.show-server-address", false);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.info.server-ip")) {
+            getConfig().set("discord.info.server-ip", "");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.info.server-port")) {
+            getConfig().set("discord.info.server-port", 25565);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.enabled")) {
+            getConfig().set("discord.commands.enabled", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.guild-id")) {
+            getConfig().set("discord.commands.guild-id", "");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.admin-authorization")) {
+            getConfig().set("discord.commands.admin-authorization", "minecraft-op");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.admin-role-ids")) {
+            getConfig().set("discord.commands.admin-role-ids", List.of());
+            migratedConfig = true;
+        }
         if (migratedConfig) saveConfig();
         try {
             Path data = getDataFolder().toPath();
