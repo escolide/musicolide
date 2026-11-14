@@ -40,6 +40,43 @@ class YtDlpDownloaderTest {
 
 
     @Test
+    void searchCommandOnlyFetchesMetadataAndUsesBoundedYoutubeSearch() {
+        List<String> command = YtDlpDownloader.buildSearchCommand(
+                "yt-dlp", "qjs", Path.of("cache/yt-dlp"), 18, "Daft Punk One More Time");
+
+        assertTrue(command.contains("--flat-playlist"));
+        assertTrue(command.contains("--skip-download"));
+        assertTrue(command.contains("--dump-single-json"));
+        assertTrue(command.contains("--playlist-end"));
+        assertFalse(command.contains("--format"));
+        assertFalse(command.contains("--write-info-json"));
+        assertEquals("ytsearch18:Daft Punk One More Time",
+                command.get(command.indexOf("--") + 1));
+    }
+
+    @Test
+    void songPriorityPrefersOfficialAudioButCanBeDisabled() throws Exception {
+        String json = """
+                {
+                  "entries": [
+                    {"id":"tutorial1234","title":"How to play One More Time - Tutorial","uploader":"Piano Lessons","duration":240},
+                    {"id":"official123","title":"One More Time (Official Audio)","uploader":"Artist - Topic","duration":225},
+                    {"id":"reaction123","title":"One More Time Reaction","uploader":"React Channel","duration":300}
+                  ]
+                }
+                """;
+
+        List<YtDlpDownloader.SearchResult> prioritized =
+                YtDlpDownloader.parseSearchResults(json, 2, true);
+        List<YtDlpDownloader.SearchResult> originalOrder =
+                YtDlpDownloader.parseSearchResults(json, 2, false);
+
+        assertEquals("official123", prioritized.get(0).videoId());
+        assertEquals("tutorial1234", originalOrder.get(0).videoId());
+        assertEquals(2, prioritized.size());
+    }
+
+    @Test
     void parsesMultilingualTitleArtistAndYoutubeSourceIdFromInfoJson(@org.junit.jupiter.api.io.TempDir Path temporary)
             throws Exception {
         Path info = temporary.resolve("source.info.json");
