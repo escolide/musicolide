@@ -4,10 +4,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.lang.reflect.Method;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -15,18 +16,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * Optional reflective bridge to the public Geyser API. No Geyser classes are
  * linked by Musicolide, so Java-only servers never need Geyser installed.
  *
- * Identifies Bedrock connections and reports whether the generated Bedrock
- * library pack is available for Geyser's separate connection-time delivery path.
+ * Tracks the Bedrock library revision offered during Geyser's connection pack
+ * phase and marks it ready only after Geyser reports the session play-ready.
  */
 public final class GeyserBridge {
     private final JavaPlugin plugin;
     private final Path bedrockPack;
-    private final Map<UUID, Boolean> bedrockPlayers = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> playerJoinTimes = new ConcurrentHashMap<>();
+    private final BedrockPackReadiness readiness = new BedrockPackReadiness();
+    private final ConcurrentHashMap<UUID, Boolean> bedrockPlayers = new ConcurrentHashMap<>();
+    private volatile FileStamp cachedPackStamp;
+    private volatile String cachedPackFingerprint;
     private volatile boolean present;
     private volatile boolean unavailableLogged;
-    private Method apiMethod;
-    private Method isBedrockPlayerMethod;
+    private java.lang.reflect.Method apiMethod;
+    private java.lang.reflect.Method isBedrockPlayerMethod;
 
     public GeyserBridge(JavaPlugin plugin, Path bedrockPack) {
         this.plugin = plugin;
@@ -67,30 +70,75 @@ public final class GeyserBridge {
         return bedrockPack != null && Files.isRegularFile(bedrockPack);
     }
 
-    public void recordPlayerJoin(UUID uuid) {
-        if (uuid != null) playerJoinTimes.put(uuid, System.currentTimeMillis());
+    /**
+     * Called from SessionLoadResourcePacksEvent after the current aggregate
+     * library has been registered for this Bedrock connection.
+     */
+    public void recordPackOffered(UUID uuid) {
+        if (uuid == null) return;
+        String fingerprint = currentPackFingerprint();
+        if (fingerprint != null) readiness.offered(uuid, fingerprint);
     }
 
     /**
-     * A Bedrock pack is delivered only during Geyser's connection pack phase.
-     * When the library ZIP changes after a player joined, require a reconnect
-     * rather than attempting to play a sound whose asset the client lacks.
+     * Called from Geyser SessionJoinEvent. Geyser fires this after the Bedrock
+     * client completes its initial resource-pack exchange and becomes play-ready.
+     */
+    public boolean recordSessionReady(UUID uuid) {
+        return uuid != null && readiness.markReady(uuid) && hasCurrentPackFor(uuid);
+    }
+
+    /**
+     * True while this player was offered the current library revision but has
+     * not yet reached Geyser's play-ready event. This lets the shared start
+     * barrier wait for a Bedrock client that is still completing pack loading.
+     */
+    public boolean isAwaitingPackReady(UUID uuid) {
+        String current = currentPackFingerprint();
+        return current != null && readiness.isAwaiting(uuid, current);
+    }
+
+    /**
+     * True only when Geyser offered this exact current pack revision and then
+     * reported the player's connection as play-ready. Old sessions become
+     * stale automatically when the aggregate Bedrock pack is rebuilt.
      */
     public boolean hasCurrentPackFor(UUID uuid) {
-        if (!isBedrockPackAvailable() || uuid == null) return false;
-        long joinedAt = playerJoinTimes.getOrDefault(uuid, 0L);
-        if (joinedAt == 0L) return false;
+        String current = currentPackFingerprint();
+        return current != null && readiness.isReady(uuid, current);
+    }
+
+    private String currentPackFingerprint() {
+        if (!isBedrockPackAvailable()) return null;
         try {
-            return joinedAt >= Files.getLastModifiedTime(bedrockPack).toMillis();
-        } catch (java.io.IOException ex) {
-            return false;
+            BasicFileAttributes attributes = Files.readAttributes(bedrockPack, BasicFileAttributes.class);
+            FileStamp stamp = new FileStamp(
+                    attributes.lastModifiedTime().toMillis(),
+                    attributes.size(),
+                    Objects.toString(attributes.fileKey(), "no-file-key"));
+            String cached = cachedPackFingerprint;
+            if (stamp.equals(cachedPackStamp) && cached != null) return cached;
+
+            synchronized (this) {
+                if (stamp.equals(cachedPackStamp) && cachedPackFingerprint != null) {
+                    return cachedPackFingerprint;
+                }
+                // The builder publishes packs with an atomic file replacement.
+                // The file key, size and modification time identify that published revision
+                // without hashing a potentially large music library on every playback tick.
+                String fingerprint = stamp.modifiedMillis() + ":" + stamp.size() + ":" + stamp.fileKey();
+                cachedPackStamp = stamp;
+                cachedPackFingerprint = fingerprint;
+                return fingerprint;
+            }
+        } catch (IOException ex) {
+            return null;
         }
     }
 
     public boolean isBedrockPlayer(UUID uuid) {
         if (!present || uuid == null) return false;
-        Boolean cached = bedrockPlayers.get(uuid);
-        if (cached != null) return cached;
+        if (bedrockPlayers.containsKey(uuid)) return true;
         try {
             Object api = apiMethod.invoke(null);
             if (api == null) return false;
@@ -111,7 +159,10 @@ public final class GeyserBridge {
     }
 
     public void removePlayer(UUID uuid) {
+        if (uuid == null) return;
         bedrockPlayers.remove(uuid);
-        playerJoinTimes.remove(uuid);
+        readiness.remove(uuid);
     }
+
+    private record FileStamp(long modifiedMillis, long size, String fileKey) {}
 }
