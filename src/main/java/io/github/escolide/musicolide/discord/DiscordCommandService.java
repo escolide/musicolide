@@ -210,15 +210,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             return;
         }
 
-        Player player = Bukkit.getPlayer(link.minecraftUuid());
-        if (player == null || !player.isOnline()) {
-            reply(event, "Your linked Minecraft account (**" + safe(link.minecraftName())
-                    + "**) must be online to run game commands through Discord.");
-            return;
-        }
-
         boolean discordAdmin = isDiscordAdministrator(event.getMember());
-        boolean elevateAdmin = authorizeAdmin(player, discordAdmin);
         event.deferReply(true).queue(hook -> {
             List<String> lines = new CopyOnWriteArrayList<>();
             AtomicBoolean first = new AtomicBoolean(true);
@@ -231,14 +223,21 @@ public final class DiscordCommandService extends ListenerAdapter {
                     hook.editOriginalEmbeds(embed().setDescription(truncate(description, 3900)).build()).queue();
                 } else {
                     hook.editOriginalEmbeds(embed().setDescription(truncate(description, 3900)).build()).queue(
-                            ignored -> {}, error -> plugin.getLogger().log(Level.FINE, "Discord command response update failed.", error));
+                            ignored -> {}, error -> plugin.getLogger().log(Level.FINE,
+                                    "Discord command response update failed.", error));
                 }
             };
+
+            // Bukkit player lookup and all permission checks must remain on the
+            // server thread; JDA event callbacks run asynchronously.
             Bukkit.getScheduler().runTask(plugin, () -> {
-                if (!player.isOnline()) {
-                    output.accept("Your linked Minecraft account went offline before the command could run.");
+                Player player = Bukkit.getPlayer(link.minecraftUuid());
+                if (player == null || !player.isOnline()) {
+                    output.accept("Your linked Minecraft account (**" + safe(link.minecraftName())
+                            + "**) must be online to run game commands through Discord.");
                     return;
                 }
+                boolean elevateAdmin = authorizeAdmin(player, discordAdmin);
                 try {
                     musicCommand.executeDiscordCommand(player, commandLine, elevateAdmin, output);
                     if (lines.isEmpty()) output.accept("Command processed.");
@@ -246,7 +245,8 @@ public final class DiscordCommandService extends ListenerAdapter {
                     output.accept("Command could not be processed: " + safe(error.getMessage()));
                 }
             });
-        }, error -> plugin.getLogger().log(Level.FINE, "Discord command interaction could not be deferred.", error));
+        }, error -> plugin.getLogger().log(Level.FINE,
+                "Discord command interaction could not be deferred.", error));
     }
 
     private boolean isDiscordAdministrator(Member member) {
