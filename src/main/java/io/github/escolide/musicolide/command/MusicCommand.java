@@ -3,6 +3,7 @@ package io.github.escolide.musicolide.command;
 import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.audio.YtDlpDownloader;
 import io.github.escolide.musicolide.model.MusicTrack;
+import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.playback.PlaybackSession;
@@ -13,12 +14,15 @@ import io.github.escolide.musicolide.util.LinkNormalizer;
 import io.github.escolide.musicolide.util.TextUtil;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.command.*;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,23 +31,27 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final JavaPlugin plugin;
     private final TrackRepository repository;
     private final AudioProcessor processor;
     private final PlaybackEngine playback;
+    private final DiscordAccountLinkManager accountLinks;
     private final ExternalMetadataResolver metadataResolver = new ExternalMetadataResolver();
     private final Map<UUID, PendingPlay> pending = new ConcurrentHashMap<>();
     private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
     private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
 
 
-    public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback) {
+    public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
+                        DiscordAccountLinkManager accountLinks) {
         this.plugin = plugin;
         this.repository = repository;
         this.processor = processor;
         this.playback = playback;
+        this.accountLinks = accountLinks;
     }
 
     public boolean onPlayCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -70,6 +78,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String sub = args[0].toLowerCase(Locale.ROOT);
         try {
             switch (sub) {
+                case "link" -> link(sender);
+                case "unlink" -> unlink(sender);
                 case "import" -> importTrack(sender, args);
                 case "import-url" -> importUrl(sender, args);
                 case "diagnostics" -> diagnostics(sender);
@@ -102,6 +112,187 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         return true;
     }
+
+
+    /** Entry point for the Discord bot's /link Minecraft-side command. */
+    public boolean onLinkCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (sender instanceof Player player && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return true;
+        link(sender);
+        return true;
+    }
+
+    /** Entry point for the Discord bot's /unlink Minecraft-side command. */
+    public boolean onUnlinkCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (sender instanceof Player player && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return true;
+        unlink(sender);
+        return true;
+    }
+
+    private void link(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cOnly a Minecraft player can create a Discord link code."));
+            return;
+        }
+        if (!player.hasPermission(plugin.getConfig().getString("permissions.use", "musicolide.use"))) {
+            sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("discord.enabled", false) || accountLinks == null) {
+            sender.sendMessage(msg("&cDiscord account linking is disabled on this server."));
+            return;
+        }
+        try {
+            String code = accountLinks.createCode(player.getUniqueId(), player.getName());
+            sender.sendMessage(msg("&aYour one-time Discord link code is: &f&l" + code));
+            sender.sendMessage(msg("&7DM this code to the Musicolide Discord bot. It expires in 5 minutes and can only be used once."));
+            sender.sendMessage(msg("&8No password, Microsoft login, or session token is needed."));
+        } catch (SQLException error) {
+            plugin.getLogger().warning("Could not create a Discord account-link code: " + error.getClass().getSimpleName());
+            sender.sendMessage(msg("&cCould not create a Discord link code. Please try again later."));
+        } catch (IllegalStateException error) {
+            sender.sendMessage(msg("&e" + error.getMessage()));
+        }
+    }
+
+    private void unlink(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cOnly a Minecraft player can unlink their Discord account."));
+            return;
+        }
+        if (accountLinks == null) {
+            sender.sendMessage(msg("&cDiscord account linking is unavailable."));
+            return;
+        }
+        try {
+            if (accountLinks.unlinkMinecraft(player.getUniqueId())) {
+                sender.sendMessage(msg("&aYour Discord account has been unlinked from Minecraft."));
+            } else {
+                sender.sendMessage(msg("&eYour Minecraft account is not currently linked."));
+            }
+        } catch (SQLException error) {
+            plugin.getLogger().warning("Could not unlink a Discord account: " + error.getClass().getSimpleName());
+            sender.sendMessage(msg("&cCould not unlink your account. Please try again later."));
+        }
+    }
+
+    /**
+     * Runs an existing Musicolide command as the linked, online Minecraft
+     * player. A proxy preserves Player identity and permission checks while
+     * forwarding command feedback to the Discord interaction.
+     */
+    public void executeDiscordCommand(Player actualPlayer, String commandLine,
+                                      boolean elevateAdmin, Consumer<String> output) {
+        Objects.requireNonNull(actualPlayer, "actualPlayer");
+        Objects.requireNonNull(output, "output");
+        String[] args = tokenizeDiscordCommand(commandLine);
+        if (args.length == 0) {
+            output.accept("Enter a Musicolide command, such as: pause, queue <track-id>, or playlist list.");
+            return;
+        }
+        if (args[0].equalsIgnoreCase("music") || args[0].equalsIgnoreCase("/music")) {
+            args = Arrays.copyOfRange(args, 1, args.length);
+        } else if (args[0].equalsIgnoreCase("/play")) {
+            args[0] = "play";
+        } else if (args[0].startsWith("/")) {
+            args[0] = args[0].substring(1);
+        }
+        Player linkedSender = createDiscordPlayerProxy(actualPlayer, elevateAdmin, output);
+        onCommand(linkedSender, null, "music", args);
+    }
+
+    /** YouTube metadata-only suggestions for Discord's 3-second autocomplete response. */
+    public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query) {
+        String cleaned = query == null ? "" : query.trim().replaceAll("[\\r\\n\\t]+", " ");
+        if (cleaned.length() < 2 || cleaned.length() > 100) {
+            return CompletableFuture.completedFuture(List.of());
+        }
+        return processor.searchYouTube(cleaned).thenApply(results -> {
+            List<DiscordPlaySuggestion> suggestions = new ArrayList<>();
+            for (YtDlpDownloader.SearchResult result : results) {
+                if (suggestions.size() >= 25) break;
+                String url = result.url();
+                if (url == null || url.isBlank()) {
+                    url = "https://www.youtube.com/watch?v=" + result.videoId();
+                }
+                String title = result.title() == null ? "Untitled" : result.title();
+                String uploader = result.uploader() == null ? "" : result.uploader();
+                String label = title + (uploader.isBlank() ? "" : " — " + uploader);
+                if (result.durationSeconds() > 0) {
+                    long seconds = result.durationSeconds();
+                    label += " • " + String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
+                }
+                suggestions.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+            }
+            return List.copyOf(suggestions);
+        });
+    }
+
+    private Player createDiscordPlayerProxy(Player target, boolean elevateAdmin, Consumer<String> output) {
+        return (Player) Proxy.newProxyInstance(Player.class.getClassLoader(), new Class<?>[]{Player.class},
+                (proxy, method, arguments) -> {
+                    String methodName = method.getName();
+                    if ((methodName.equals("sendMessage") || methodName.equals("sendActionBar"))
+                            && arguments != null) {
+                        for (Object argument : arguments) {
+                            if (argument instanceof String text) output.accept(text);
+                            else if (argument instanceof String[] texts) {
+                                for (String text : texts) output.accept(text);
+                            } else if (argument instanceof net.kyori.adventure.text.Component component) {
+                                output.accept(PlainTextComponentSerializer.plainText().serialize(component));
+                            } else if (argument instanceof net.kyori.adventure.text.ComponentLike componentLike) {
+                                output.accept(PlainTextComponentSerializer.plainText().serialize(componentLike.asComponent()));
+                            }
+                        }
+                        return null;
+                    }
+                    if (elevateAdmin && methodName.equals("hasPermission") && arguments != null
+                            && arguments.length == 1 && arguments[0] instanceof String permission) {
+                        String adminPermission = plugin.getConfig().getString("permissions.admin", "musicolide.admin");
+                        String djPermission = plugin.getConfig().getString("permissions.dj", "musicolide.dj");
+                        if (permission.equalsIgnoreCase(adminPermission)
+                                || permission.equalsIgnoreCase(djPermission)) return true;
+                    }
+                    try {
+                        return method.invoke(target, arguments);
+                    } catch (InvocationTargetException error) {
+                        throw error.getCause();
+                    }
+                });
+    }
+
+    private String[] tokenizeDiscordCommand(String commandLine) {
+        if (commandLine == null) return new String[0];
+        String value = commandLine.trim();
+        if (value.length() > 512) throw new IllegalArgumentException("Discord command text is too long (maximum 512 characters).");
+        List<String> tokens = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        boolean escaped = false;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (escaped) {
+                current.append(ch);
+                escaped = false;
+            } else if (ch == '\\' && quote != 0) {
+                escaped = true;
+            } else if ((ch == '"' || ch == '\'') && (quote == 0 || quote == ch)) {
+                quote = quote == 0 ? ch : 0;
+            } else if (Character.isWhitespace(ch) && quote == 0) {
+                if (!current.isEmpty()) {
+                    tokens.add(current.toString());
+                    current.setLength(0);
+                }
+            } else {
+                current.append(ch);
+            }
+        }
+        if (escaped || quote != 0) throw new IllegalArgumentException("Close the quote in your command text.");
+        if (!current.isEmpty()) tokens.add(current.toString());
+        if (tokens.size() > 32) throw new IllegalArgumentException("A Discord command may contain at most 32 arguments.");
+        return tokens.toArray(String[]::new);
+    }
+
+    public record DiscordPlaySuggestion(String label, String value) {}
 
     private void importTrack(CommandSender sender, String[] args) {
         if (!admin(sender)) return;
@@ -953,6 +1144,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void help(CommandSender sender) {
         sender.sendMessage(msg("&bMusicolide commands:"));
+        sender.sendMessage(msg("&f/link &7- create a five-minute one-use Discord pairing code"));
+        sender.sendMessage(msg("&f/unlink &7- unlink your Discord account"));
         sender.sendMessage(msg("&f/music import <file> [title] &7- import one authorized audio file"));
         sender.sendMessage(msg("&f/music import all &7- import every supported file in incoming/"));
         sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] &7- import an allowlisted source"));
@@ -993,7 +1186,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (sender instanceof Player player
                 && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return List.of();
-        if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "search", "select", "play", "confirm", "pause", "resume",
+        if (args.length == 1) return partial(List.of("help", "link", "unlink", "import", "import-url", "diagnostics", "download", "list", "search", "select", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
         if (args.length == 2 && args[0].equalsIgnoreCase("select") && sender instanceof Player player) {
