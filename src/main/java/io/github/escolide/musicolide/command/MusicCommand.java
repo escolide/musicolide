@@ -76,6 +76,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "mute" -> mute(sender, true);
                 case "unmute" -> mute(sender, false);
                 case "seek" -> seek(sender, args);
+                case "sync" -> sync(sender, args);
                 case "playlist" -> playlist(sender, args);
                 case "alias" -> alias(sender, args);
                 case "priority" -> priority(sender, args);
@@ -558,6 +559,58 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg(muted ? "&eMusic muted." : "&aMusic unmuted."));
     }
 
+    private void sync(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            if (!(sender instanceof Player player)) {
+                throw new IllegalArgumentException("Players only. Use /music sync from the player who needs synchronization.");
+            }
+            if (!player.hasPermission(plugin.getConfig().getString("permissions.use", "musicolide.use"))) {
+                sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
+                return;
+            }
+
+            PlaybackEngine.SyncStart result = playback.synchronizePlayer(player, notification -> {
+                if (player.isOnline()) sender.sendMessage(msg(notification));
+            });
+            switch (result) {
+                case PREPARING -> sender.sendMessage(msg(
+                        "&ePreparing a synchronized audio tail. Your audio will restart when its temporary pack is ready."));
+                case NO_SESSION -> throw new IllegalArgumentException(
+                        "No active music session is audible to you right now.");
+                case NOT_PLAYING -> throw new IllegalArgumentException(
+                        "The active session has not started its playback clock yet.");
+                case PAUSED -> throw new IllegalArgumentException(
+                        "The active session is paused or preparing a resume.");
+                case PACK_NOT_READY -> throw new IllegalArgumentException(
+                        "Your Musicolide library is not loaded yet. Use /music download, then run /music sync.");
+                case PACK_DECLINED -> throw new IllegalArgumentException(
+                        "Your Musicolide library was declined. Accept or retry it with /music download before syncing.");
+                case BEDROCK_UNSUPPORTED -> throw new IllegalArgumentException(
+                        "Manual timestamp synchronization currently requires a Java Edition client; Geyser cannot receive the temporary sync pack mid-session.");
+                case TRACK_NEAR_END -> throw new IllegalArgumentException(
+                        "The current track is too close to its end for the configured synchronization offset. An administrator can lower it with /music sync <seconds>.");
+                case ALREADY_PREPARING -> sender.sendMessage(msg(
+                        "&eA synchronization request is already being prepared for you."));
+            }
+            return;
+        }
+
+        if (args.length != 2) {
+            sender.sendMessage(msg("&eUsage: /music sync [seconds]"));
+            return;
+        }
+        if (!admin(sender)) return;
+
+        double seconds = Double.parseDouble(args[1]);
+        if (!Double.isFinite(seconds) || seconds < 0 || seconds > 120) {
+            throw new IllegalArgumentException("Synchronization offset must be between 0 and 120 seconds.");
+        }
+        plugin.getConfig().set("playback.synchronization.late-join.delay-seconds", seconds);
+        plugin.saveConfig();
+        sender.sendMessage(msg("&aShared synchronization offset set to &f"
+                + String.format(Locale.ROOT, "%.2f", seconds) + " &aseconds."));
+    }
+
     private void seek(CommandSender sender, String[] args) {
         if (!dj(sender)) return;
         if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
@@ -681,6 +734,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
         sender.sendMessage(msg("&f/music volume <0-100>|mute|unmute|seek <seconds>|nowplaying"));
+        sender.sendMessage(msg("&f/music sync &7- re-synchronize your own audio with the active session"));
+        sender.sendMessage(msg("&f/music sync <seconds> &7- set the shared sync offset (admin)"));
         sender.sendMessage(msg("&f/music alias add <url> <track-id> &7- map a URL to local audio"));
         sender.sendMessage(msg("&f/music priority <number> &7- admin session priority"));
     }
@@ -705,7 +760,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
-                "playlist", "alias", "priority", "reload"), args[0]);
+                "playlist", "alias", "priority", "sync", "reload"), args[0]);
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
