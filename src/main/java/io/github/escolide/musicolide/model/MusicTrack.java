@@ -30,8 +30,14 @@ public record MusicTrack(
         return bytes;
     }
 
+    /** New imports use the ms_ namespace and one client-streamed OGG sound. */
+    public boolean isStreamed() {
+        return namespace != null && namespace.startsWith("ms_");
+    }
+
     public String soundKey(int segmentIndex) {
-        return namespace + ":s_" + String.format("%05d", segmentIndex);
+        return isStreamed() ? namespace + ":music"
+                : namespace + ":s_" + String.format("%05d", segmentIndex);
     }
 
     public long segmentDurationMs(int segmentIndex) {

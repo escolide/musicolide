@@ -93,8 +93,15 @@ public final class PlaybackSession {
 
     public synchronized void resume() {
         if (paused) {
-            if (clockStarted) trackStartedAt = System.currentTimeMillis() - pausedOffsetMs;
-            else {
+            if (current != null && current.isStreamed()) {
+                // A streamed Minecraft sound has no server API for seeking its
+                // client-side decoder. Restart the stream and its clock together.
+                pausedOffsetMs = 0;
+                trackStartedAt = System.currentTimeMillis();
+                clockStarted = true;
+            } else if (clockStarted) {
+                trackStartedAt = System.currentTimeMillis() - pausedOffsetMs;
+            } else {
                 trackStartedAt = System.currentTimeMillis();
                 clockStarted = true;
             }
@@ -104,6 +111,10 @@ public final class PlaybackSession {
 
     public synchronized void seek(long millis) {
         if (current == null) return;
+        if (current.isStreamed()) {
+            throw new IllegalArgumentException(
+                    "Seeking within continuous streamed tracks is not supported by Minecraft's sound API.");
+        }
         pausedOffsetMs = Math.max(0, Math.min(current.durationMs() - 1, millis));
         trackStartedAt = System.currentTimeMillis() - pausedOffsetMs;
         clockStarted = true;

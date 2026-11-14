@@ -55,6 +55,7 @@ audio:
       - "soundcloud.com"
   format: "ogg"
   sample-rate: 44100
+  # Legacy segmented-track setting. New imports use one continuous streamed OGG instead.
   segment-duration-ms: 1000
   stereo-quality: 5
   max-track-duration-seconds: 1800
