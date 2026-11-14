@@ -13,11 +13,11 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
 
 public final class PackManager {
     private final JavaPlugin plugin;
-    private final Supplier<ResourcePackBuilder.BasePackInfo> basePackSupplier;
+    private final ResourcePackBuilder packBuilder;
+    private final Map<UUID, String> libraryRequestedFile = new ConcurrentHashMap<>();
     private final int detectedPublicPort;
     private final CompletableFuture<String> publicBaseUrl;
 
@@ -41,11 +41,11 @@ public final class PackManager {
     private final Path acceptedPlayersFile;
 
     public PackManager(JavaPlugin plugin,
-                       Supplier<ResourcePackBuilder.BasePackInfo> basePackSupplier,
+                       ResourcePackBuilder packBuilder,
                        int detectedPublicPort,
                        CompletableFuture<String> publicBaseUrl) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
-        this.basePackSupplier = Objects.requireNonNull(basePackSupplier, "basePackSupplier");
+        this.packBuilder = Objects.requireNonNull(packBuilder, "packBuilder");
         this.detectedPublicPort = detectedPublicPort;
         this.publicBaseUrl = Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
         this.acceptedPlayersFile = plugin.getDataFolder().toPath().resolve("accepted-resource-pack-players.txt");
@@ -137,7 +137,7 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         ResourcePackBuilder.BasePackInfo pack;
         try {
-            pack = basePackSupplier.get();
+            pack = packBuilder.currentBasePackInfo();
         } catch (RuntimeException ex) {
             plugin.getLogger().warning("The Musicolide Java library is unavailable: " + ex.getMessage());
             return false;
@@ -161,12 +161,15 @@ public final class PackManager {
             String prompt = acceptedLibraryPlayers.contains(playerId) ? null
                     : plugin.getConfig().getString("resource-packs.prompt", "Musicolide music library");
             libraryRequestedHash.put(playerId, hash);
+            libraryRequestedFile.put(playerId, pack.fileName());
             waitingForPublicAddress.remove(playerId);
             player.addResourcePack(pack.id(), url, sha1, prompt,
                     plugin.getConfig().getBoolean("resource-packs.required-on-first-use", false));
         } catch (Exception ex) {
             libraryRequestedHash.remove(playerId);
+            libraryRequestedFile.remove(playerId);
             libraryDeclinedHash.put(playerId, hash);
+            cleanupLibraryArchives();
             plugin.getLogger().warning("Could not send the Musicolide Java library to "
                     + player.getName() + ": " + ex.getMessage());
         }
@@ -175,7 +178,7 @@ public final class PackManager {
 
     private String currentLibraryHash() {
         try {
-            ResourcePackBuilder.BasePackInfo pack = basePackSupplier.get();
+            ResourcePackBuilder.BasePackInfo pack = packBuilder.currentBasePackInfo();
             return pack == null ? null : pack.sha1();
         } catch (RuntimeException ex) {
             return null;
@@ -291,7 +294,7 @@ public final class PackManager {
             return;
         }
         UUID playerId = player.getUniqueId();
-        ResourcePackBuilder.BasePackInfo library = basePackSupplier.get();
+        ResourcePackBuilder.BasePackInfo library = packBuilder.currentBasePackInfo();
         String readyHash = libraryReadyHash.remove(playerId);
         if (readyHash != null || libraryRequestedHash.containsKey(playerId)) {
             if (libraryRequestedHash.containsKey(playerId)) {
@@ -337,9 +340,10 @@ public final class PackManager {
         String statusName = status.name();
         if (isPendingStatus(statusName)) return;
 
-        ResourcePackBuilder.BasePackInfo library = basePackSupplier.get();
+        ResourcePackBuilder.BasePackInfo library = packBuilder.currentBasePackInfo();
         if (library.id().equals(packId)) {
             String requestedHash = libraryRequestedHash.remove(playerId);
+            libraryRequestedFile.remove(playerId);
             if (requestedHash == null) return;
             if ("SUCCESSFULLY_LOADED".equals(statusName)) {
                 libraryReadyHash.put(playerId, requestedHash);
@@ -363,6 +367,7 @@ public final class PackManager {
                 libraryDeclinedHash.put(playerId, requestedHash);
                 if (removeLibraryWhenReady.remove(playerId)) removeLibraryWhenReady.remove(playerId);
             }
+            cleanupLibraryArchives();
             return;
         }
 
@@ -425,6 +430,7 @@ public final class PackManager {
     public void removePlayer(UUID playerId) {
         libraryReadyHash.remove(playerId);
         libraryRequestedHash.remove(playerId);
+        libraryRequestedFile.remove(playerId);
         libraryDeclinedHash.remove(playerId);
         waitingForPublicAddress.remove(playerId);
         removeLibraryWhenReady.remove(playerId);
@@ -436,5 +442,16 @@ public final class PackManager {
         removeWhenReady.remove(playerId);
         inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
+        cleanupLibraryArchives();
+    }
+
+    private void cleanupLibraryArchives() {
+        Set<String> retained = new HashSet<>(libraryRequestedHash.values());
+        try {
+            retained.add(packBuilder.currentBasePackInfo().sha1());
+            packBuilder.cleanupLibraryArchives(retained);
+        } catch (Exception ex) {
+            plugin.getLogger().warning("Could not clean obsolete Java library revisions: " + ex.getMessage());
+        }
     }
 }
