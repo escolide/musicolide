@@ -149,11 +149,15 @@ public final class PlaybackEngine {
         String broadcastScope = plugin.getConfig().getString("discord.broadcast-scope", "global-only");
         boolean zoneAware = "zone-aware".equalsIgnoreCase(broadcastScope);
         PlaybackSession selected = null;
+        Optional<DiscordPlaybackSnapshot> previousSnapshot = discordSnapshot;
 
         for (PlaybackSession session : active) {
             if (!zoneAware && !session.isServerWideGlobalSession()) continue;
+            boolean wasPreviouslySelected = previousSnapshot
+                    .map(snapshot -> snapshot.sessionId().equals(session.id())).orElse(false);
             if (session.current() == null || session.isEmpty() || session.finished()
-                    || !session.clockStarted()) {
+                    || (!session.clockStarted() && !session.paused()
+                    && !session.resumePreparing() && !wasPreviouslySelected)) {
                 continue;
             }
 
@@ -164,7 +168,8 @@ public final class PlaybackEngine {
             // A genuinely paused session must keep the existing Discord voice
             // connection alive even though there are no active Minecraft
             // winners while paused. It sends no audio until resumed.
-            boolean holdingVoiceWhilePaused = session.paused() || session.resumePreparing();
+            boolean holdingVoiceWhilePaused = session.paused() || session.resumePreparing()
+                    || (!session.clockStarted() && wasPreviouslySelected);
             boolean hasEligibleJavaListener = holdingVoiceWhilePaused;
             if (!holdingVoiceWhilePaused) {
                 for (Player player : online) {
