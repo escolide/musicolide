@@ -57,6 +57,33 @@ class BedrockResourcePackBuilderTest {
     }
 
     @Test
+    void includesSingleFileStreamAssetsInBedrockLibrary() throws Exception {
+        Path packs = Files.createDirectories(temporary.resolve("stream-packs"));
+        Path sourceArchive = packs.resolve("ms_stream_track.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(sourceArchive))) {
+            zip.putNextEntry(new ZipEntry("assets/ms_stream_track/sounds.json"));
+            zip.write("{\\"music\\":{\\"sounds\\":[{\\"name\\":\\"ms_stream_track:music\\",\\"stream\\":true}]}}"
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("assets/ms_stream_track/sounds/music.ogg"));
+            zip.write(new byte[]{'O', 'g', 'g', 'S', 9, 8, 7});
+            zip.closeEntry();
+        }
+
+        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
+        Path output = builder.rebuild(packs);
+        assertNotNull(output);
+        try (ZipFile bedrock = new ZipFile(output.toFile())) {
+            assertNotNull(bedrock.getEntry("sounds/musicolide/ms_stream_track/music.ogg"));
+            String definitions;
+            try (var input = bedrock.getInputStream(bedrock.getEntry("sounds/sound_definitions.json"))) {
+                definitions = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+            assertTrue(definitions.contains("\\"ms_stream_track:music\\""));
+        }
+    }
+
+    @Test
     void removesOldPackWhenThereAreNoTrackArchives() throws Exception {
         Path packs = Files.createDirectories(temporary.resolve("empty-packs"));
         BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
