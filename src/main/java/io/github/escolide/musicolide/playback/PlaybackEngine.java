@@ -119,8 +119,12 @@ public final class PlaybackEngine {
         boolean manualPriority = plugin.getConfig().getBoolean(
                 "playback.overlap.manual-priority-enabled", true);
         PlaybackSession selected = sessions.stream()
-                .filter(session -> session.current() != null && !session.isEmpty())
+                .filter(session -> session.current() != null && !session.isEmpty() && !session.finished())
                 .min((first, second) -> {
+                    // Prefer a currently audible session over a paused or
+                    // not-yet-started session, then use the configured overlap policy.
+                    int stateRank = Integer.compare(discordStateRank(first), discordStateRank(second));
+                    if (stateRank != 0) return stateRank;
                     if (manualPriority && first.priority() != second.priority()) {
                         return Integer.compare(second.priority(), first.priority());
                     }
@@ -139,6 +143,12 @@ public final class PlaybackEngine {
      * Used by retention cleanup to avoid deleting a temporary pack while a
      * session still references it as the current, queued, or repeating track.
      */
+    private int discordStateRank(PlaybackSession session) {
+        if (session.clockStarted() && !session.paused() && !session.resumePreparing()) return 0;
+        if (session.paused() || session.resumePreparing()) return 1;
+        return 2;
+    }
+
     public synchronized boolean isTrackInUse(String trackId) {
         return sessions.stream().anyMatch(session -> session.referencesTrack(trackId));
     }
