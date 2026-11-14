@@ -3,12 +3,15 @@ package io.github.escolide.musicolide.geyser;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.geysermc.geyser.api.GeyserApi;
 import org.geysermc.geyser.api.event.EventRegistrar;
+import org.geysermc.geyser.api.event.bedrock.SessionDisconnectEvent;
+import org.geysermc.geyser.api.event.bedrock.SessionJoinEvent;
 import org.geysermc.geyser.api.event.bedrock.SessionLoadResourcePacksEvent;
 import org.geysermc.geyser.api.pack.PackCodec;
 import org.geysermc.geyser.api.pack.ResourcePack;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.UUID;
 
 /**
  * Isolated class with a compileOnly Geyser API dependency. Musicolide loads this
@@ -17,11 +20,13 @@ import java.nio.file.Path;
 public final class GeyserPackIntegration implements EventRegistrar, AutoCloseable {
     private final JavaPlugin plugin;
     private final Path packFile;
+    private final GeyserBridge bridge;
     private boolean registered;
 
-    public GeyserPackIntegration(JavaPlugin plugin, Path packFile) {
+    public GeyserPackIntegration(JavaPlugin plugin, Path packFile, GeyserBridge bridge) {
         this.plugin = plugin;
         this.packFile = packFile.toAbsolutePath().normalize();
+        this.bridge = bridge;
     }
 
     public void register() {
@@ -30,8 +35,10 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
             throw new IllegalStateException("Geyser's public API is not available yet.");
         }
         api.eventBus().subscribe(this, SessionLoadResourcePacksEvent.class, this::onSessionLoad);
+        api.eventBus().subscribe(this, SessionJoinEvent.class, this::onSessionJoin);
+        api.eventBus().subscribe(this, SessionDisconnectEvent.class, this::onSessionDisconnect);
         registered = true;
-        plugin.getLogger().info("Registered Musicolide's Bedrock music library for new Geyser connections.");
+        plugin.getLogger().info("Registered Musicolide's Bedrock music library and synchronization events.");
     }
 
     private void onSessionLoad(SessionLoadResourcePacksEvent event) {
@@ -39,10 +46,24 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
         try {
             ResourcePack pack = ResourcePack.create(PackCodec.path(packFile));
             event.register(pack);
+            UUID playerId = event.connection().javaUuid();
+            if (playerId != null) bridge.recordPackOffered(playerId);
         } catch (RuntimeException ex) {
             plugin.getLogger().warning("Could not register the Musicolide Bedrock resource pack for "
                     + event.connection().bedrockUsername() + ": " + ex.getMessage());
         }
+    }
+
+    private void onSessionJoin(SessionJoinEvent event) {
+        UUID playerId = event.connection().javaUuid();
+        if (playerId != null && bridge.recordSessionReady(playerId)) {
+            plugin.getLogger().fine("Bedrock music library is ready for " + event.connection().bedrockUsername() + ".");
+        }
+    }
+
+    private void onSessionDisconnect(SessionDisconnectEvent event) {
+        UUID playerId = event.connection().javaUuid();
+        if (playerId != null) bridge.removePlayer(playerId);
     }
 
     @Override
