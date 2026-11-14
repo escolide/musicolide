@@ -257,7 +257,7 @@ tasks.register('verifyUniversalPluginJarSize') {
 
             Set<String> runtimeNames = new TreeSet<>()
             runtimeManifestText.readLines().findAll { !it.isBlank() }.each { line ->
-                def fields = line.split('\\\\|', -1)
+                def fields = line.split('\\|', -1)
                 if (fields.length != 3 || !(fields[0] ==~ /[A-Za-z0-9._+-]+\\.jar/)
                         || !(fields[1] ==~ /[0-9a-f]{64}/)
                         || !fields[2].startsWith('https://repo.maven.apache.org/maven2/')) {
@@ -284,7 +284,7 @@ tasks.register('verifyUniversalPluginJarSize') {
             ] as Set
             def actualNativeEntries = nativeManifestText.readLines().findAll { !it.isBlank() }
                     .collect { line ->
-                        def fields = line.split('\\\\|', -1)
+                        def fields = line.split('\\|', -1)
                         if (fields.length != 4 || !(fields[2] ==~ /[0-9a-f]{64}/)
                                 || !fields[3].startsWith('https://repo.maven.apache.org/maven2/moe/kyokobot/libdave/')) {
                             throw new GradleException('Invalid DAVE native artifact manifest entry.')
