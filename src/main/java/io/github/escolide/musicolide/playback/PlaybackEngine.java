@@ -39,6 +39,7 @@ public final class PlaybackEngine {
     // Per-session barrier deadline and players excluded after missing that deadline.
     private final Map<UUID, BarrierWait> barrierWaits = new HashMap<>();
     private final Map<UUID, String> barrierExcludedTracks = new HashMap<>();
+    private final Map<UUID, String> automaticSyncAttempts = new HashMap<>();
     private final Map<UUID, Long> syncGenerations = new HashMap<>();
     private BukkitTask task;
     private BukkitTask segmentTask;
@@ -876,6 +877,7 @@ public final class PlaybackEngine {
         declinedWarnings.remove(player.getUniqueId());
         bedrockWarnings.remove(player.getUniqueId());
         syncGenerations.remove(player.getUniqueId());
+        automaticSyncAttempts.remove(player.getUniqueId());
         if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }
 
@@ -894,6 +896,7 @@ public final class PlaybackEngine {
         barrierWaits.clear();
         barrierExcludedTracks.clear();
         syncGenerations.clear();
+        automaticSyncAttempts.clear();
     }
 
     /**
@@ -903,26 +906,32 @@ public final class PlaybackEngine {
      */
     private void startAutomaticCatchUpIfNeeded(Player player, Candidate candidate) {
         if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) return;
+        UUID playerId = player.getUniqueId();
         MusicTrack sessionTrack = candidate.session.playbackTrack();
-        if (sessionTrack == null
-                || !barrierTrackKey(candidate.session, sessionTrack)
-                .equals(barrierExcludedTracks.get(player.getUniqueId()))) return;
+        if (sessionTrack == null) return;
+        String trackKey = barrierTrackKey(candidate.session, sessionTrack);
+        if (!trackKey.equals(barrierExcludedTracks.get(playerId))) return;
+        if (trackKey.equals(automaticSyncAttempts.get(playerId))) return;
 
-        PlayerPlayback state = playerPlayback.get(player.getUniqueId());
+        PlayerPlayback state = playerPlayback.get(playerId);
         if (state != null && (state.syncPreparing || state.syncTrack != null)) return;
         if (!packs.isReady(player, sessionTrack) || packs.isDeclined(player, sessionTrack)) return;
 
+        // Attempt once per session-track. A failed temporary-pack delivery must
+        // not start a new FFmpeg job every playback tick; the player can still
+        // request a fresh attempt with /music sync.
+        automaticSyncAttempts.put(playerId, trackKey);
         SyncStart result = synchronizePlayer(player, notification -> {
             if (player.isOnline() && notification != null && notification.startsWith("&c")) {
                 player.sendMessage(message(notification));
             }
         });
-        if (result == SyncStart.TRACK_NEAR_END || result == SyncStart.PACK_DECLINED) {
+        if (result == SyncStart.TRACK_NEAR_END) {
             // There is too little remaining audio to build a meaningful tail.
-            // Let the ordinary playback path attempt the track rather than
-            // leaving the player permanently excluded.
-            barrierExcludedTracks.remove(player.getUniqueId(),
-                    barrierTrackKey(candidate.session, sessionTrack));
+            // Let the ordinary playback path attempt the track instead.
+            barrierExcludedTracks.remove(playerId, trackKey);
+        } else if (result != SyncStart.PREPARING && result != SyncStart.ALREADY_PREPARING) {
+            player.sendActionBar(message("messages.playback-synchronizing"));
         }
     }
 
@@ -930,7 +939,14 @@ public final class PlaybackEngine {
         Candidate winner = null;
         for (PlaybackSession session : sessions()) {
             if (!session.targets(player.getUniqueId()) || session.current() == null
-                    || session.paused() || session.resumePreparing()) continue;
+                    || session.paused() || session.resumePreparing() || isPlayerMuted(player)) continue;
+            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                if (!geyser.isBedrockPackAvailable()
+                        || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
+            } else if (packs.isBaseDeclined(player)
+                    || packs.isDeclined(player, session.playbackTrack())) {
+                continue;
+            }
             MusicZone zone = session.zone();
             if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
             MusicZone.AudioMode mode;
