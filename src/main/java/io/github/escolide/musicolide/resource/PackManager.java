@@ -83,7 +83,7 @@ public final class PackManager {
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 playerId, ignored -> new LinkedHashMap<>());
         enqueueIfNeeded(playerId, queue, track);
-        pump(player);
+        if (ensureLibrary(player)) pump(player);
         return true;
     }
 
