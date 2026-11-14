@@ -165,13 +165,17 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         // A private resume/synchronization tail is self-contained. Do not refresh
         // an outdated aggregate library as a side effect of requesting the tail.
-        if (!libraryReadyHash.containsKey(playerId) && !ensureLibrary(player)) return false;
+        // If this player has never finished loading the library, start that request
+        // but keep the temporary tail pinned in the queue. The library's SUCCESSFULLY_LOADED
+        // callback will pump the tail; returning false here used to silently lose
+        // resume requests made while the library was still loading.
+        if (!libraryReadyHash.containsKey(playerId)) ensureLibrary(player);
         pinnedTemporaryPacks.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet())
                 .add(track.packId());
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 playerId, ignored -> new LinkedHashMap<>());
         enqueueIfNeeded(playerId, queue, track);
-        pump(player);
+        if (libraryReadyHash.containsKey(playerId)) pump(player);
         return true;
     }
 
@@ -401,6 +405,13 @@ public final class PackManager {
                 if (currentHash != null && !currentHash.equals(requestedHash)) {
                     Player player = Bukkit.getPlayer(playerId);
                     if (player != null && player.isOnline()) ensureLibrary(player);
+                }
+                // Resume/synchronization tails can be queued while the library
+                // is loading. Start those downloads only after the base pack is ready.
+                Player readyPlayer = Bukkit.getPlayer(playerId);
+                if (readyPlayer != null && readyPlayer.isOnline()
+                        && libraryReadyHash.containsKey(playerId)) {
+                    pump(readyPlayer);
                 }
             } else {
                 libraryDeclinedHash.put(playerId, requestedHash);
