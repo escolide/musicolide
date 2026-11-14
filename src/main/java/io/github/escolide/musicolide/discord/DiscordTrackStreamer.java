@@ -118,8 +118,8 @@ final class DiscordTrackStreamer implements AutoCloseable {
             command.addAll(List.of("-hide_banner", "-loglevel", "error", "-nostdin"));
             if (!current.track().isStreamed()) command.addAll(List.of("-f", "concat", "-safe", "0"));
             command.addAll(List.of(
-                    "-i", input.toString(),
                     "-ss", String.format(Locale.ROOT, "%.3f", offsetMs / 1000.0),
+                    "-i", input.toString(),
                     "-map", "0:a:0", "-vn", "-sn", "-dn",
                     "-af", "atempo=" + String.format(Locale.ROOT, "%.4f", speed),
                     "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16be",
@@ -212,6 +212,8 @@ final class DiscordTrackStreamer implements AutoCloseable {
                 extracted = extract(zip, entryName, output, extracted);
                 concat.append("file '").append(escapeConcatPath(output.toAbsolutePath().toString()))
                         .append("'\n");
+                concat.append("duration ").append(String.format(Locale.ROOT, "%.3f",
+                        track.segmentDurationMs(index) / 1000.0)).append("\n");
             }
             Path concatFile = workDirectory.resolve("segments.ffconcat");
             Files.writeString(concatFile, concat, StandardCharsets.UTF_8,
