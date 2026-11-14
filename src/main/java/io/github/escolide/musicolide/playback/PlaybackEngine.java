@@ -401,15 +401,17 @@ public final class PlaybackEngine {
                     boolean bedrockTrackAvailable = track != null && track.namespace() != null
                             && !track.namespace().startsWith("mr_")
                             && geyser.isBedrockPackAvailable();
-                    if (plugin.getConfig().getBoolean(
-                            "playback.synchronization.bedrock.enabled", true) && bedrockTrackAvailable) {
-                        if (geyser.hasCurrentPackFor(player.getUniqueId())) {
-                            hasReadyRecipient = true;
-                        } else if (geyser.isAwaitingPackReady(player.getUniqueId())) {
-                            // Do not start Java or Bedrock listeners while a current
-                            // Bedrock recipient is still completing its initial pack load.
-                            allRecipientsSettled = false;
-                        }
+                    if (bedrockTrackAvailable && geyser.hasCurrentPackFor(player.getUniqueId())) {
+                        // Even with the Bedrock barrier disabled, a player with the
+                        // current pack is a valid ready recipient for a Bedrock-only session.
+                        hasReadyRecipient = true;
+                    } else if (plugin.getConfig().getBoolean(
+                            "playback.synchronization.bedrock.enabled", true)
+                            && bedrockTrackAvailable
+                            && geyser.isAwaitingPackReady(player.getUniqueId())) {
+                        // Do not start Java or Bedrock listeners while a current
+                        // Bedrock recipient is still completing its initial pack load.
+                        allRecipientsSettled = false;
                     }
                     continue;
                 }
