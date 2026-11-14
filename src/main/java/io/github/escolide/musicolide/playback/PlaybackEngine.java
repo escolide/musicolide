@@ -280,7 +280,7 @@ public final class PlaybackEngine {
         return true;
     }
 
-    public enum VolumeChangeResult { SAVED, MUTED, RESYNCHRONIZING, NEXT_TRACK }
+    public enum VolumeChangeResult { SAVED, MUTED, RESYNCHRONIZING, NEXT_TRACK, RESTARTED }
 
     /**
      * Saves the player's volume and refreshes their current Java audio from the
@@ -319,15 +319,57 @@ public final class PlaybackEngine {
         if (candidate == null || !candidate.session.clockStarted()) return VolumeChangeResult.SAVED;
 
         String trackKey = barrierTrackKey(candidate.session, candidate.session.playbackTrack());
+        String mode = plugin.getConfig().getString("playback.volume-change-mode", "next-track")
+                .trim().toLowerCase(Locale.ROOT);
+        if (!Set.of("next-track", "precise", "restart-segment").contains(mode)) mode = "next-track";
+
+        PlayerPlayback state = playerPlayback.get(player.getUniqueId());
+        if (mode.equals("next-track")) {
+            // The client fixes volume when the sound is started. Preserve the
+            // current track's captured volume and apply the preference next track.
+            // If this player is not already hearing the track, never restart it at 00:00.
+            if (state == null || state.sound == null) {
+                barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                stopPlayer(player);
+            }
+            return VolumeChangeResult.NEXT_TRACK;
+        }
+
+        if (mode.equals("restart-segment")) {
+            MusicTrack track = candidate.session.playbackTrack();
+            if (!track.isStreamed() && state != null && state.sound != null) {
+                int segment = candidate.session.segmentIndex();
+                if (segment >= 0 && segment < track.segmentCount()) {
+                    stopCurrentSound(player, state);
+                    state.baseVolume = playbackBaseVolume(player);
+                    state.segment = segment;
+                    state.fading = candidate.mode == MusicZone.AudioMode.FADE;
+                    state.sound = track.soundKey(segment);
+                    float adjusted = playbackVolume(state.baseVolume, candidate.session, state.fading, player);
+                    if (adjusted > 0) {
+                        player.playSound(player.getLocation(), state.sound, SOUND_CATEGORY,
+                                adjusted, (float) candidate.session.speed());
+                        return VolumeChangeResult.RESTARTED;
+                    }
+                    stopPlayer(player);
+                    return VolumeChangeResult.MUTED;
+                }
+            }
+            // A streamed OGG is one indivisible sound. Restarting it mid-track
+            // would replay from 00:00 against the advanced shared timeline.
+            if (state == null || state.sound == null) {
+                barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                stopPlayer(player);
+            }
+            return VolumeChangeResult.NEXT_TRACK;
+        }
+
         if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-            PlayerPlayback state = playerPlayback.get(player.getUniqueId());
             if (state == null || state.sound == null) {
                 barrierExcludedTracks.put(player.getUniqueId(), trackKey);
                 stopPlayer(player);
                 warnBedrockUnavailable(player, "messages.bedrock-resume-unsupported");
             }
-            // A Bedrock client cannot receive a private Java tail pack mid-track.
-            // An already-playing sound retains its previous volume until next track.
             return VolumeChangeResult.NEXT_TRACK;
         }
 
@@ -341,7 +383,6 @@ public final class PlaybackEngine {
                 yield VolumeChangeResult.RESYNCHRONIZING;
             }
             case TRACK_NEAR_END -> {
-                PlayerPlayback state = playerPlayback.get(player.getUniqueId());
                 if (state == null || state.sound == null) {
                     barrierExcludedTracks.put(player.getUniqueId(), trackKey);
                     automaticSyncAttempts.put(player.getUniqueId(), trackKey);
@@ -365,6 +406,32 @@ public final class PlaybackEngine {
     /** Explicitly retries the Java music-library request for this player. */
     public boolean requestLibrary(Player player) {
         return packs.requestLibrary(player, true);
+    }
+
+    public enum SpeedChangeResult { NO_SESSION, APPLIED_NOW, NEXT_TRACK }
+
+    /** Set the session-wide playback rate using the client sound pitch; no OGG is re-encoded. */
+    public SpeedChangeResult setPlaybackSpeed(UUID actor, boolean admin, double speed) {
+        PlaybackSession session = findControllable(actor, admin);
+        if (session == null) return SpeedChangeResult.NO_SESSION;
+        return session.setSpeed(speed) ? SpeedChangeResult.APPLIED_NOW : SpeedChangeResult.NEXT_TRACK;
+    }
+
+    public Optional<PlaybackSession> findControllableSession(UUID actor, boolean admin) {
+        return Optional.ofNullable(findControllable(actor, admin));
+    }
+
+    /** Force reconnecting listeners through the timestamp-aligned late-join path. */
+    public void onJoin(Player player) {
+        if (player == null) return;
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!player.isOnline()) return;
+            Candidate candidate = findCandidate(player);
+            if (candidate == null || !candidate.session.clockStarted()) return;
+            String key = barrierTrackKey(candidate.session, candidate.session.playbackTrack());
+            barrierExcludedTracks.put(player.getUniqueId(), key);
+            automaticSyncAttempts.remove(player.getUniqueId());
+        }, 2L);
     }
 
     public enum SyncStart {
@@ -579,9 +646,10 @@ public final class PlaybackEngine {
                     && (geyser == null || !geyser.isBedrockPlayer(player.getUniqueId()))) {
                 int prefetch = Math.max(0, plugin.getConfig().getInt(
                         "resource-packs.prefetch.tracks-ahead", 4));
-                packs.prefetch(player, candidate.session.playbackTrack(),
-                        candidate.session.upcoming(prefetch),
-                        plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
+                MusicTrack playingTrack = candidate.session.playbackTrack();
+                packs.prefetch(player, playingTrack, candidate.session.upcoming(prefetch),
+                        plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0,
+                        isAlreadyPlayingTrack(player, candidate.session, playingTrack));
             }
         }
         startReadySessionClocks(online, winners);
@@ -651,7 +719,7 @@ public final class PlaybackEngine {
                     }
                     boolean packReady = geyser != null && geyser.isBedrockPlayer(player.getUniqueId())
                             ? geyser.isBedrockPackAvailable() && geyser.hasCurrentPackFor(player.getUniqueId())
-                            : packs.isReady(player, track);
+                            : packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track));
                     if (packReady) readyAtStart.add(player.getUniqueId());
                 }
                 return readyAtStart;
@@ -723,7 +791,7 @@ public final class PlaybackEngine {
                     continue;
                 }
 
-                if (packs.isReady(player, track)) {
+                if (packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track))) {
                     hasReadyJavaRecipient = true;
                 } else if (!packs.isDeclined(player, track)) {
                     hasPendingJavaRecipient = true;
@@ -758,7 +826,8 @@ public final class PlaybackEngine {
                     if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
                     if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
                     if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
-                    if (!packs.isReady(player, track) && !packs.isDeclined(player, track)) {
+                    if (!packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track))
+                            && !packs.isDeclined(player, track)) {
                         barrierExcludedTracks.put(player.getUniqueId(), timedOutTrackKey);
                     }
                 }
@@ -803,7 +872,9 @@ public final class PlaybackEngine {
             int segment = session.segmentIndex();
             if (segment < 0 || segment >= track.segmentCount() || segment == state.segment) continue;
 
-            float volume = playbackVolume(player, session, state.fading);
+            float baseVolume = Float.isFinite(state.baseVolume)
+                    ? state.baseVolume : (state.baseVolume = playbackBaseVolume(player));
+            float volume = playbackVolume(baseVolume, session, state.fading, player);
             if (volume <= 0) {
                 stopPlayer(player);
                 continue;
@@ -811,18 +882,36 @@ public final class PlaybackEngine {
 
             String sound = track.soundKey(segment);
             if (state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
-            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
+            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, (float) session.speed());
             state.segment = segment;
             state.sound = sound;
         }
     }
 
-    private float playbackVolume(Player player, PlaybackSession session, boolean fading) {
+    private float playbackBaseVolume(Player player) {
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         float volume = (pref.volume() / 100.0f)
                 * (plugin.getConfig().getInt("playback.default-volume", 100) / 100.0f);
+        return Math.max(0, Math.min(1, volume));
+    }
+
+    private float playbackVolume(Player player, PlaybackSession session, boolean fading) {
+        return playbackVolume(playbackBaseVolume(player), session, fading, player);
+    }
+
+    private float playbackVolume(float baseVolume, PlaybackSession session, boolean fading, Player player) {
+        float volume = baseVolume;
         if (fading) volume *= (float) session.zone().fadeFactor(player.getX(), player.getZ());
         return Math.max(0, Math.min(1, volume));
+    }
+
+    private boolean isAlreadyPlayingTrack(Player player, PlaybackSession session, MusicTrack track) {
+        if (player == null || session == null || track == null) return false;
+        PlayerPlayback state = playerPlayback.get(player.getUniqueId());
+        if (state == null || state.sound == null || !session.id().equals(state.sessionId)) return false;
+        if (track.id().equals(state.trackId)) return true;
+        return state.syncSessionId != null && session.id().equals(state.syncSessionId)
+                && session.current() != null && session.current().id().equals(state.syncSourceTrackId);
     }
 
     private int compare(Candidate a, Candidate b) {
@@ -910,7 +999,7 @@ public final class PlaybackEngine {
                 stopPlayer(player);
                 return;
             }
-            if (!packs.isReady(player, track)) {
+            if (!packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track))) {
                 if (synchronizedTail) {
                     stopCurrentSound(player, state);
                 } else {
@@ -935,16 +1024,17 @@ public final class PlaybackEngine {
         }
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment);
-        float volume = playbackVolume(player, session, fading);
-        if (volume <= 0) {
-            stopPlayer(player);
-            return;
-        }
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
-                || state.segment != segment || state.fading != fading;
+                || state.segment != segment || state.fading != fading || state.sound == null;
         if (changed) {
             stopCurrentSound(player, state);
-            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
+            state.baseVolume = playbackBaseVolume(player);
+            float volume = playbackVolume(state.baseVolume, session, fading, player);
+            if (volume <= 0) {
+                stopPlayer(player);
+                return;
+            }
+            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, (float) session.speed());
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
@@ -1125,5 +1215,6 @@ public final class PlaybackEngine {
         String syncSourceTrackId;
         MusicTrack syncTrack;
         boolean syncPreparing;
+        float baseVolume = Float.NaN;
     }
 }
