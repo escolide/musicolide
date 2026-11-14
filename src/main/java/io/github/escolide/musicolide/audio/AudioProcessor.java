@@ -167,6 +167,7 @@ public final class AudioProcessor implements AutoCloseable {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
+        boolean basePackPublished = false;
         try {
             Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
             Path incoming = data.resolve("incoming");
@@ -249,6 +250,7 @@ public final class AudioProcessor implements AutoCloseable {
             // becomes visible in the catalogue. Existing clients receive the new
             // snapshot only when they next need a track from the updated library.
             packBuilder.buildBasePack();
+            basePackPublished = true;
 
             String sha1 = sha1(generatedPack);
             MusicTrack track = new MusicTrack(id, rawTitle, artist, namespace, generatedPack.getFileName().toString(),
@@ -281,6 +283,18 @@ public final class AudioProcessor implements AutoCloseable {
         } catch (Exception ex) {
             deleteQuietly(trackDirectory);
             deleteQuietly(generatedPack);
+            // The Java library is built before the catalogue write so a track is
+            // never visible before its pack is ready. If that write fails, remove
+            // the just-published orphan from the active library snapshot as well.
+            if (basePackPublished) {
+                try {
+                    packBuilder.buildBasePack();
+                } catch (Exception rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                    plugin.getLogger().warning("Could not roll back the Java library after a failed import: "
+                            + rollbackError.getMessage());
+                }
+            }
             throw new CompletionException(ex);
         }
     }
