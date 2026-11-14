@@ -466,6 +466,7 @@ public final class PlaybackEngine {
                             || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
                 } else if (packs.isBaseDeclined(player)
                         || packs.isDeclined(player, session.playbackTrack())) {
+                    warnPackDeclined(player, session.current(), session.playbackTrack());
                     continue;
                 }
 
@@ -756,13 +757,7 @@ public final class PlaybackEngine {
             }
         } else {
             if (packs.isBaseDeclined(player) || packs.isDeclined(player, track)) {
-                // One rejection notice per catalogue song, even if the playback
-                // tick repeats hundreds of times. A different song gets its own notice.
-                String songId = originalTrack == null ? track.id() : originalTrack.id();
-                if (!songId.equals(declinedWarnings.get(player.getUniqueId()))) {
-                    player.sendMessage(message("messages.pack-declined"));
-                    declinedWarnings.put(player.getUniqueId(), songId);
-                }
+                warnPackDeclined(player, originalTrack, track);
                 stopPlayer(player);
                 return;
             }
@@ -815,6 +810,17 @@ public final class PlaybackEngine {
             String label = artist.isBlank() ? title : title + " by " + artist;
             player.sendActionBar(Component.text("♫ " + label + "  •  " + formatTime(session.elapsedMs())
                     + " / " + formatTime(displayTrack.durationMs())));
+        }
+    }
+
+    private void warnPackDeclined(Player player, MusicTrack originalTrack, MusicTrack playbackTrack) {
+        if (playbackTrack == null) return;
+        // One rejection notice per catalogue song, even if the playback tick
+        // repeats hundreds of times. A different song gets its own notice.
+        String songId = originalTrack == null ? playbackTrack.id() : originalTrack.id();
+        if (!songId.equals(declinedWarnings.get(player.getUniqueId()))) {
+            player.sendMessage(message("messages.pack-declined"));
+            declinedWarnings.put(player.getUniqueId(), songId);
         }
     }
 
