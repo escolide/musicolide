@@ -53,6 +53,7 @@ public final class PlaybackSession {
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
     public synchronized boolean paused() { return paused; }
     public synchronized boolean resumePreparing() { return resumePreparing; }
+    public synchronized boolean clockStarted() { return clockStarted; }
     public int priority() { return priority; }
     public void priority(int priority) { this.priority = priority; }
     public void repeat(boolean repeat) { this.repeat = repeat; }
@@ -122,14 +123,17 @@ public final class PlaybackSession {
         playbackTrack = current;
         if (current.isStreamed()) {
             // Plain continuous mode cannot seek a client-side streamed decoder.
+            // Restart at zero, then let the playback engine release all ready
+            // listeners together through its pack-readiness start barrier.
             elapsedBaseMs = 0;
             pausedOffsetMs = 0;
-            trackStartedAt = System.currentTimeMillis();
         } else {
-            elapsedBaseMs = 0;
-            trackStartedAt = System.currentTimeMillis() - pausedOffsetMs;
+            // Segmented playback can resume at the saved absolute timestamp.
+            elapsedBaseMs = pausedOffsetMs;
+            pausedOffsetMs = 0;
         }
-        clockStarted = true;
+        trackStartedAt = 0;
+        clockStarted = false;
         paused = false;
     }
 
@@ -198,10 +202,12 @@ public final class PlaybackSession {
                     "Seeking within continuous streamed tracks requires resumable playback mode.");
         }
         playbackTrack = current;
-        elapsedBaseMs = 0;
-        pausedOffsetMs = Math.max(0, Math.min(current.durationMs() - 1, millis));
-        trackStartedAt = System.currentTimeMillis() - pausedOffsetMs;
-        clockStarted = true;
+        elapsedBaseMs = Math.max(0, Math.min(current.durationMs() - 1, millis));
+        pausedOffsetMs = 0;
+        // The playback engine starts the clock after all current listeners
+        // are ready, so a seek restarts as a synchronized cohort.
+        trackStartedAt = 0;
+        clockStarted = false;
     }
 
     public synchronized long elapsedMs() {
@@ -212,8 +218,10 @@ public final class PlaybackSession {
 
     public synchronized int segmentIndex() {
         MusicTrack track = playbackTrack();
-        return track == null ? -1 : (int) Math.min(track.segmentCount() - 1,
-                Math.max(0, elapsedMs() - elapsedBaseMs) / Math.max(1, track.segmentMs()));
+        if (track == null) return -1;
+        long trackPosition = track == current ? elapsedMs() : Math.max(0, elapsedMs() - elapsedBaseMs);
+        return (int) Math.min(track.segmentCount() - 1,
+                Math.max(0, trackPosition) / Math.max(1, track.segmentMs()));
     }
 
     public synchronized boolean finished() {
