@@ -16,7 +16,6 @@ import net.dv8tion.jda.api.managers.AudioManager;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.utils.cache.CacheFlag;
-import net.dv8tion.jda.api.utils.Status;
 
 import java.nio.file.Path;
 import java.util.Optional;
@@ -105,7 +104,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
         try {
             NativeDaveFactory.ensureAvailable();
             JDA client = JDABuilder.createLight(token,
-                            GatewayIntent.GUILDS, GatewayIntent.GUILD_VOICE_STATES)
+                            GatewayIntent.GUILD_VOICE_STATES)
                     .setAutoReconnect(true)
                     .enableCache(CacheFlag.VOICE_STATE)
                     .setAudioModuleConfig(new AudioModuleConfig().withDaveSessionFactory(
@@ -136,9 +135,8 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private void tick() {
         JDA client = jda;
         if (client == null) return;
-        Status gatewayStatus = client.getStatus();
-        if (gatewayStatus == Status.FAILED_TO_LOGIN || gatewayStatus == Status.SHUTDOWN
-                || gatewayStatus == Status.SHUTTING_DOWN) {
+        JDA.Status gatewayStatus = client.getStatus();
+        if (gatewayStatus == JDA.Status.FAILED_TO_LOGIN || gatewayStatus == JDA.Status.SHUTDOWN) {
             streamer.stop();
             lastTimelineKey = null;
             if (!terminalLoginFailureLogged) {
@@ -149,7 +147,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
             close();
             return;
         }
-        if (gatewayStatus != Status.CONNECTED) {
+        if (gatewayStatus != JDA.Status.CONNECTED) {
             streamer.stop();
             lastTimelineKey = null;
             voiceWasConnected = false;
