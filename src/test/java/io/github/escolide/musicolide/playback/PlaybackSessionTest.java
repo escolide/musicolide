@@ -19,6 +19,7 @@ class PlaybackSessionTest {
                 zone, false, List.of(listener), List.of(sampleTrack("queue-current")), 0);
 
         assertTrue(session.matchesPlaybackRequest(false, List.of(listener), MusicZone.global()));
+        assertFalse(session.isServerWideGlobalSession(), "A session with a named listener is not server-wide.");
         assertFalse(session.matchesPlaybackRequest(true, List.of(), MusicZone.global()));
         assertFalse(session.matchesPlaybackRequest(false, List.of(UUID.randomUUID()), MusicZone.global()));
         assertFalse(session.matchesPlaybackRequest(false, List.of(listener),
@@ -28,6 +29,22 @@ class PlaybackSessionTest {
     private MusicTrack sampleTrack(String id) {
         return new MusicTrack(id, id, "", "ms_" + id, id + ".zip",
                 "0000000000000000000000000000000000000000", 60000, 60000, 1, 1000);
+    }
+
+    @Test
+    void onlyAllPlayerGlobalSessionsQualifyAsServerWideDiscordPlayback() {
+        MusicTrack track = sampleTrack("discord-scope");
+        PlaybackSession globalAll = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(track), 0);
+        PlaybackSession globalNamed = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(UUID.randomUUID()), List.of(track), 0);
+        PlaybackSession spatialAll = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.circle(UUID.randomUUID(), 0, 64, 0, 30, false, 0, false, 0),
+                true, List.of(), List.of(track), 0);
+
+        assertTrue(globalAll.isServerWideGlobalSession());
+        assertFalse(globalNamed.isServerWideGlobalSession());
+        assertFalse(spatialAll.isServerWideGlobalSession());
     }
 
     @Test
