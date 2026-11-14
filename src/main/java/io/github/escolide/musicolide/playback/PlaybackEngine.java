@@ -753,6 +753,10 @@ public final class PlaybackEngine {
                     mode = zone.audioMode(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ());
                 }
                 if (mode == MusicZone.AudioMode.NONE) continue;
+                // A listener at the zero-volume edge of a fade band, or with
+                // their personal volume set to zero, must not reserve this
+                // session and suppress another session they could actually hear.
+                if (playbackVolume(player, session, mode == MusicZone.AudioMode.FADE) <= 0) continue;
                 Candidate candidate = new Candidate(session, mode);
                 if (winner == null || compare(candidate, winner) < 0) {
                     if (winner != null) suppressed.computeIfAbsent(winner.session, ignored -> new HashSet<>()).add(player.getUniqueId());
