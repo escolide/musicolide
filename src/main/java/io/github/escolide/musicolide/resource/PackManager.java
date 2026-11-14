@@ -59,11 +59,23 @@ public final class PackManager {
     }
 
     public boolean isReady(Player player, MusicTrack track) {
+        return isReady(player, track, false);
+    }
+
+    /**
+     * An already-playing track may continue using the previous aggregate library
+     * revision after a new import is published. The next track must wait for the
+     * latest revision, but updating the pack during the current song can interrupt
+     * its client-side sound and trigger another resource-pack application.
+     */
+    public boolean isReady(Player player, MusicTrack track, boolean allowOlderLibraryRevision) {
         if (isTemporary(track)) {
             return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
         }
         String hash = currentLibraryHash();
-        return hash != null && hash.equals(libraryReadyHash.get(player.getUniqueId()));
+        String readyHash = libraryReadyHash.get(player.getUniqueId());
+        return hash != null && (hash.equals(readyHash)
+                || allowOlderLibraryRevision && readyHash != null);
     }
 
     public boolean isDeclined(Player player, MusicTrack track) {
@@ -106,8 +118,16 @@ public final class PackManager {
         return requested.values().stream().anyMatch(requestedPacks -> requestedPacks.contains(packId));
     }
 
-    public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming, int tracksAhead) {
-        if (!ensureLibrary(player)) return;
+    public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
+                         int tracksAhead, boolean deferLibraryRefresh) {
+        UUID playerId = player.getUniqueId();
+        // Existing listeners keep their current immutable library revision until
+        // this track finishes. A newly joining player still requests the latest pack.
+        if (deferLibraryRefresh) {
+            if (!libraryReadyHash.containsKey(playerId) && !ensureLibrary(player)) return;
+        } else if (!ensureLibrary(player)) {
+            return;
+        }
 
         // Normal tracks are already in the single library pack. Only FFmpeg
         // generated resume/synchronization tails need their own temporary pack.
@@ -141,9 +161,11 @@ public final class PackManager {
      */
     public boolean requestTemporaryTrack(Player player, MusicTrack track) {
         if (player == null || !player.isOnline() || !isTemporary(track)) return false;
-        if (!ensureLibrary(player)) return false;
 
         UUID playerId = player.getUniqueId();
+        // A private resume/synchronization tail is self-contained. Do not refresh
+        // an outdated aggregate library as a side effect of requesting the tail.
+        if (!libraryReadyHash.containsKey(playerId) && !ensureLibrary(player)) return false;
         pinnedTemporaryPacks.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet())
                 .add(track.packId());
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
@@ -283,17 +305,12 @@ public final class PackManager {
         for (LinkedHashMap<UUID, MusicTrack> queue : waiting.values()) queue.remove(packId);
         for (Set<UUID> pinned : pinnedTemporaryPacks.values()) pinned.remove(packId);
         pinnedTemporaryPacks.entrySet().removeIf(entry -> entry.getValue().isEmpty());
-        for (Map.Entry<UUID, Set<UUID>> entry : active.entrySet()) {
-            UUID playerId = entry.getKey();
-            if (!entry.getValue().contains(packId)) continue;
-            if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
-            } else {
-                Player player = Bukkit.getPlayer(playerId);
-                if (player != null) removePack(player, playerId, packId);
-                else entry.getValue().remove(packId);
-            }
-        }
+
+        // Removing an applied pack forces vanilla to rebuild the resource stack
+        // and commonly displays a loading screen. Keep the completed temporary
+        // pack active for this connection; its bytes can be deleted server-side
+        // once in-flight downloads finish. releaseAll() handles optional cleanup
+        // only after the player's whole playback session has ended.
         deleteGeneratedWhenIdle.put(packId, file);
         deleteGeneratedFileIfIdle(packId);
     }
