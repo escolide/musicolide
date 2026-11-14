@@ -1,6 +1,7 @@
 package io.github.escolide.musicolide.command;
 
 import io.github.escolide.musicolide.audio.AudioProcessor;
+import io.github.escolide.musicolide.audio.YtDlpDownloader;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
