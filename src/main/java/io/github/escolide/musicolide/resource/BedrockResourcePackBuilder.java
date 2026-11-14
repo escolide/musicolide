@@ -109,7 +109,7 @@ public final class BedrockResourcePackBuilder {
 
     private SoundAsset toAsset(Path archive, String entryName) {
         String[] parts = entryName.split("/");
-        if (parts.length == 5 && parts[0].equals("assets") && parts[2].equals("sounds")
+        if (parts.length == 4 && parts[0].equals("assets") && parts[2].equals("sounds")
                 && NAMESPACE.matcher(parts[1]).matches() && parts[3].equals("music.ogg")) {
             return new SoundAsset(archive, entryName, parts[1] + ":music",
                     "sounds/musicolide/" + parts[1] + "/music.ogg");
