@@ -135,14 +135,27 @@ public final class ResourcePackBuilder {
                     && hash.equals(sha1(archive))) {
                 Set<String> included = new LinkedHashSet<>();
                 String tracks = properties.getProperty("tracks", "");
+                boolean validTracks = true;
                 for (String name : tracks.split(",")) {
                     String safe = name.trim();
-                    if (!safe.isBlank() && Path.of(safe).getFileName().toString().equals(safe)) included.add(safe);
+                    if (safe.isBlank()) continue;
+                    Path trackArchive = packsDirectory.resolve(safe).normalize();
+                    String expectedTrackHash = properties.getProperty("track." + safe, "").trim();
+                    if (!Path.of(safe).getFileName().toString().equals(safe)
+                            || !trackArchive.getParent().equals(packsDirectory)
+                            || !Files.isRegularFile(trackArchive) || expectedTrackHash.isBlank()
+                            || !expectedTrackHash.equals(sha1(trackArchive))) {
+                        validTracks = false;
+                        break;
+                    }
+                    included.add(safe);
                 }
-                BasePackInfo info = new BasePackInfo(fileName, LIBRARY_ID, hash);
-                basePackTrackFiles = Set.copyOf(included);
-                currentBasePackInfo = info;
-                return info;
+                if (validTracks) {
+                    BasePackInfo info = new BasePackInfo(fileName, LIBRARY_ID, hash);
+                    basePackTrackFiles = Set.copyOf(included);
+                    currentBasePackInfo = info;
+                    return info;
+                }
             }
         }
         return buildBasePack();
@@ -153,6 +166,9 @@ public final class ResourcePackBuilder {
         properties.setProperty("file", fileName);
         properties.setProperty("sha1", hash);
         properties.setProperty("tracks", String.join(",", includedPacks));
+        for (String name : includedPacks) {
+            properties.setProperty("track." + name, sha1(packsDirectory.resolve(name)));
+        }
         Path temporary = Files.createTempFile(packsDirectory, ".musicolide-manifest-", ".tmp");
         try {
             try (var output = Files.newOutputStream(temporary)) {
