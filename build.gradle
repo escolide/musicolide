@@ -17,6 +17,13 @@ java {
     }
 }
 
+configurations {
+    // The DAVE native payload is packaged only in the Linux x86_64 production JAR.
+    // The universal JAR remains under the established size ceiling and runs without
+    // Discord voice on hosts where the optional DAVE native library is not bundled.
+    discordNativeLinux
+}
+
 repositories {
     mavenCentral()
     maven { url = 'https://repo.papermc.io/repository/maven-public/' }
@@ -36,9 +43,8 @@ dependencies {
     implementation 'net.dv8tion:JDA:6.7.0'
     implementation 'moe.kyokobot.libdave:adapter-jda:0.1.2'
     implementation 'moe.kyokobot.libdave:impl-jni:0.1.2'
-    // Bundled DAVE natives for the primary Linux host and Windows development servers.
-    implementation 'moe.kyokobot.libdave:natives-linux-x86-64:0.1.2'
-    implementation 'moe.kyokobot.libdave:natives-win-x86-64:0.1.2'
+    // The Linux x86_64 DAVE native is added only to linuxShadowJar below.
+    discordNativeLinux 'moe.kyokobot.libdave:natives-linux-x86-64:0.1.2'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testImplementation 'io.netty:netty-codec-http:4.1.115.Final'
@@ -65,7 +71,7 @@ tasks.named('shadowJar', ShadowJar) {
 // the separate *-universal.jar artifact.
 tasks.register('linuxShadowJar', ShadowJar) {
     archiveClassifier = ''
-    configurations = [project.configurations.runtimeClasspath]
+    configurations = [project.configurations.runtimeClasspath, project.configurations.discordNativeLinux]
     from sourceSets.main.output
     mergeServiceFiles()
     exclude { details ->
