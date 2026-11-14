@@ -38,6 +38,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private static final long DRIFT_CHECK_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(2);
     private static final long MAX_DRIFT_MS = 1_500L;
 
+    private final org.bukkit.plugin.java.JavaPlugin plugin;
     private final PlaybackEngine playback;
     private final DiscordCommandService commandService;
     private final NativeToolchain toolchain;
@@ -69,6 +70,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
                                    PlaybackEngine playback, NativeToolchain toolchain,
                                    MusicCommand musicCommand, DiscordAccountLinkManager accountLinks) {
+        this.plugin = plugin;
         this.playback = playback;
         this.commandService = new DiscordCommandService(plugin, playback, musicCommand, accountLinks);
         this.toolchain = toolchain;
@@ -113,8 +115,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
         try {
             NativeDaveFactory.ensureAvailable();
             JDA client = JDABuilder.createLight(token,
-                            GatewayIntent.GUILDS, GatewayIntent.GUILD_VOICE_STATES,
-                            GatewayIntent.DIRECT_MESSAGES)
+                            GatewayIntent.GUILD_VOICE_STATES, GatewayIntent.DIRECT_MESSAGES)
                     .setAutoReconnect(reconnectAndResync)
                     .enableCache(CacheFlag.VOICE_STATE)
                     .setAudioModuleConfig(new AudioModuleConfig().withDaveSessionFactory(
