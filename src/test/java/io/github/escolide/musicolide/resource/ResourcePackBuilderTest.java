@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.resource;
 
+import io.github.escolide.musicolide.model.MusicTrack;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -15,6 +16,44 @@ import static org.junit.jupiter.api.Assertions.*;
 class ResourcePackBuilderTest {
     @TempDir
     Path tempDir;
+
+    @Test
+    void reusesStartupLibrarySnapshotAndKeepsNewImportsIncrementalAcrossRestart() throws Exception {
+        Path audio = tempDir.resolve("track.ogg");
+        Files.write(audio, new byte[]{1, 2, 3, 4});
+
+        ResourcePackFormat format = ResourcePackFormat.forMinecraftVersion("1.21.1-R0.1-SNAPSHOT");
+        ResourcePackBuilder firstBuilder = new ResourcePackBuilder(tempDir, format);
+        Path firstPack = firstBuilder.buildStreamed("ms_first", audio);
+        MusicTrack firstTrack = track("first", "ms_first", firstPack);
+        ResourcePackBuilder.BasePackInfo initial = firstBuilder.buildBasePack();
+
+        assertTrue(firstBuilder.containsInBasePack(firstTrack));
+
+        Path secondPack = firstBuilder.buildStreamed("ms_second", audio);
+        MusicTrack secondTrack = track("second", "ms_second", secondPack);
+
+        // A new builder instance simulates a server restart. It must reuse the
+        // exact immutable startup snapshot rather than silently absorbing every
+        // newly imported track and changing the cached library hash.
+        ResourcePackBuilder restarted = new ResourcePackBuilder(tempDir, format);
+        ResourcePackBuilder.BasePackInfo reused = restarted.loadOrBuildBasePack();
+
+        assertEquals(initial.sha1(), reused.sha1());
+        assertTrue(restarted.containsInBasePack(firstTrack));
+        assertFalse(restarted.containsInBasePack(secondTrack));
+
+        // A deliberate rebuild can publish a new snapshot containing both.
+        ResourcePackBuilder.BasePackInfo refreshed = restarted.buildBasePack();
+        assertTrue(restarted.containsInBasePack(firstTrack));
+        assertTrue(restarted.containsInBasePack(secondTrack));
+        assertNotEquals(initial.sha1(), refreshed.sha1());
+    }
+
+    private MusicTrack track(String id, String namespace, Path pack) throws Exception {
+        return new MusicTrack(id, id, "", namespace, pack.getFileName().toString(),
+                "0000000000000000000000000000000000000000", 1000, 1000, 1, Files.size(pack));
+    }
 
     @Test
     void mapsEverySupportedReleaseFamilyToItsResourcePackFormat() {
