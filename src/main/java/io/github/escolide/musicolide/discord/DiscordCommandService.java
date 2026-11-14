@@ -138,7 +138,9 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onMessageReceived(MessageReceivedEvent event) {
-        if (event.getAuthor().isBot() || !event.isFromType(ChannelType.PRIVATE)) return;
+        if (event.getAuthor().isBot() || !event.isFromType(ChannelType.PRIVATE)
+                || !plugin.getConfig().getBoolean("discord.commands.enabled", true)
+                || accountLinks == null) return;
         String code = event.getMessage().getContentRaw().trim();
         if (!code.matches("[0-9]{8}")) return;
 
