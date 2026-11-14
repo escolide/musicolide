@@ -1,10 +1,7 @@
 # Musicolide configuration. Compatible target: Paper 1.21.1 through 26.3.
 # The resource-pack format is detected automatically from the running server version.
 general:
-  debug: false
-  language: en
   check-interval-ticks: 5
-  shutdown-stop-playback: true
 
 server:
   hosting-mode: "shared-port"
@@ -35,7 +32,6 @@ audio:
     download-on-first-start: true
   ffmpeg:
     executable: "ffmpeg"
-    required: false
   # Controls how NEW imports are encoded. Existing catalogue tracks keep their format.
   # segmented: legacy short OGG segments; pause/resume preserves position at segment timing.
   # continuous: one streamed OGG; resume restarts at the beginning (Minecraft exposes no stream seek).
@@ -49,7 +45,7 @@ audio:
     # When enabled by an administrator, /play <url> imports a YouTube URL.
     # Imports remain admin-only and must be authorized for download and redistribution.
     # Keep false unless the server operator has confirmed those rights.
-    auto-import-on-play: true
+    auto-import-on-play: false
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
     # URL-imported packs become eligible for expiry this many minutes after import.
@@ -64,7 +60,6 @@ audio:
     blocked-hosts:
       - "spotify.com"
       - "soundcloud.com"
-  format: "ogg"
   sample-rate: 44100
   # Used only when audio.playback-mode is 'segmented'.
   segment-duration-ms: 1000
@@ -86,31 +81,22 @@ resource-packs:
   # on-join: send it as the player joins, even when no music is currently playing.
   # The Java library is one pack containing all imported tracks; new imports publish a new revision.
   download-mode: "on-play"
-  strategy: "library"
   prefetch:
     enabled: true
     tracks-ahead: 4
     max-concurrent-downloads: 2
-    max-prefetch-mb-per-player: 40
   cache:
-    enabled: true
-    max-size-gb: 5
-    retain-unused-files-days: 30
     # false keeps the music library active for the entire connection and lets
     # Minecraft reuse its local SHA-1 cache after reconnecting.
     remove-pack-after-session: false
 
 playback:
   default-volume: 100
-  default-mode: "stereo"
   overlap:
-    enabled: true
-    priority-policy: "first-started"
     manual-priority-enabled: true
     warn-session-owner: true
     warning-cooldown-seconds: 60
   range:
-    default-shape: "circle"
     circle:
       radius: 60
     square:
@@ -123,7 +109,6 @@ playback:
   fade:
     enabled-by-default: false
     distance: 10
-    transition: true
   synchronization:
     action-bar-now-playing: true
     # Synchronize Java recipients, but never let one slow client hold playback indefinitely.
@@ -134,20 +119,18 @@ playback:
     # If nobody is ready yet, the session clock waits rather than consuming the track.
     start-barrier-timeout-seconds: 7
     late-join:
-      # Shared lead used by /music sync and the late-join audio-tail preparation path.
-      # The timestamp is captured from the live session timeline before FFmpeg and pack delivery.
+      # Shared lead used by /music sync and Java live-volume refreshes.
+      # Minecraft cannot change an existing sound's volume; Java clients receive a private
+      # timestamp-aligned OGG tail. Bedrock volume changes apply from the next track.
       delay-seconds: 4.0
-    progress-update-ticks: 20
 
 playlists:
   enabled: true
   shuffle: false
   repeat: false
-  prefetch-next: true
 
 matching:
   enabled: true
-  warn-when-approximate: true
   require-confirmation-for-alias: true
   metadata-lookup: true
 
@@ -180,7 +163,8 @@ messages:
   import-failed: "&cAudio import failed: {reason}"
   bedrock-not-supported: "&eMusicolide Bedrock audio is unavailable until a Bedrock music pack has been generated."
   bedrock-pack-reconnect: "&eThe Bedrock music pack changed after you joined. Reconnect to receive the latest music library."
-  bedrock-resume-unsupported: "&eThis track resumed at a timestamp using a temporary Java pack. Bedrock playback is unavailable until the next track."
+  bedrock-resume-unsupported: "&eThis track needs a private Java audio pack. Bedrock playback will resume with the next track."
+  playback-sync-too-late: "&eThe track is almost finished; your audio will start with the next track."
   playback-started: "&aNow playing: &f{title}"
   playback-paused: "&ePlayback paused."
   playback-resumed: "&aPlayback resumed."
