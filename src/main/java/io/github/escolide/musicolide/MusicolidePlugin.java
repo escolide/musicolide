@@ -32,6 +32,8 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private TrackRepository repository;
@@ -40,6 +42,9 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private PackManager packManager;
     private PlaybackEngine playback;
     private AutoCloseable discordBroadcastService;
+    private ExecutorService discordBootstrapExecutor;
+    private final Object discordStartupLock = new Object();
+    private boolean discordShuttingDown;
     private GeyserBridge geyserBridge;
     private Object geyserPackIntegration;
     private AutoCloseable packServer;
@@ -189,29 +194,46 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
             if (getConfig().getBoolean("discord.enabled", false)) {
-                try {
-                    // Extract and verify the optional nested runtime, then load the
-                    // Discord implementation in an isolated child classloader.
-                    discordBroadcastService = DiscordRuntimeBundle.start(this, playback, nativeToolchain);
-                } catch (Throwable discordError) {
-                    // Discord is an optional output. A missing library, unsupported
-                    // native platform, or initialization failure must not abort the
-                    // Minecraft plugin or stop an existing playback session.
-                    Throwable cause = discordError;
-                    while (cause instanceof java.lang.reflect.InvocationTargetException
-                            && cause.getCause() != null) {
-                        cause = cause.getCause();
+                // Runtime extraction and a first-use native download can be slow.
+                // Keep all of that work away from the Bukkit main thread.
+                discordBootstrapExecutor = Executors.newSingleThreadExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "Musicolide-Discord-Bootstrap");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+                discordBootstrapExecutor.execute(() -> {
+                    AutoCloseable startedService = null;
+                    try {
+                        startedService = DiscordRuntimeBundle.start(this, playback, nativeToolchain);
+                        synchronized (discordStartupLock) {
+                            if (!discordShuttingDown) {
+                                discordBroadcastService = startedService;
+                                startedService = null;
+                            }
+                        }
+                        if (startedService != null) startedService.close();
+                    } catch (Throwable discordError) {
+                        Throwable cause = discordError;
+                        while (cause instanceof java.lang.reflect.InvocationTargetException
+                                && cause.getCause() != null) {
+                            cause = cause.getCause();
+                        }
+                        getLogger().log(java.util.logging.Level.WARNING,
+                                "Discord broadcasting could not be started ("
+                                        + cause.getClass().getSimpleName()
+                                        + "). Minecraft playback is unaffected. Check the server OS/CPU support "
+                                        + "and outbound HTTPS access to Maven Central.", cause);
+                    } finally {
+                        if (startedService != null) {
+                            try {
+                                startedService.close();
+                            } catch (Exception closeError) {
+                                getLogger().log(java.util.logging.Level.FINE,
+                                        "Discord bootstrap cleanup failed.", closeError);
+                            }
+                        }
                     }
-                    String artifactGuidance = cause instanceof NoClassDefFoundError
-                            || cause instanceof ClassNotFoundException
-                            ? " Check that the installed JAR contains the embedded Discord runtime and that this OS/architecture is supported."
-                            : "";
-                    getLogger().log(java.util.logging.Level.WARNING,
-                            "Discord broadcasting could not be started ("
-                                    + cause.getClass().getSimpleName() + "). Minecraft playback is unaffected."
-                                    + artifactGuidance, cause);
-                    discordBroadcastService = null;
-                }
+                });
             }
             scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);
@@ -353,14 +375,23 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     public void onDisable() {
         if (temporaryTrackCleanupTask != null) temporaryTrackCleanupTask.cancel();
         closeGeyserPackIntegration();
-        if (discordBroadcastService != null) {
+        AutoCloseable discordToClose;
+        synchronized (discordStartupLock) {
+            discordShuttingDown = true;
+            discordToClose = discordBroadcastService;
+            discordBroadcastService = null;
+        }
+        if (discordBootstrapExecutor != null) {
+            discordBootstrapExecutor.shutdownNow();
+            discordBootstrapExecutor = null;
+        }
+        if (discordToClose != null) {
             try {
-                discordBroadcastService.close();
+                discordToClose.close();
             } catch (Exception discordCloseError) {
                 getLogger().warning("Discord broadcaster shutdown encountered an error ("
                         + discordCloseError.getClass().getSimpleName() + ").");
             }
-            discordBroadcastService = null;
         }
         if (playback != null) playback.stopAll();
         if (processor != null) processor.close();
