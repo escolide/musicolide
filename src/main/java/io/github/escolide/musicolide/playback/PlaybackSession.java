@@ -51,7 +51,7 @@ public final class PlaybackSession {
     public String ownerName() { return ownerName; }
     public long startedAt() { return startedAt; }
     public MusicZone zone() { return zone; }
-    public MusicTrack current() { return current; }
+    public synchronized MusicTrack current() { return current; }
     /** Original catalogue track or the temporary OGG tail currently being played. */
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
     public synchronized boolean paused() { return paused; }
@@ -59,8 +59,8 @@ public final class PlaybackSession {
     public synchronized boolean clockStarted() { return clockStarted; }
     /** Changes whenever this session starts a new track timeline, including a restart of the same track. */
     public synchronized long timelineGeneration() { return timelineGeneration; }
-    public int priority() { return priority; }
-    public void priority(int priority) { this.priority = priority; }
+    public synchronized int priority() { return priority; }
+    public synchronized void priority(int priority) { this.priority = priority; }
     public synchronized double speed() { return speed; }
     public synchronized Double pendingSpeed() { return pendingSpeed; }
 
