@@ -45,7 +45,7 @@ audio:
     # When enabled by an administrator, /play <url> imports a YouTube URL.
     # Imports remain admin-only and must be authorized for download and redistribution.
     # Keep false unless the server operator has confirmed those rights.
-    auto-import-on-play: false
+    auto-import-on-play: true
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
     # URL-imported packs become eligible for expiry this many minutes after import.
