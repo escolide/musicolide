@@ -8,6 +8,7 @@ import moe.kyokobot.libdave.jda.LDJDADaveSessionFactory;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.audio.AudioModuleConfig;
+import net.dv8tion.jda.api.audio.hooks.ConnectionStatus;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
@@ -53,6 +54,8 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private boolean permissionWarningLogged;
     private boolean ffmpegUnavailableLogged;
     private boolean voiceWasConnected;
+    private boolean hasEverConnected;
+    private long lastVoiceConnectAttemptNanos;
     private long lastRestartAttemptNanos;
 
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
@@ -165,14 +168,27 @@ public final class DiscordBroadcastService implements AutoCloseable {
 
         AudioManager audio = guild.getAudioManager();
         audio.setSendingHandler(sendHandler);
+        audio.setAutoReconnect(reconnectAndResync);
         if (audio.isConnected() && !channel.equals(audio.getConnectedChannel())) {
-            audio.closeAudioConnection();
+            // JDA moves an existing voice connection directly; closing it first
+            // creates an avoidable disconnect/reconnect window.
+            audio.openAudioConnection(channel);
+            streamer.stop();
+            lastTimelineKey = null;
+            voiceWasConnected = false;
+            return;
         }
         if (!audio.isConnected()) {
             streamer.stop();
             lastTimelineKey = null;
-            if (reconnectAndResync && !audio.isAttemptingToConnect()) {
+            ConnectionStatus connectionStatus = audio.getConnectionStatus();
+            boolean initialConnection = !hasEverConnected;
+            boolean retryAllowed = initialConnection || reconnectAndResync;
+            long now = System.nanoTime();
+            if (retryAllowed && connectionStatus == ConnectionStatus.NOT_CONNECTED
+                    && now - lastVoiceConnectAttemptNanos >= TimeUnit.SECONDS.toNanos(5)) {
                 audio.openAudioConnection(channel);
+                lastVoiceConnectAttemptNanos = now;
             }
             voiceWasConnected = false;
             return;
@@ -184,6 +200,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
             streamer.stop();
             lastTimelineKey = null;
             voiceWasConnected = true;
+            hasEverConnected = true;
         }
 
         if (!toolchain.isInitialized()) {
