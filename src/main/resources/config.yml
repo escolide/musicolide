@@ -60,6 +60,13 @@ audio:
     blocked-hosts:
       - "spotify.com"
       - "soundcloud.com"
+    # YouTube search returns metadata only. Audio is downloaded only after /music select.
+    search:
+      # Number of results shown to players (1-20).
+      result-count: 6
+      # Prefer official audio/music videos, lyrics and Topic-channel uploads.
+      # This is heuristic ranking, not a strict filter; disable to keep YouTube's order.
+      prioritize-songs: true
   sample-rate: 44100
   # Used only when audio.playback-mode is 'segmented'.
   segment-duration-ms: 1000
@@ -72,6 +79,7 @@ audio:
     timeout-seconds: 1800
     probe-timeout-seconds: 30
     yt-dlp-timeout-seconds: 600
+    yt-dlp-search-timeout-seconds: 45
     ffmpeg-threads: 1
 
 resource-packs:
