@@ -3,6 +3,7 @@ package io.github.escolide.musicolide.audio;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
 import io.github.escolide.musicolide.storage.TrackRepository;
+import io.github.escolide.musicolide.util.LinkNormalizer;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
@@ -27,6 +28,8 @@ public final class AudioProcessor implements AutoCloseable {
     private final ResourcePackBuilder packBuilder;
     private final NativeToolchain toolchain;
     private final ThreadPoolExecutor worker;
+    private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightUrlImports =
+            new ConcurrentHashMap<>();
 
     public AudioProcessor(JavaPlugin plugin, TrackRepository repository, ResourcePackBuilder packBuilder,
                           NativeToolchain toolchain) {
@@ -66,6 +69,22 @@ public final class AudioProcessor implements AutoCloseable {
      * before FFmpeg is launched.
      */
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
+        String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
+        if (sourceKey.isBlank()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("The source URL is invalid."));
+        }
+
+        // Check the persistent alias before checking native tools or queueing a job.
+        // A previously imported video must not be downloaded again just because
+        // yt-dlp is currently unavailable or a second player pasted another URL variant.
+        try {
+            Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
+            if (existing.isPresent()) return CompletableFuture.completedFuture(existing.get());
+        } catch (SQLException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Could not check the existing URL catalogue entry.", ex));
+        }
+
         if (!toolchain.isInitialized()) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
@@ -82,26 +101,47 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "FFmpeg must be installed or downloaded before audio can be imported."));
         }
+
+        CompletableFuture<MusicTrack> result = new CompletableFuture<>();
+        CompletableFuture<MusicTrack> active = inFlightUrlImports.putIfAbsent(sourceKey, result);
+        if (active != null) return active;
+
         try {
-            return CompletableFuture.supplyAsync(() -> {
-                Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
+            worker.execute(() -> {
                 Path temporary = null;
                 try {
+                    Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
                     Files.createDirectories(incoming);
                     temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
-                    Path downloaded = new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
-                    String relative = incoming.relativize(downloaded).toString();
-                    return processFile(relative, requestedTitle, true);
-                } catch (Exception ex) {
-                    throw new CompletionException(ex);
+                    YtDlpDownloader.DownloadResult download =
+                            new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
+                    String relative = incoming.relativize(download.audioFile()).toString();
+                    MusicTrack imported = processFile(relative, requestedTitle, true,
+                            download.title(), download.artist());
+
+                    // LinkNormalizer maps YouTube watch, youtu.be, music.youtube.com,
+                    // and Shorts URLs to the same youtube:<video-id> key.
+                    try {
+                        repository.addAlias(sourceKey, imported.id());
+                    } catch (SQLException aliasError) {
+                        plugin.getLogger().warning("Imported " + imported.title()
+                                + " but could not save its source-ID alias: " + aliasError.getMessage());
+                    }
+                    result.complete(imported);
+                } catch (Throwable ex) {
+                    result.completeExceptionally(ex instanceof CompletionException && ex.getCause() != null
+                            ? ex.getCause() : ex);
                 } finally {
                     deleteQuietly(temporary);
+                    inFlightUrlImports.remove(sourceKey, result);
                 }
-            }, worker);
+            });
         } catch (RejectedExecutionException ex) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
+            inFlightUrlImports.remove(sourceKey, result);
+            result.completeExceptionally(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
         }
+        return result;
     }
 
     public List<NativeToolchain.ToolStatus> toolStatuses() {
@@ -109,6 +149,11 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "");
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist) {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
@@ -136,8 +181,10 @@ public final class AudioProcessor implements AutoCloseable {
                 throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
             }
 
-            String rawTitle = requestedTitle == null || requestedTitle.isBlank()
-                    ? stripExtension(source.getFileName().toString()) : requestedTitle.trim();
+            String rawTitle = requestedTitle != null && !requestedTitle.isBlank() ? requestedTitle.trim()
+                    : metadataTitle != null && !metadataTitle.isBlank() ? metadataTitle.trim()
+                    : stripExtension(source.getFileName().toString());
+            String artist = metadataArtist == null ? "" : metadataArtist.trim();
             String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
             // The ms_ namespace marks the new single-file streaming format. The
             // older mc_ namespace remains readable for tracks imported with segments.
@@ -194,7 +241,7 @@ public final class AudioProcessor implements AutoCloseable {
             packBuilder.buildBasePack();
 
             String sha1 = sha1(generatedPack);
-            MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
+            MusicTrack track = new MusicTrack(id, rawTitle, artist, namespace, generatedPack.getFileName().toString(),
                     sha1, durationMs, segmentMs, segmentCount, Files.size(generatedPack));
             if (temporaryUrlImport) {
                 long retentionMinutes = bounded(
