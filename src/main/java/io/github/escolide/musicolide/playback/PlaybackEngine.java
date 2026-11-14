@@ -742,14 +742,14 @@ public final class PlaybackEngine {
                 // let late clients use the automatic per-player catch-up path.
                 if (hasPendingJavaRecipient && !hasReadyJavaRecipient) continue;
 
-                String trackKey = barrierTrackKey(session, track);
+                String timedOutTrackKey = barrierTrackKey(session, track);
                 for (Player player : online) {
                     Candidate candidate = winners.get(player.getUniqueId());
                     if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
                     if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
                     if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
                     if (!packs.isReady(player, track) && !packs.isDeclined(player, track)) {
-                        barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                        barrierExcludedTracks.put(player.getUniqueId(), timedOutTrackKey);
                     }
                 }
                 session.startClockIfNeeded();
