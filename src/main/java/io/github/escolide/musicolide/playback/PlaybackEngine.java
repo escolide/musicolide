@@ -259,7 +259,20 @@ public final class PlaybackEngine {
 
     /** Explicitly retries the Java music-library request for this player. */
     public boolean requestLibrary(Player player) {
-        return packs.requestLibrary(player, true);
+        boolean requestedLibrary = packs.requestLibrary(player, true);
+        List<MusicTrack> currentTracks;
+        synchronized (this) {
+            currentTracks = sessions.stream()
+                    .filter(session -> session.targets(player.getUniqueId()))
+                    .map(PlaybackSession::playbackTrack)
+                    .filter(Objects::nonNull)
+                    .toList();
+        }
+        boolean requestedTrack = false;
+        for (MusicTrack track : currentTracks) {
+            requestedTrack |= packs.retryTrack(player, track);
+        }
+        return requestedLibrary || requestedTrack;
     }
 
     public int getPlayerVolume(Player player) {
