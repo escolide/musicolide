@@ -630,14 +630,25 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             targets.add(target);
         }
 
+        boolean limited = plugin.getConfig().getString("playback.range.vertical.mode", "unlimited")
+                .equalsIgnoreCase("limited");
+        double vertical = plugin.getConfig().getDouble("playback.range.vertical.max-distance", 32);
+        if (!Double.isFinite(radius) || !Double.isFinite(width) || !Double.isFinite(length)
+                || !Double.isFinite(fade) || radius < 0 || width <= 0 || length <= 0 || fade < 0
+                || limited && (!Double.isFinite(vertical) || vertical < 0)) {
+            throw new IllegalArgumentException(
+                    "Zone dimensions and enabled vertical limits must be finite; radius/fade cannot be negative and square dimensions must be positive.");
+        }
+        if (region != null && !playback.canUseWorldGuardRegions()) {
+            throw new IllegalArgumentException(
+                    "--region requires WorldGuard installed and worldguard.enabled: true with a compatible API.");
+        }
+
         MusicZone zone = MusicZone.global();
         if (spatialOption) {
             if (!(sender instanceof Player center)) {
                 throw new IllegalArgumentException("Spatial range options require an in-game player as the command sender.");
             }
-            boolean limited = plugin.getConfig().getString("playback.range.vertical.mode", "unlimited")
-                    .equalsIgnoreCase("limited");
-            double vertical = plugin.getConfig().getDouble("playback.range.vertical.max-distance", 32);
             if (region != null) {
                 zone = MusicZone.region(center.getWorld().getUID(), region);
             } else if (square) {
@@ -650,11 +661,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 zone = MusicZone.circle(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
                         radius, limited, vertical, fadeEnabled, fade);
             }
-        }
-
-        if (!Double.isFinite(radius) || !Double.isFinite(width) || !Double.isFinite(length)
-                || !Double.isFinite(fade) || radius < 0 || width <= 0 || length <= 0 || fade < 0) {
-            throw new IllegalArgumentException("Zone dimensions must be finite and positive.");
         }
 
         return new PlayRequest(zone, all, all ? List.of()
