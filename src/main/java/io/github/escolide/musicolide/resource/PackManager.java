@@ -145,7 +145,10 @@ public final class PackManager {
 
         String hash = pack.sha1();
         if (hash.equals(libraryReadyHash.get(playerId))) return true;
-        if (hash.equals(libraryRequestedHash.get(playerId))) return false;
+        // Do not start a second pack application while an earlier library
+        // revision is still downloading. The terminal status handler checks
+        // whether a newer revision exists and requests only the latest one.
+        if (libraryRequestedHash.containsKey(playerId)) return false;
         if (hash.equals(libraryDeclinedHash.get(playerId))) return false;
 
         if (!publicBaseUrl.isDone()) {
