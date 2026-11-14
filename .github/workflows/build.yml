@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: ["master", "implementation/**"]
+    branches: ["master", "implementation/**", "feature/discord-broadcast"]
   pull_request:
   workflow_dispatch:
 
