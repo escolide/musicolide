@@ -65,6 +65,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("resource-packs.download-mode", "on-play");
             migratedConfig = true;
         }
+        // Existing installations keep Bedrock playback unless an administrator
+        // explicitly enables the complete Bedrock exclusion option.
+        if (!getConfig().contains("geyser.ignore-bedrock-players")) {
+            getConfig().set("geyser.ignore-bedrock-players", false);
+            migratedConfig = true;
+        }
         // Add optional Discord settings to existing installations without
         // overwriting any token, channel ID, or administrator preference.
         if (!getConfig().contains("discord.enabled")) {
@@ -178,7 +184,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 publicBaseUrl = CompletableFuture.failedFuture(new IllegalStateException(
                         "server.public-base-url is empty and server.auto-detect-public-address is disabled."));
             }
-            packManager = new PackManager(this, builder, publicPort, publicBaseUrl);
+            packManager = new PackManager(this, builder, publicPort, publicBaseUrl, geyserBridge);
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {
@@ -350,11 +356,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onResourcePackStatus(PlayerResourcePackStatusEvent event) {
+        if (playback != null && playback.isIgnoredBedrockPlayer(event.getPlayer().getUniqueId())) return;
         if (packManager != null) packManager.status(event.getPlayer().getUniqueId(), event.getID(), event.getStatus());
     }
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
+        if (playback != null && playback.isIgnoredBedrockPlayer(event.getPlayer().getUniqueId())) return;
         if (playback != null) playback.onJoin(event.getPlayer());
         if (packManager != null && getConfig().getString(
                 "resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
