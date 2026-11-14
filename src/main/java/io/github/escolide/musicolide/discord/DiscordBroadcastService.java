@@ -15,6 +15,7 @@ import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
 import net.dv8tion.jda.api.managers.AudioManager;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.requests.GatewayIntent;
+import net.dv8tion.jda.api.utils.cache.CacheFlag;
 import net.dv8tion.jda.api.utils.Status;
 
 import java.nio.file.Path;
@@ -53,6 +54,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private boolean missingChannelLogged;
     private boolean permissionWarningLogged;
     private boolean ffmpegUnavailableLogged;
+    private boolean terminalLoginFailureLogged;
     private boolean voiceWasConnected;
     private boolean hasEverConnected;
     private long lastVoiceConnectAttemptNanos;
@@ -105,6 +107,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
             JDA client = JDABuilder.createLight(token,
                             GatewayIntent.GUILDS, GatewayIntent.GUILD_VOICE_STATES)
                     .setAutoReconnect(true)
+                    .enableCache(CacheFlag.VOICE_STATE)
                     .setAudioModuleConfig(new AudioModuleConfig().withDaveSessionFactory(
                             new LDJDADaveSessionFactory(new NativeDaveFactory())))
                     .build();
@@ -132,7 +135,21 @@ public final class DiscordBroadcastService implements AutoCloseable {
 
     private void tick() {
         JDA client = jda;
-        if (client == null || client.getStatus() != Status.CONNECTED) {
+        if (client == null) return;
+        Status gatewayStatus = client.getStatus();
+        if (gatewayStatus == Status.FAILED_TO_LOGIN || gatewayStatus == Status.SHUTDOWN
+                || gatewayStatus == Status.SHUTTING_DOWN) {
+            streamer.stop();
+            lastTimelineKey = null;
+            if (!terminalLoginFailureLogged) {
+                logger.warning("Discord connection ended (" + gatewayStatus
+                        + "). Check the bot token and Discord application settings. Minecraft playback is unaffected.");
+                terminalLoginFailureLogged = true;
+            }
+            close();
+            return;
+        }
+        if (gatewayStatus != Status.CONNECTED) {
             streamer.stop();
             lastTimelineKey = null;
             voiceWasConnected = false;
