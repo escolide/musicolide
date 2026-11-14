@@ -93,10 +93,10 @@ public final class ResourcePackBuilder {
             throw new IOException("The streamed OGG file is missing or empty.");
         }
         Path output = packsDirectory.resolve(namespace + ".zip");
-        String soundsJson = "{\\n"
-                + "  \\\"music\\\": {\\\"sounds\\\":[{\\\"name\\\":\\\"" + namespace
-                + ":music\\\",\\\"stream\\\":true}]}\\n"
-                + "}\\n";
+        String soundsJson = "{\n"
+                + "  \"music\": {\"sounds\":[{\"name\":\"" + namespace
+                + ":music\",\"stream\":true}]}\n"
+                + "}\n";
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
             add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
