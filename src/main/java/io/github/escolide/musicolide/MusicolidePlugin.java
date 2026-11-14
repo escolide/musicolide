@@ -17,6 +17,7 @@ import io.github.escolide.musicolide.resource.ResourcePackFormat;
 import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
 import io.github.escolide.musicolide.runtime.DiscordRuntimeBundle;
 import io.github.escolide.musicolide.storage.TrackRepository;
+import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -41,6 +42,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private NativeToolchain nativeToolchain;
     private PackManager packManager;
     private PlaybackEngine playback;
+    private DiscordAccountLinkManager accountLinks;
     private AutoCloseable discordBroadcastService;
     private ExecutorService discordBootstrapExecutor;
     private final Object discordStartupLock = new Object();
@@ -107,6 +109,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             cleanup.failures().forEach(failure ->
                     getLogger().warning("Could not clean an abandoned temporary entry: " + failure));
             repository = new TrackRepository(data.resolve("musicolide.db"));
+            accountLinks = new DiscordAccountLinkManager(data.resolve("discord-links.db"), getLogger());
 
             String serverVersion = Bukkit.getBukkitVersion();
             ResourcePackFormat packFormat = ResourcePackFormat.forMinecraftVersion(serverVersion);
@@ -203,6 +206,19 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             }
             playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
+            scheduleTemporaryTrackCleanup();
+            MusicCommand command = new MusicCommand(this, repository, processor, playback, accountLinks);
+            if (getCommand("music") != null) {
+                getCommand("music").setExecutor(command);
+                getCommand("music").setTabCompleter(command);
+            }
+            if (getCommand("play") != null) {
+                getCommand("play").setExecutor(command::onPlayCommand);
+                getCommand("play").setTabCompleter(command::onPlayTabComplete);
+            }
+            if (getCommand("link") != null) getCommand("link").setExecutor(command::onLinkCommand);
+            if (getCommand("unlink") != null) getCommand("unlink").setExecutor(command::onUnlinkCommand);
+
             if (getConfig().getBoolean("discord.enabled", false)) {
                 // Runtime extraction and a first-use native download can be slow.
                 // Keep all of that work away from the Bukkit main thread.
@@ -214,7 +230,8 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 discordBootstrapExecutor.execute(() -> {
                     AutoCloseable startedService = null;
                     try {
-                        startedService = DiscordRuntimeBundle.start(this, playback, nativeToolchain);
+                        startedService = DiscordRuntimeBundle.start(
+                                this, playback, nativeToolchain, command, accountLinks);
                         synchronized (discordStartupLock) {
                             if (!discordShuttingDown) {
                                 discordBroadcastService = startedService;
@@ -229,7 +246,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                             cause = cause.getCause();
                         }
                         getLogger().log(java.util.logging.Level.WARNING,
-                                "Discord broadcasting could not be started ("
+                                "Discord services could not be started ("
                                         + cause.getClass().getSimpleName()
                                         + "). Minecraft playback is unaffected. Check the server OS/CPU support "
                                         + "and outbound HTTPS access to Maven Central.", cause);
@@ -244,16 +261,6 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                         }
                     }
                 });
-            }
-            scheduleTemporaryTrackCleanup();
-            MusicCommand command = new MusicCommand(this, repository, processor, playback);
-            if (getCommand("music") != null) {
-                getCommand("music").setExecutor(command);
-                getCommand("music").setTabCompleter(command);
-            }
-            if (getCommand("play") != null) {
-                getCommand("play").setExecutor(command::onPlayCommand);
-                getCommand("play").setTabCompleter(command::onPlayTabComplete);
             }
             Bukkit.getPluginManager().registerEvents(this, this);
             getLogger().info("Musicolide enabled. Import rights-cleared audio into plugins/Musicolide/incoming/.");
@@ -414,6 +421,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             } catch (Exception ex) {
                 getLogger().warning("Could not fully close the resource-pack server: " + ex.getMessage());
             }
+        }
+        if (accountLinks != null) {
+            accountLinks.close();
+            accountLinks = null;
         }
         if (repository != null) {
             try { repository.close(); }
