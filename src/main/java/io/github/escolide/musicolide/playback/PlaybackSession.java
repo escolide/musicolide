@@ -51,6 +51,10 @@ public final class PlaybackSession {
     public String ownerName() { return ownerName; }
     public long startedAt() { return startedAt; }
     public MusicZone zone() { return zone; }
+    /** True only for sessions explicitly addressed to all players in the global zone. */
+    public boolean isServerWideGlobalSession() {
+        return allPlayers && zone.shape() == MusicZone.Shape.GLOBAL;
+    }
     public synchronized MusicTrack current() { return current; }
     /** Original catalogue track or the temporary OGG tail currently being played. */
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
