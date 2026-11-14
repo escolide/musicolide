@@ -90,7 +90,7 @@ resource-packs:
     enabled: true
     max-size-gb: 5
     retain-unused-files-days: 30
-    remove-pack-after-session: true
+    remove-pack-after-session: false
 
 playback:
   default-volume: 100
