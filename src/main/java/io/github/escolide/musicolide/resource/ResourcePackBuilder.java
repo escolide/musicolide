@@ -112,7 +112,9 @@ public final class ResourcePackBuilder {
      * bytes being fetched for the previous revision.
      */
     public synchronized void cleanupLibraryArchives(Set<String> retainedHashes) throws IOException {
-        Set<String> keep = retainedHashes == null ? Set.of() : Set.copyOf(retainedHashes);
+        Set<String> keep = new HashSet<>(retainedHashes == null ? Set.of() : retainedHashes);
+        BasePackInfo current = currentBasePackInfo;
+        if (current != null) keep.add(current.sha1());
         try (var files = Files.list(packsDirectory)) {
             for (Path path : files.filter(Files::isRegularFile).toList()) {
                 String name = path.getFileName().toString();
