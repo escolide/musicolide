@@ -25,6 +25,7 @@ public final class PlaybackSession {
     private boolean paused;
     private boolean resumePreparing;
     private long resumeGeneration;
+    private long timelineGeneration;
     private boolean clockStarted;
     private boolean repeat;
     private int priority;
@@ -54,6 +55,8 @@ public final class PlaybackSession {
     public synchronized boolean paused() { return paused; }
     public synchronized boolean resumePreparing() { return resumePreparing; }
     public synchronized boolean clockStarted() { return clockStarted; }
+    /** Changes whenever this session starts a new track timeline, including a restart of the same track. */
+    public synchronized long timelineGeneration() { return timelineGeneration; }
     public int priority() { return priority; }
     public void priority(int priority) { this.priority = priority; }
     public void repeat(boolean repeat) { this.repeat = repeat; }
@@ -84,6 +87,7 @@ public final class PlaybackSession {
     public synchronized void enqueue(MusicTrack track) { queue.addLast(track); }
 
     public synchronized boolean advance() {
+        timelineGeneration++;
         if (queue.isEmpty() && repeat && !repeatSource.isEmpty()) queue.addAll(repeatSource);
         resumeGeneration++;
         resumePreparing = false;
@@ -127,6 +131,7 @@ public final class PlaybackSession {
     /** Existing behaviour for legacy segmented and continuous modes. */
     public synchronized void resume() {
         if (!paused || current == null) return;
+        timelineGeneration++;
         resumeGeneration++;
         resumePreparing = false;
         pendingOffsetMs = -1L;
@@ -153,6 +158,7 @@ public final class PlaybackSession {
      */
     public synchronized long beginResumePreparation() {
         if (!paused || current == null || !current.isStreamed() || resumePreparing) return -1L;
+        timelineGeneration++;
         resumePreparing = true;
         pendingOffsetMs = pausedOffsetMs;
         resumeAfterPreparation = true;
@@ -165,6 +171,7 @@ public final class PlaybackSession {
      */
     public synchronized long beginSeekPreparation(long targetMs) {
         if (current == null || !current.isStreamed() || resumePreparing) return -1L;
+        timelineGeneration++;
         boolean wasPlaying = !paused;
         if (wasPlaying) pausedOffsetMs = elapsedMs();
         paused = true;
@@ -207,6 +214,7 @@ public final class PlaybackSession {
 
     public synchronized void seek(long millis) {
         if (current == null) return;
+        timelineGeneration++;
         if (current.isStreamed()) {
             throw new IllegalArgumentException(
                     "Seeking within continuous streamed tracks requires resumable playback mode.");
