@@ -137,26 +137,20 @@ public final class AudioProcessor implements AutoCloseable {
             String rawTitle = requestedTitle == null || requestedTitle.isBlank()
                     ? stripExtension(source.getFileName().toString()) : requestedTitle.trim();
             String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
-            String namespace = "mc_" + id.replace('-', '_');
+            // The ms_ namespace marks the new single-file streaming format. The
+            // older mc_ namespace remains readable for tracks imported with segments.
+            String namespace = "ms_" + id.replace('-', '_');
             if (!SAFE_ID.matcher(namespace).matches()) throw new IOException("Generated track identifier is invalid.");
 
-            int segmentMs = Math.max(500, plugin.getConfig().getInt("audio.segment-duration-ms", 1000));
-            int count = (int) Math.ceil(durationMs / (double) segmentMs);
             trackDirectory = data.resolve("tracks").resolve(id);
-            Path stereoDirectory = trackDirectory.resolve("stereo");
-            Files.createDirectories(stereoDirectory);
+            Files.createDirectories(trackDirectory);
+            Path streamedAudio = trackDirectory.resolve("music.ogg");
 
             int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
-            for (int i = 0; i < count; i++) {
-                double start = i * segmentMs / 1000.0;
-                double length = Math.min(segmentMs, durationMs - (long) i * segmentMs) / 1000.0;
-                String name = String.format(Locale.ROOT, "%05d.ogg", i);
-                runFfmpeg(ffmpeg, source, stereoDirectory.resolve(name), start, length, quality);
-            }
+            runFfmpeg(ffmpeg, source, streamedAudio, 0.0, durationMs / 1000.0, quality);
+            generatedPack = packBuilder.buildStreamed(namespace, streamedAudio);
 
-            generatedPack = packBuilder.build(namespace, trackDirectory, count, segmentMs);
-
-            // Segment OGGs are build intermediates and must not count against retained library storage.
+            // The streamed OGG is a build intermediate; the finished ZIP is retained.
             deleteTree(trackDirectory);
             trackDirectory = null;
 
@@ -168,8 +162,9 @@ public final class AudioProcessor implements AutoCloseable {
             }
 
             String sha1 = sha1(generatedPack);
+            int trackDurationMs = (int) Math.min(Integer.MAX_VALUE, Math.max(1L, durationMs));
             MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
-                    sha1, durationMs, segmentMs, count, Files.size(generatedPack));
+                    sha1, durationMs, trackDurationMs, 1, Files.size(generatedPack));
             if (temporaryUrlImport) {
                 long retentionMinutes = bounded(
                         plugin.getConfig().getInt("audio.url-import-retention-minutes", 15), 1, 1440);
