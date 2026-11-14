@@ -15,6 +15,15 @@ discord:
   # Rejoin after an unexpected voice disconnect and restart from Minecraft's current timer.
   reconnect-and-resync: true
 
+geyser:
+  # Completely exclude Geyser-identified Bedrock players from Musicolide:
+  # no Bedrock music pack, no Java or temporary packs, no playback, and no plugin messages.
+  # They are also excluded from playback audience/barrier decisions, so Java players
+  # continue normally. Geyser must be installed on this Paper server for detection.
+  # Enable before Bedrock players connect. Players already sent a pack must reconnect
+  # after changing this option so Geyser starts a new session without offering it.
+  ignore-bedrock-players: false
+
 server:
   hosting-mode: "shared-port"
   bind-address: "0.0.0.0"
@@ -48,8 +57,9 @@ audio:
   # segmented: legacy short OGG segments; pause/resume preserves position at segment timing.
   # continuous: one streamed OGG; resume restarts at the beginning (Minecraft exposes no stream seek).
   # resumable: one streamed OGG; resume creates a timestamped OGG tail with FFmpeg and a temporary pack.
-  # Timestamp-based resume is for Java clients. Mixed sessions with online Bedrock players use the
-  # compatible restart-from-beginning fallback because Geyser's aggregate pack is fixed at join time.
+  # Timestamp-based resume is for Java clients. Mixed sessions with supported (non-excluded)
+  # Bedrock players use the compatible restart-from-beginning fallback because Geyser's aggregate
+  # pack is fixed at join time. Set geyser.ignore-bedrock-players: true to exclude Bedrock entirely.
   playback-mode: "resumable"
   yt-dlp:
     enabled: true
