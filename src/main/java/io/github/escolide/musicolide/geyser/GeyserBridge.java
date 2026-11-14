@@ -84,6 +84,12 @@ public final class GeyserBridge {
      * Called from Geyser SessionJoinEvent. Geyser fires this after the Bedrock
      * client completes its initial resource-pack exchange and becomes play-ready.
      */
+    public void associatePlayer(UUID uuid, String identity) {
+        if (uuid != null && identity != null && !identity.isBlank()) {
+            readiness.associate(identity, uuid.toString());
+        }
+    }
+
     public boolean recordSessionReady(UUID uuid, String identity) {
         if (uuid == null || identity == null || identity.isBlank()) return false;
         return readiness.markReady(identity, uuid.toString()) && hasCurrentPackFor(uuid);
