@@ -362,69 +362,122 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private PlayRequest parseRequest(CommandSender sender, String[] args) {
-        boolean global = false;
-        UUID target = null;
+        String selector = null;
         double radius = plugin.getConfig().getDouble("playback.range.circle.radius", 60);
         double width = plugin.getConfig().getDouble("playback.range.square.width", 50);
         double length = plugin.getConfig().getDouble("playback.range.square.length", 50);
         String region = null;
+        boolean circle = false;
         boolean square = false;
-        boolean fadeEnabled = plugin.getConfig().getBoolean("playback.fade.enabled-by-default", false);
-        double fade = fadeEnabled ? plugin.getConfig().getDouble("playback.fade.distance", 10) : 0;
+        boolean fadeEnabled = false;
+        double fade = 0;
+
         for (int i = 2; i < args.length; i++) {
-            switch (args[i].toLowerCase(Locale.ROOT)) {
-                case "--all" -> global = true;
-                case "--player" -> {
-                    if (++i >= args.length) throw new IllegalArgumentException("--player requires a player name.");
-                    Player found = Bukkit.getPlayerExact(args[i]);
-                    if (found == null) throw new IllegalArgumentException("Player is not online: " + args[i]);
-                    target = found.getUniqueId();
-                }
+            String option = args[i].toLowerCase(Locale.ROOT);
+            switch (option) {
+                case "--all", "--player" -> throw new IllegalArgumentException(
+                        "Use @a, @p, @s, or a player name instead of --all/--player.");
                 case "--circle" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--circle requires a radius.");
-                    radius = Double.parseDouble(args[i]); square = false;
+                    radius = Double.parseDouble(args[i]);
+                    circle = true;
+                    square = false;
                 }
                 case "--square" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--square requires WIDTHxLENGTH.");
                     String[] dims = args[i].toLowerCase(Locale.ROOT).split("x", 2);
                     if (dims.length != 2) throw new IllegalArgumentException("Square dimensions must look like 50x50.");
-                    width = Double.parseDouble(dims[0]); length = Double.parseDouble(dims[1]); square = true;
+                    width = Double.parseDouble(dims[0]);
+                    length = Double.parseDouble(dims[1]);
+                    square = true;
+                    circle = false;
                 }
                 case "--fade" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--fade requires a distance.");
-                    fade = Double.parseDouble(args[i]); fadeEnabled = fade > 0;
+                    fade = Double.parseDouble(args[i]);
+                    fadeEnabled = fade > 0;
+                    if (fadeEnabled && !circle && !square && region == null) circle = true;
                 }
                 case "--region" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--region requires a region ID.");
                     region = args[i];
+                    circle = false;
+                    square = false;
+                }
+                default -> {
+                    if (option.startsWith("--")) {
+                        throw new IllegalArgumentException("Unknown play option: " + args[i]);
+                    }
+                    if (selector != null) {
+                        throw new IllegalArgumentException("Specify only one target: @a, @p, @s, or one player name.");
+                    }
+                    selector = args[i];
                 }
             }
         }
-        if (global && target != null) throw new IllegalArgumentException("Choose either --all or --player.");
-        if (!Double.isFinite(radius) || !Double.isFinite(width) || !Double.isFinite(length)
-                || !Double.isFinite(fade) || radius < 0 || width <= 0 || length <= 0 || fade < 0)
-            throw new IllegalArgumentException("Zone dimensions must be finite and positive.");
-        if (sender instanceof Player player) {
-            MusicZone zone;
-            boolean limited = plugin.getConfig().getString("playback.range.vertical.mode", "unlimited").equalsIgnoreCase("limited");
-            double vertical = plugin.getConfig().getDouble("playback.range.vertical.max-distance", 32);
-            if (global) zone = MusicZone.global();
-            else if (target != null) zone = MusicZone.global();
-            else if (region != null) zone = MusicZone.region(player.getWorld().getUID(), region);
-            else if (square) {
-                double rotation = plugin.getConfig().getString("playback.range.square.rotation", "world")
-                        .equalsIgnoreCase("player-facing") ? Math.toRadians(player.getLocation().getYaw()) : 0;
-                zone = MusicZone.square(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ(),
-                        width, length, rotation, limited, vertical, fadeEnabled, fade);
-            } else zone = MusicZone.circle(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ(),
-                    radius, limited, vertical, fadeEnabled, fade);
-            if (global) return new PlayRequest(zone, true, List.of(), 0, null);
-            if (target != null) return new PlayRequest(zone, false, List.of(target), 0, null);
-            return new PlayRequest(zone, true, List.of(), 0, null);
+
+        if (selector == null) {
+            if (sender instanceof Player) selector = "@s";
+            else throw new IllegalArgumentException("From console, specify a target such as @a or a player name.");
         }
-        if (!global && target == null) throw new IllegalArgumentException("From console, specify --all or --player <name>.");
-        return target != null ? new PlayRequest(MusicZone.global(), false, List.of(target), 0, null)
-                : new PlayRequest(MusicZone.global(), true, List.of(), 0, null);
+
+        boolean all = selector.equalsIgnoreCase("@a");
+        List<Player> targets = new ArrayList<>();
+        if (!all) {
+            Player target;
+            if (selector.equalsIgnoreCase("@s")) {
+                if (!(sender instanceof Player player)) {
+                    throw new IllegalArgumentException("@s requires the command sender to be a player.");
+                }
+                target = player;
+            } else if (selector.equalsIgnoreCase("@p")) {
+                if (!(sender instanceof Player source)) {
+                    throw new IllegalArgumentException("@p requires a player location; use @a or a player name from console.");
+                }
+                target = Bukkit.getOnlinePlayers().stream()
+                        .filter(candidate -> candidate.getWorld().equals(source.getWorld()))
+                        .min(Comparator.comparingDouble(candidate ->
+                                candidate.getLocation().distanceSquared(source.getLocation())))
+                        .orElseThrow(() -> new IllegalArgumentException("No online players are available for @p."));
+            } else {
+                target = Bukkit.getPlayerExact(selector);
+                if (target == null) {
+                    throw new IllegalArgumentException("Player is not online: " + selector);
+                }
+            }
+            targets.add(target);
+        }
+
+        boolean spatialOption = circle || square || region != null || fadeEnabled;
+        MusicZone zone = MusicZone.global();
+        if (spatialOption) {
+            if (!(sender instanceof Player center)) {
+                throw new IllegalArgumentException("Spatial range options require an in-game player as the command sender.");
+            }
+            boolean limited = plugin.getConfig().getString("playback.range.vertical.mode", "unlimited")
+                    .equalsIgnoreCase("limited");
+            double vertical = plugin.getConfig().getDouble("playback.range.vertical.max-distance", 32);
+            if (region != null) {
+                zone = MusicZone.region(center.getWorld().getUID(), region);
+            } else if (square) {
+                double rotation = plugin.getConfig().getString("playback.range.square.rotation", "world")
+                        .equalsIgnoreCase("player-facing")
+                        ? Math.toRadians(center.getLocation().getYaw()) : 0;
+                zone = MusicZone.square(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
+                        width, length, rotation, limited, vertical, fadeEnabled, fade);
+            } else {
+                zone = MusicZone.circle(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
+                        radius, limited, vertical, fadeEnabled, fade);
+            }
+        }
+
+        if (!Double.isFinite(radius) || !Double.isFinite(width) || !Double.isFinite(length)
+                || !Double.isFinite(fade) || radius < 0 || width <= 0 || length <= 0 || fade < 0) {
+            throw new IllegalArgumentException("Zone dimensions must be finite and positive.");
+        }
+
+        return new PlayRequest(zone, all, all ? List.of()
+                : List.of(targets.get(0).getUniqueId()), 0, null);
     }
 
     private void start(CommandSender sender, MusicTrack track, PlayRequest request) {
@@ -614,8 +667,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
         sender.sendMessage(msg("&f/music download &7- retry or request your music library"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
-        sender.sendMessage(msg("&f/play <track-or-url> [zone options] &7- short playback command"));
-        sender.sendMessage(msg("&f/music play <track-or-url> [--all|--player name|--circle r|--square WxL] [--fade n]"));
+        sender.sendMessage(msg("&f/play <track-or-url> [@a|@p|@s|playername] [zone options] &7- short playback command"));
+        sender.sendMessage(msg("&f/music play <track-or-url> [@a|@p|@s|playername] [--circle r|--square WxL|--region id] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
         sender.sendMessage(msg("&f/music volume <0-100>|mute|unmute|seek <seconds>|nowplaying"));
