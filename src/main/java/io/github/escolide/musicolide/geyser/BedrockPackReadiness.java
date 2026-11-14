@@ -1,44 +1,53 @@
 package io.github.escolide.musicolide.geyser;
 
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Tracks which immutable Bedrock library revision was offered to each player
- * and whether Geyser subsequently reported that connection as play-ready.
+ * Tracks which immutable Bedrock library revision was offered to each Bedrock
+ * connection identity, then associates that identity with the Java UUID once
+ * Geyser reports that the connection is play-ready.
  */
 public final class BedrockPackReadiness {
-    private final ConcurrentHashMap<UUID, String> offered = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<UUID, String> ready = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> offered = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> ready = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> identityByPlayer = new ConcurrentHashMap<>();
 
-    public void offered(UUID playerId, String revision) {
-        if (playerId == null || revision == null || revision.isBlank()) return;
-        ready.remove(playerId);
-        offered.put(playerId, revision);
+    public void offered(String identity, String revision) {
+        if (identity == null || identity.isBlank() || revision == null || revision.isBlank()) return;
+        ready.remove(identity);
+        offered.put(identity, revision);
     }
 
-    public boolean markReady(UUID playerId) {
-        if (playerId == null) return false;
-        String revision = offered.get(playerId);
+    public boolean markReady(String identity, String playerId) {
+        if (identity == null || identity.isBlank() || playerId == null || playerId.isBlank()) return false;
+        String revision = offered.get(identity);
         if (revision == null) return false;
-        ready.put(playerId, revision);
+        ready.put(identity, revision);
+        identityByPlayer.put(playerId, identity);
         return true;
     }
 
-    public boolean isReady(UUID playerId, String currentRevision) {
-        return playerId != null && currentRevision != null
-                && currentRevision.equals(ready.get(playerId));
+    public boolean isReady(String playerId, String currentRevision) {
+        if (playerId == null || currentRevision == null) return false;
+        String identity = identityByPlayer.get(playerId);
+        return identity != null && currentRevision.equals(ready.get(identity));
     }
 
-    public boolean isAwaiting(UUID playerId, String currentRevision) {
-        return playerId != null && currentRevision != null
-                && currentRevision.equals(offered.get(playerId))
-                && !currentRevision.equals(ready.get(playerId));
+    public boolean isAwaiting(String playerId, String currentRevision) {
+        if (playerId == null || currentRevision == null) return false;
+        String identity = identityByPlayer.get(playerId);
+        return identity != null && currentRevision.equals(offered.get(identity))
+                && !currentRevision.equals(ready.get(identity));
     }
 
-    public void remove(UUID playerId) {
-        if (playerId == null) return;
-        offered.remove(playerId);
-        ready.remove(playerId);
+    public void remove(String playerId, String identity) {
+        if (playerId != null) {
+            String mapped = identityByPlayer.remove(playerId);
+            if (identity == null) identity = mapped;
+        }
+        if (identity != null) {
+            offered.remove(identity);
+            ready.remove(identity);
+        }
     }
 }
