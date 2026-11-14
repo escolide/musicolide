@@ -18,9 +18,10 @@ java {
 }
 
 configurations {
-    // The DAVE native payload is packaged only in the Linux x86_64 production JAR.
-    // The universal JAR remains under the established size ceiling and runs without
-    // Discord voice on hosts where the optional DAVE native library is not bundled.
+    // Discord is an optional server-side feature. Keep its runtime stack out of the
+    // cross-platform universal JAR so that artifact retains the existing size limit.
+    discordRuntime
+    // The Linux x86_64 production JAR also receives the matching DAVE native payload.
     discordNativeLinux
 }
 
@@ -39,14 +40,18 @@ dependencies {
     implementation 'org.apache.commons:commons-compress:1.28.0'
     implementation 'org.tukaani:xz:1.10'
     implementation 'com.google.code.gson:gson:2.15.0'
-    // Discord voice output (JDA 6.7 requires a DAVE protocol implementation).
-    implementation 'net.dv8tion:JDA:6.7.0'
-    implementation 'moe.kyokobot.libdave:adapter-jda:0.1.2'
-    implementation 'moe.kyokobot.libdave:impl-jni:0.1.2'
-    // The Linux x86_64 DAVE native is added only to linuxShadowJar below.
+    // Compile the optional Discord broadcaster without pulling it into the universal runtime.
+    compileOnly 'net.dv8tion:JDA:6.7.0'
+    compileOnly 'moe.kyokobot.libdave:adapter-jda:0.1.2'
+    compileOnly 'moe.kyokobot.libdave:impl-jni:0.1.2'
+    // Runtime dependencies are shaded only into the Linux production JAR.
+    discordRuntime 'net.dv8tion:JDA:6.7.0'
+    discordRuntime 'moe.kyokobot.libdave:adapter-jda:0.1.2'
+    discordRuntime 'moe.kyokobot.libdave:impl-jni:0.1.2'
     discordNativeLinux 'moe.kyokobot.libdave:natives-linux-x86-64:0.1.2'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'net.dv8tion:JDA:6.7.0'
     testImplementation 'io.netty:netty-codec-http:4.1.115.Final'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -71,7 +76,8 @@ tasks.named('shadowJar', ShadowJar) {
 // the separate *-universal.jar artifact.
 tasks.register('linuxShadowJar', ShadowJar) {
     archiveClassifier = ''
-    configurations = [project.configurations.runtimeClasspath, project.configurations.discordNativeLinux]
+    configurations = [project.configurations.runtimeClasspath,
+                      project.configurations.discordRuntime, project.configurations.discordNativeLinux]
     from sourceSets.main.output
     mergeServiceFiles()
     exclude { details ->
