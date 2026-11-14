@@ -67,6 +67,26 @@ Linux and Windows use the FFmpeg-Builds LGPL variants. The macOS installer uses 
 Both the universal JAR and the Linux x86_64 slim JAR have build-time checks enforcing a strict 30 MiB maximum. The universal build is the recommended download when using different operating systems or changing hosting providers; the slim build is only for compatible Linux x86_64 deployments.
 
 The deployable universal plugin is `build/libs/musicolide-0.1.0-universal.jar`.
+## Discord voice broadcast (optional)
+
+Musicolide can broadcast the server's selected playback session into one Discord voice channel. It is **one-way only**: the bot does not register chat, slash-command, or interaction controls, and Discord members cannot play, pause, resume, skip, seek, change volume, or edit the Minecraft queue.
+
+After the first server start, configure the local `plugins/Musicolide/config.yml`:
+
+```yaml
+discord:
+  enabled: true
+  bot-token: "YOUR_DISCORD_BOT_TOKEN"
+  voice-channel-id: "YOUR_VOICE_CHANNEL_ID"
+  reconnect-and-resync: true
+```
+
+Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs **View Channel**, **Connect**, and **Speak** in the configured voice channel. It uses the same imported track archive already stored by Musicolide and FFmpeg to decode it for Discord; it does not re-download the source audio.
+
+The Minecraft session clock is authoritative. Pause, resume, seek, skip, track changes, playback speed and reconnect recovery are derived from read-only snapshots of that clock. If the bot disconnects, Minecraft continues uninterrupted. With `reconnect-and-resync: true`, the bot rejoins and starts from the current server timer instead of replaying stale buffered audio. Discord members joining or leaving the voice channel do not change the session.
+
+A single configured Discord channel can broadcast only one global session at a time. When more than one spatial/session playback exists, Musicolide selects a currently audible session first, then applies the configured overlap priority/oldest-session ordering. Discord cannot reproduce different per-player zone mixes because it has no Minecraft player position. This feature requires FFmpeg and DAVE-compatible native support for Linux x86_64 or Windows x86_64 in this build; unsupported native platforms disable Discord output only.
+
 ## Server setup
 
 1. Install the JAR in plugins/ and start Paper or Purpur once.
