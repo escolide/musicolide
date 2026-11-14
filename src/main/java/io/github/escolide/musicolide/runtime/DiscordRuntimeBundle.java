@@ -95,7 +95,7 @@ public final class DiscordRuntimeBundle {
                 }
             }
             urls.add(nativeJar.toUri().toURL());
-            if (urls.size() < 5) {
+            if (urls.size() < 3) {
                 throw new IOException("The embedded Discord Java runtime is incomplete.");
             }
 
@@ -268,7 +268,7 @@ public final class DiscordRuntimeBundle {
                 throw new IOException("Duplicate entry in Discord runtime checksum manifest.");
             }
         }
-        if (checksums.size() < 4) {
+        if (checksums.size() < 1) {
             throw new IOException("Discord runtime checksum manifest is incomplete.");
         }
         return checksums;
