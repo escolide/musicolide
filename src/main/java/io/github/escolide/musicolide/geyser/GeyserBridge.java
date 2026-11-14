@@ -86,12 +86,17 @@ public final class GeyserBridge {
      */
     public void associatePlayer(UUID uuid, String identity) {
         if (uuid != null && identity != null && !identity.isBlank()) {
+            // Geyser has authoritatively identified this connection as Bedrock.
+            // Cache it before the Bukkit player enters the normal playback tick so
+            // the Java pack manager cannot race ahead and offer a Java-only pack.
+            bedrockPlayers.put(uuid, true);
             readiness.associate(identity, uuid.toString());
         }
     }
 
     public boolean recordSessionReady(UUID uuid, String identity) {
         if (uuid == null || identity == null || identity.isBlank()) return false;
+        bedrockPlayers.put(uuid, true);
         return readiness.markReady(identity, uuid.toString()) && hasCurrentPackFor(uuid);
     }
 
