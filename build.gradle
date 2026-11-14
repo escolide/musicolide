@@ -32,6 +32,13 @@ dependencies {
     implementation 'org.apache.commons:commons-compress:1.28.0'
     implementation 'org.tukaani:xz:1.10'
     implementation 'com.google.code.gson:gson:2.15.0'
+    // Discord voice output (JDA 6.7 requires a DAVE protocol implementation).
+    implementation 'net.dv8tion:JDA:6.7.0'
+    implementation 'moe.kyokobot.libdave:adapter-jda:0.1.2'
+    implementation 'moe.kyokobot.libdave:impl-jni:0.1.2'
+    // Bundled DAVE natives for the primary Linux host and Windows development servers.
+    implementation 'moe.kyokobot.libdave:natives-linux-x86-64:0.1.2'
+    implementation 'moe.kyokobot.libdave:natives-win-x86-64:0.1.2'
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testImplementation 'io.netty:netty-codec-http:4.1.115.Final'
