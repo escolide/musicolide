@@ -63,6 +63,16 @@ public final class PlaybackSession {
     public boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
 
+    /** Checks whether a new /play request has the same audience and zone. */
+    public synchronized boolean matchesPlaybackRequest(boolean requestedAllPlayers,
+                                                       Collection<UUID> requestedListeners,
+                                                       MusicZone requestedZone) {
+        Set<UUID> listeners = new HashSet<>(requestedListeners == null ? List.of() : requestedListeners);
+        return allPlayers == requestedAllPlayers
+                && explicitListeners.equals(listeners)
+                && zone.sameAs(requestedZone);
+    }
+
     public synchronized boolean referencesTrack(String trackId) {
         if (trackId == null) return false;
         if (current != null && current.id().equals(trackId)) return true;
