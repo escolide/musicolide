@@ -9,6 +9,7 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import io.github.escolide.musicolide.util.CatalogMatcher;
 import io.github.escolide.musicolide.util.ExternalMetadataResolver;
 import io.github.escolide.musicolide.util.LinkNormalizer;
+import io.github.escolide.musicolide.util.TextUtil;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
@@ -236,13 +237,18 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String query = args.length > 1 ? String.join(" ", Arrays.copyOfRange(args, 1, args.length)) : "";
         List<MusicTrack> tracks = query.isBlank() ? repository.allTracks(50) : repository.search(query, 50);
         sender.sendMessage(msg("&bMusicolide tracks (&f" + tracks.size() + "&b):"));
-        for (MusicTrack track : tracks) sender.sendMessage(msg("&7- &f" + track.id() + " &8| &b" + track.title()
-                + " &8| &7" + format(track.durationMs())));
+        for (MusicTrack track : tracks) {
+            String title = TextUtil.truncate(track.title(), 48);
+            String artist = TextUtil.truncate(track.artist(), 28);
+            String details = artist.isBlank() ? title : title + " &7by &f" + artist;
+            sender.sendMessage(msg("&7- &f" + track.id() + " &8| &b" + details
+                    + " &8| &7" + format(track.durationMs())));
+        }
     }
 
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
-        if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music play <track> [--all|--player name|--circle radius|--square WxL|--region id] [--fade blocks]")); return; }
+        if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music play <track-or-url> [@a|@p|@s|playername] [zone options]")); return; }
         String input = args[1];
         PlayRequest parsed = parseRequest(sender, args);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority, input);
@@ -528,7 +534,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (playback.sessions().isEmpty()) { sender.sendMessage(msg("&eNo active music sessions.")); return; }
         for (PlaybackSession session : playback.sessions()) {
             MusicTrack track = session.current();
-            sender.sendMessage(msg("&b" + (track == null ? "Unknown" : track.title()) + " &7by " + session.ownerName()
+            String title = track == null ? "Unknown" : TextUtil.truncate(track.title(), 48);
+            String artist = track == null ? "" : TextUtil.truncate(track.artist(), 28);
+            sender.sendMessage(msg("&b" + title + (artist.isBlank() ? "" : " &7by &f" + artist)
+                    + " &7| " + session.ownerName()
                     + " &8| &7" + format(session.elapsedMs()) + " / " + format(track == null ? 0 : track.durationMs())
                     + (session.paused() ? " &e(PAUSED)" : "")));
         }
