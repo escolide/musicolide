@@ -62,7 +62,7 @@ public final class ResourcePackBuilder {
                             ZipEntry entry = entries.nextElement();
                             if (entry.isDirectory() || !entry.getName().startsWith("assets/")) continue;
                             String name = entry.getName();
-                            if (name.startsWith("/") || name.contains("../") || name.contains("\\\\")
+                            if (name.startsWith("/") || name.contains("../") || name.contains("\\")
                                     || name.contains("/..")) {
                                 throw new IOException("Unsafe asset path in " + archive.getFileName() + ": " + name);
                             }
@@ -114,15 +114,15 @@ public final class ResourcePackBuilder {
             sounds.put("s_" + id, namespace + "/stereo/" + id);
         }
 
-        StringBuilder soundsJson = new StringBuilder("{\\n");
+        StringBuilder soundsJson = new StringBuilder("{\n");
         int index = 0;
         for (Map.Entry<String, String> entry : sounds.entrySet()) {
-            soundsJson.append("  \\"").append(entry.getKey()).append("\\": {\\"sounds\\":[{\\"name\\":\\"")
-                    .append(namespace).append(':').append(entry.getValue()).append("\\",\\"stream\\":false}]}");
+            soundsJson.append("  \"").append(entry.getKey()).append("\": {\"sounds\":[{\"name\":\"")
+                    .append(namespace).append(':').append(entry.getValue()).append("\",\"stream\":false}]}");
             if (++index < sounds.size()) soundsJson.append(',');
-            soundsJson.append('\\n');
+            soundsJson.append('\n');
         }
-        soundsJson.append("}\\n");
+        soundsJson.append("}\n");
 
         String meta = format.toPackMcmeta();
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
@@ -142,10 +142,10 @@ public final class ResourcePackBuilder {
             throw new IOException("The streamed OGG file is missing or empty.");
         }
         Path output = packsDirectory.resolve(namespace + ".zip");
-        String soundsJson = "{\\n"
-                + "  \\"music\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
-                + ":music\\",\\"stream\\":true}]}\\n"
-                + "}\\n";
+        String soundsJson = "{\n"
+                + "  \"music\": {\"sounds\":[{\"name\":\"" + namespace
+                + ":music\",\"stream\":true}]}\n"
+                + "}\n";
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
             add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
