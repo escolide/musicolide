@@ -8,129 +8,178 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 public final class PackManager {
     private final JavaPlugin plugin;
-    private final ResourcePackBuilder.BasePackInfo basePack;
+    private final Supplier<ResourcePackBuilder.BasePackInfo> basePackSupplier;
     private final int detectedPublicPort;
     private final CompletableFuture<String> publicBaseUrl;
-    private final Set<UUID> baseReady = ConcurrentHashMap.newKeySet();
-    private final Set<UUID> baseRequested = ConcurrentHashMap.newKeySet();
-    private final Set<UUID> baseDeclined = ConcurrentHashMap.newKeySet();
+
+    // One stable Java library pack contains all catalogue tracks.
+    private final Map<UUID, String> libraryReadyHash = new ConcurrentHashMap<>();
+    private final Map<UUID, String> libraryRequestedHash = new ConcurrentHashMap<>();
+    private final Map<UUID, String> libraryDeclinedHash = new ConcurrentHashMap<>();
+    private final Set<UUID> acceptedLibraryPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> waitingForPublicAddress = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> removeLibraryWhenReady = ConcurrentHashMap.newKeySet();
+
+    // Only temporary per-session remainder packs are sent separately.
     private final Map<UUID, Set<UUID>> ready = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> requested = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> declined = new ConcurrentHashMap<>();
     private final Map<UUID, LinkedHashMap<UUID, MusicTrack>> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> active = new ConcurrentHashMap<>();
-    // Packs whose download is in flight when playback no longer needs them.
-    // Remove them from the active client stack as soon as the status event arrives.
     private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
     private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
+    private final Path acceptedPlayersFile;
 
-    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort) {
-        this(plugin, basePack, detectedPublicPort,
-                CompletableFuture.completedFuture(plugin.getConfig().getString(
-                        "server.public-base-url", "http://127.0.0.1")));
-    }
-
-    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort,
+    public PackManager(JavaPlugin plugin,
+                       Supplier<ResourcePackBuilder.BasePackInfo> basePackSupplier,
+                       int detectedPublicPort,
                        CompletableFuture<String> publicBaseUrl) {
-        this.plugin = plugin;
-        this.basePack = Objects.requireNonNull(basePack, "basePack");
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
+        this.basePackSupplier = Objects.requireNonNull(basePackSupplier, "basePackSupplier");
         this.detectedPublicPort = detectedPublicPort;
         this.publicBaseUrl = Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
+        this.acceptedPlayersFile = plugin.getDataFolder().toPath().resolve("accepted-resource-pack-players.txt");
+        loadAcceptedPlayers();
     }
 
     public boolean isBaseDeclined(Player player) {
-        return baseDeclined.contains(player.getUniqueId());
+        String hash = currentLibraryHash();
+        return hash != null && hash.equals(libraryDeclinedHash.get(player.getUniqueId()));
     }
 
-    public boolean isReady(Player player, MusicTrack track) { return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId()); }
-    public boolean isDeclined(Player player, MusicTrack track) { return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId()); }
+    public boolean isReady(Player player, MusicTrack track) {
+        if (isTemporary(track)) {
+            return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
+        }
+        String hash = currentLibraryHash();
+        return hash != null && hash.equals(libraryReadyHash.get(player.getUniqueId()));
+    }
+
+    public boolean isDeclined(Player player, MusicTrack track) {
+        if (isTemporary(track)) {
+            return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
+        }
+        return isBaseDeclined(player);
+    }
 
     /**
-     * True while any Java client is downloading this pack. Expiry cleanup must
-     * leave the file in place until the resource-pack status event arrives.
+     * Requests the complete library. Calling this repeatedly is safe: an
+     * unchanged pack is neither resent nor removed. retry=true clears a prior
+     * decline for the current library version, for the explicit /music download
+     * recovery command.
+     */
+    public boolean requestLibrary(Player player, boolean retry) {
+        if (player == null || !player.isOnline()) return false;
+        String hash = currentLibraryHash();
+        if (hash == null) return false;
+        if (retry) libraryDeclinedHash.remove(player.getUniqueId(), hash);
+        return ensureLibrary(player);
+    }
+
+    /** Called after public-address discovery finishes, mainly for on-join delivery. */
+    public void publicAddressAvailable() {
+        for (UUID playerId : new HashSet<>(waitingForPublicAddress)) {
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null && player.isOnline()) ensureLibrary(player);
+            else waitingForPublicAddress.remove(playerId);
+        }
+    }
+
+    /**
+     * True while a client is downloading this pack. Because the Java library
+     * archive contains all catalogue assets, any library download protects any
+     * temporary catalogue track from retention cleanup until it completes.
      */
     public boolean isDownloadInProgress(UUID packId) {
+        if (!libraryRequestedHash.isEmpty()) return true;
         return requested.values().stream().anyMatch(requestedPacks -> requestedPacks.contains(packId));
     }
 
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming, int tracksAhead) {
-        // Send the tiny stable pack first. Paper/Minecraft shows its one-time
-        // server consent prompt only for the first request; track packs follow
-        // after consent and are downloaded asynchronously in the background.
-        if (!ensureBasePack(player)) return;
+        if (!ensureLibrary(player)) return;
 
-        UUID playerId = player.getUniqueId();
-        LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
+        // Normal tracks are already in the single library pack. Only FFmpeg
+        // generated resume/synchronization tails need their own temporary pack.
+        LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
+                player.getUniqueId(), ignored -> new LinkedHashMap<>());
         Set<UUID> desired = new HashSet<>();
-        long maxBytes = plugin.getConfig().getLong("resource-packs.prefetch.max-prefetch-mb-per-player", 40) * 1024L * 1024L;
-        long bytes = 0;
-        if (current != null) {
+        if (isTemporary(current)) {
             desired.add(current.packId());
-            bytes += current.packSizeBytes();
-            enqueueIfNeeded(playerId, queue, current);
+            enqueueIfNeeded(player.getUniqueId(), queue, current);
         }
         if (upcoming != null) {
             for (MusicTrack track : upcoming.stream().limit(Math.max(0, tracksAhead)).toList()) {
-                if (bytes + track.packSizeBytes() > maxBytes) break;
-                desired.add(track.packId());
-                bytes += track.packSizeBytes();
-                enqueueIfNeeded(playerId, queue, track);
-            }
-        }
-        queue.keySet().removeIf(id -> !desired.contains(id));
-        // A pack can become desired again while its download is still in flight.
-        // Cancel a deferred removal in that case.
-        removeWhenReady.computeIfPresent(playerId, (id, pending) -> {
-            pending.removeIf(desired::contains);
-            return pending.isEmpty() ? null : pending;
-        });
-        if (plugin.getConfig().getBoolean("resource-packs.cache.remove-pack-after-session", true)) {
-            Set<UUID> activeSet = active.get(playerId);
-            if (activeSet != null) {
-                for (UUID packId : new HashSet<>(activeSet)) {
-                    if (!desired.contains(packId)) {
-                        if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
-                            removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
-                        } else {
-                            removePack(player, playerId, packId);
-                        }
-                    }
+                if (isTemporary(track)) {
+                    desired.add(track.packId());
+                    enqueueIfNeeded(player.getUniqueId(), queue, track);
                 }
             }
         }
+        queue.keySet().removeIf(id -> !desired.contains(id));
+        removeWhenReady.computeIfPresent(player.getUniqueId(), (id, pending) -> {
+            pending.removeIf(desired::contains);
+            return pending.isEmpty() ? null : pending;
+        });
         pump(player);
     }
 
-    private boolean ensureBasePack(Player player) {
+    private boolean ensureLibrary(Player player) {
         UUID playerId = player.getUniqueId();
-        if (baseReady.contains(playerId)) return true;
-        if (baseDeclined.contains(playerId) || baseRequested.contains(playerId)) return false;
-        // Public-address discovery runs asynchronously. Playback ticks retry this
-        // check until the future resolves, without blocking the Paper main thread.
-        if (!publicBaseUrl.isDone()) return false;
+        ResourcePackBuilder.BasePackInfo pack;
+        try {
+            pack = basePackSupplier.get();
+        } catch (RuntimeException ex) {
+            plugin.getLogger().warning("The Musicolide Java library is unavailable: " + ex.getMessage());
+            return false;
+        }
+
+        String hash = pack.sha1();
+        if (hash.equals(libraryReadyHash.get(playerId))) return true;
+        if (hash.equals(libraryRequestedHash.get(playerId))) return false;
+        if (hash.equals(libraryDeclinedHash.get(playerId))) return false;
+
+        if (!publicBaseUrl.isDone()) {
+            waitingForPublicAddress.add(playerId);
+            return false;
+        }
 
         try {
-            String url = packUrl(basePack.fileName());
-            byte[] hash = HexFormat.of().parseHex(basePack.sha1());
-            player.addResourcePack(basePack.id(), url, hash,
-                    plugin.getConfig().getString("resource-packs.prompt", "Musicolide music pack"),
+            String url = packUrl(pack.fileName());
+            byte[] sha1 = HexFormat.of().parseHex(hash);
+            // The custom prompt is shown only until this UUID has successfully
+            // loaded the library once. Vanilla can reuse its cached SHA-1 later.
+            String prompt = acceptedLibraryPlayers.contains(playerId) ? null
+                    : plugin.getConfig().getString("resource-packs.prompt", "Musicolide music library");
+            libraryRequestedHash.put(playerId, hash);
+            waitingForPublicAddress.remove(playerId);
+            player.addResourcePack(pack.id(), url, sha1, prompt,
                     plugin.getConfig().getBoolean("resource-packs.required-on-first-use", false));
-            baseRequested.add(playerId);
         } catch (Exception ex) {
-            baseDeclined.add(playerId);
-            plugin.getLogger().warning("Could not send the initial Musicolide base pack to "
+            libraryRequestedHash.remove(playerId);
+            libraryDeclinedHash.put(playerId, hash);
+            plugin.getLogger().warning("Could not send the Musicolide Java library to "
                     + player.getName() + ": " + ex.getMessage());
         }
         return false;
+    }
+
+    private String currentLibraryHash() {
+        try {
+            ResourcePackBuilder.BasePackInfo pack = basePackSupplier.get();
+            return pack == null ? null : pack.sha1();
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     private String packUrl(String fileName) {
@@ -152,6 +201,10 @@ public final class PackManager {
         boolean sharedPortMode = plugin.getConfig().getString("server.hosting-mode", "shared-port")
                 .equalsIgnoreCase("shared-port");
         return PackUrlBuilder.build(base, prefix, fileName, detected, configured, sharedPortMode);
+    }
+
+    private boolean isTemporary(MusicTrack track) {
+        return track != null && track.namespace() != null && track.namespace().startsWith("mr_");
     }
 
     private void enqueueIfNeeded(UUID playerId, LinkedHashMap<UUID, MusicTrack> queue, MusicTrack track) {
@@ -180,29 +233,29 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         String url = packUrl(track.packFileName());
         try {
-            // The base pack already received the one-time consent prompt.
-            // No prompt is sent with subsequent per-track background packs.
-            player.addResourcePack(track.packId(), url, track.sha1Bytes(), null, false);
             requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(track.packId());
             active.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(track.packId());
             inFlight.merge(playerId, 1, Integer::sum);
+            player.addResourcePack(track.packId(), url, track.sha1Bytes(), null, false);
         } catch (Exception ex) {
-            plugin.getLogger().warning("Could not send resource pack " + track.id() + " to " + player.getName() + ": " + ex.getMessage());
+            requested.getOrDefault(playerId, Set.of()).remove(track.packId());
+            inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
+            plugin.getLogger().warning("Could not send temporary playback pack " + track.id()
+                    + " to " + player.getName() + ": " + ex.getMessage());
         }
     }
 
     /**
-     * Releases a temporary regenerated-audio pack after the session stops using it.
+     * Releases an FFmpeg-generated remainder after its session stops using it.
      * A pending client download is allowed to finish before its file is deleted.
      */
     public void releaseGeneratedTrack(MusicTrack track) {
-        if (track == null || track.namespace() == null || !track.namespace().startsWith("mr_")) return;
+        if (!isTemporary(track)) return;
         UUID packId = track.packId();
         Path directory = plugin.getDataFolder().toPath().resolve("packs").toAbsolutePath().normalize();
         Path file = directory.resolve(track.packFileName()).normalize();
         if (!file.startsWith(directory) || !track.packFileName().matches("[A-Za-z0-9_-]+\\.zip")) return;
 
-        // Remove queued-but-not-yet-sent references before deleting the file.
         for (LinkedHashMap<UUID, MusicTrack> queue : waiting.values()) queue.remove(packId);
         for (Map.Entry<UUID, Set<UUID>> entry : active.entrySet()) {
             UUID playerId = entry.getKey();
@@ -220,7 +273,7 @@ public final class PackManager {
     }
 
     private void deleteGeneratedFileIfIdle(UUID packId) {
-        if (isDownloadInProgress(packId)) return;
+        if (requested.values().stream().anyMatch(packs -> packs.contains(packId))) return;
         Path file = deleteGeneratedWhenIdle.remove(packId);
         if (file == null) return;
         try {
@@ -232,7 +285,22 @@ public final class PackManager {
     }
 
     public void releaseAll(Player player) {
+        if (!plugin.getConfig().getBoolean("resource-packs.cache.remove-pack-after-session", false)) {
+            // When disabled, keep the complete library and transient assets active
+            // for this connection. The vanilla client retains downloaded files too.
+            return;
+        }
         UUID playerId = player.getUniqueId();
+        ResourcePackBuilder.BasePackInfo library = basePackSupplier.get();
+        String readyHash = libraryReadyHash.remove(playerId);
+        if (readyHash != null || libraryRequestedHash.containsKey(playerId)) {
+            if (libraryRequestedHash.containsKey(playerId)) {
+                removeLibraryWhenReady.add(playerId);
+            } else {
+                try { player.removeResourcePack(library.id()); } catch (Exception ignored) {}
+            }
+        }
+
         Set<UUID> activeSet = active.get(playerId);
         if (activeSet != null) {
             for (UUID packId : new HashSet<>(activeSet)) {
@@ -259,36 +327,41 @@ public final class PackManager {
         if (deferred != null) deferred.remove(packId);
     }
 
-    /**
-     * ACCEPTED and DOWNLOADED are progress notifications, not completion.
-     * Keep the request in-flight until the client either applies the pack or
-     * reports a terminal result. Status names are used instead of enum
-     * constants for newer Paper values so the plugin remains binary-source
-     * compatible with the older compileOnly API.
-     */
     static boolean isPendingStatus(String statusName) {
         return "ACCEPTED".equals(statusName) || "DOWNLOADED".equals(statusName);
     }
 
-    public void status(UUID playerId, UUID packId, org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
+    public void status(UUID playerId, UUID packId,
+                       org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
         if (status == null) return;
         String statusName = status.name();
-
-        // Both values may arrive while the same download is still running.
-        // Clearing requested/baseRequested here makes the 5-tick playback
-        // loop enqueue and send the exact same pack repeatedly.
         if (isPendingStatus(statusName)) return;
 
-        if (basePack.id().equals(packId)) {
-            baseRequested.remove(playerId);
+        ResourcePackBuilder.BasePackInfo library = basePackSupplier.get();
+        if (library.id().equals(packId)) {
+            String requestedHash = libraryRequestedHash.remove(playerId);
+            if (requestedHash == null) return;
             if ("SUCCESSFULLY_LOADED".equals(statusName)) {
-                baseDeclined.remove(playerId);
-                baseReady.add(playerId);
+                libraryReadyHash.put(playerId, requestedHash);
+                libraryDeclinedHash.remove(playerId, requestedHash);
+                acceptedLibraryPlayers.add(playerId);
+                persistAcceptedPlayers();
+                if (removeLibraryWhenReady.remove(playerId)) {
+                    Player player = Bukkit.getPlayer(playerId);
+                    if (player != null) {
+                        try { player.removeResourcePack(library.id()); } catch (Exception ignored) {}
+                    }
+                    libraryReadyHash.remove(playerId, requestedHash);
+                }
+                // If the library changed during a download, request the current revision once.
+                String currentHash = currentLibraryHash();
+                if (currentHash != null && !currentHash.equals(requestedHash)) {
+                    Player player = Bukkit.getPlayer(playerId);
+                    if (player != null && player.isOnline()) ensureLibrary(player);
+                }
             } else {
-                // Every other non-progress status is terminal. Do not let an
-                // invalid URL, failed reload, or discard trigger a resend loop.
-                baseReady.remove(playerId);
-                baseDeclined.add(playerId);
+                libraryDeclinedHash.put(playerId, requestedHash);
+                if (removeLibraryWhenReady.remove(playerId)) removeLibraryWhenReady.remove(playerId);
             }
             return;
         }
@@ -310,10 +383,6 @@ public final class PackManager {
             }
         } else {
             ready.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).remove(packId);
-
-            // A discard caused by Musicolide removing a no-longer-needed pack
-            // must not poison that pack for a later session. A client discard
-            // of a pack that is still wanted is suppressed like a decline.
             boolean stillDesired = (!removeAfterDownload
                     && active.getOrDefault(playerId, Set.of()).contains(packId))
                     || waiting.getOrDefault(playerId, new LinkedHashMap<>()).containsKey(packId);
@@ -330,10 +399,42 @@ public final class PackManager {
         deleteGeneratedFileIfIdle(packId);
     }
 
+    private void loadAcceptedPlayers() {
+        try {
+            if (!Files.isRegularFile(acceptedPlayersFile)) return;
+            for (String line : Files.readAllLines(acceptedPlayersFile)) {
+                try { acceptedLibraryPlayers.add(UUID.fromString(line.trim())); }
+                catch (IllegalArgumentException ignored) {}
+            }
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not load resource-pack acceptance history: " + ex.getMessage());
+        }
+    }
+
+    private void persistAcceptedPlayers() {
+        try {
+            Files.createDirectories(acceptedPlayersFile.getParent());
+            List<String> lines = acceptedLibraryPlayers.stream().map(UUID::toString).sorted().toList();
+            Files.write(acceptedPlayersFile, lines, StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not save resource-pack acceptance history: " + ex.getMessage());
+        }
+    }
+
     public void removePlayer(UUID playerId) {
-        baseReady.remove(playerId); baseRequested.remove(playerId); baseDeclined.remove(playerId);
-        ready.remove(playerId); requested.remove(playerId); declined.remove(playerId);
-        waiting.remove(playerId); active.remove(playerId); removeWhenReady.remove(playerId); inFlight.remove(playerId);
+        libraryReadyHash.remove(playerId);
+        libraryRequestedHash.remove(playerId);
+        libraryDeclinedHash.remove(playerId);
+        waitingForPublicAddress.remove(playerId);
+        removeLibraryWhenReady.remove(playerId);
+        ready.remove(playerId);
+        requested.remove(playerId);
+        declined.remove(playerId);
+        waiting.remove(playerId);
+        active.remove(playerId);
+        removeWhenReady.remove(playerId);
+        inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
     }
 }
