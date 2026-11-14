@@ -11,6 +11,26 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaybackSessionTest {
     @Test
+    void playbackRequestMatchesOnlyTheSameAudienceAndZone() {
+        UUID owner = UUID.randomUUID();
+        UUID listener = UUID.randomUUID();
+        MusicZone zone = MusicZone.global();
+        PlaybackSession session = new PlaybackSession(owner, "tester",
+                zone, false, List.of(listener), List.of(sampleTrack("queue-current")), 0);
+
+        assertTrue(session.matchesPlaybackRequest(false, List.of(listener), MusicZone.global()));
+        assertFalse(session.matchesPlaybackRequest(true, List.of(), MusicZone.global()));
+        assertFalse(session.matchesPlaybackRequest(false, List.of(UUID.randomUUID()), MusicZone.global()));
+        assertFalse(session.matchesPlaybackRequest(false, List.of(listener),
+                MusicZone.circle(UUID.randomUUID(), 0, 64, 0, 20, false, 0, false, 0)));
+    }
+
+    private MusicTrack sampleTrack(String id) {
+        return new MusicTrack(id, id, "", "ms_" + id, id + ".zip",
+                "0000000000000000000000000000000000000000", 60000, 60000, 1, 1000);
+    }
+
+    @Test
     void sessionWaitsForFirstPackReadySignalAndSupportsSegmentSeeking() {
         MusicTrack track = new MusicTrack("demo", "Demo", "", "mc_demo", "demo.zip",
                 "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
