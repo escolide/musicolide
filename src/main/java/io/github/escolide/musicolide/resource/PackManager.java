@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.resource;
 
+import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -19,6 +20,7 @@ public final class PackManager {
     private final ResourcePackBuilder packBuilder;
     private final int detectedPublicPort;
     private final CompletableFuture<String> publicBaseUrl;
+    private final GeyserBridge geyser;
 
     // One stable Java library pack contains all catalogue tracks.
     private final Map<UUID, String> libraryReadyHash = new ConcurrentHashMap<>();
@@ -45,12 +47,26 @@ public final class PackManager {
                        ResourcePackBuilder packBuilder,
                        int detectedPublicPort,
                        CompletableFuture<String> publicBaseUrl) {
+        this(plugin, packBuilder, detectedPublicPort, publicBaseUrl, null);
+    }
+
+    public PackManager(JavaPlugin plugin,
+                       ResourcePackBuilder packBuilder,
+                       int detectedPublicPort,
+                       CompletableFuture<String> publicBaseUrl,
+                       GeyserBridge geyser) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.packBuilder = Objects.requireNonNull(packBuilder, "packBuilder");
         this.detectedPublicPort = detectedPublicPort;
         this.publicBaseUrl = Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
+        this.geyser = geyser;
         this.acceptedPlayersFile = plugin.getDataFolder().toPath().resolve("accepted-resource-pack-players.txt");
         loadAcceptedPlayers();
+    }
+
+    private boolean isIgnoredBedrockPlayer(Player player) {
+        return player != null && geyser != null
+                && geyser.isIgnoredBedrockPlayer(player.getUniqueId());
     }
 
     public boolean isBaseDeclined(Player player) {
@@ -92,7 +108,7 @@ public final class PackManager {
      * recovery command.
      */
     public boolean requestLibrary(Player player, boolean retry) {
-        if (player == null || !player.isOnline()) return false;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return false;
         String hash = currentLibraryHash();
         if (hash == null) return false;
         if (retry) libraryDeclinedHash.remove(player.getUniqueId(), hash);
@@ -103,7 +119,7 @@ public final class PackManager {
     public void publicAddressAvailable() {
         for (UUID playerId : new HashSet<>(waitingForPublicAddress)) {
             Player player = Bukkit.getPlayer(playerId);
-            if (player != null && player.isOnline()) ensureLibrary(player);
+            if (player != null && player.isOnline() && !isIgnoredBedrockPlayer(player)) ensureLibrary(player);
             else waitingForPublicAddress.remove(playerId);
         }
     }
@@ -120,6 +136,7 @@ public final class PackManager {
 
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
                          int tracksAhead, boolean deferLibraryRefresh) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return;
         UUID playerId = player.getUniqueId();
         // Existing listeners keep their current immutable library revision until
         // this track finishes. A newly joining player still requests the latest pack.
@@ -160,7 +177,8 @@ public final class PackManager {
      * called, so a later normal prefetch pass cannot accidentally discard it.
      */
     public boolean requestTemporaryTrack(Player player, MusicTrack track) {
-        if (player == null || !player.isOnline() || !isTemporary(track)) return false;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
+                || !isTemporary(track)) return false;
 
         UUID playerId = player.getUniqueId();
         // A private resume/synchronization tail is self-contained. Do not refresh
@@ -180,6 +198,7 @@ public final class PackManager {
     }
 
     private boolean ensureLibrary(Player player) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return false;
         UUID playerId = player.getUniqueId();
         ResourcePackBuilder.BasePackInfo pack;
         try {
@@ -265,7 +284,7 @@ public final class PackManager {
     }
 
     private void pump(Player player) {
-        if (player == null || !player.isOnline()) return;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return;
         UUID playerId = player.getUniqueId();
         int maximum = Math.max(1, plugin.getConfig().getInt("resource-packs.prefetch.max-concurrent-downloads", 2));
         LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
@@ -280,6 +299,7 @@ public final class PackManager {
     }
 
     private void send(Player player, MusicTrack track) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return;
         UUID playerId = player.getUniqueId();
         String url = packUrl(track.packFileName());
         try {
@@ -381,6 +401,8 @@ public final class PackManager {
     public void status(UUID playerId, UUID packId,
                        org.bukkit.event.player.PlayerResourcePackStatusEvent.Status status) {
         if (status == null) return;
+        Player statusPlayer = Bukkit.getPlayer(playerId);
+        if (isIgnoredBedrockPlayer(statusPlayer)) return;
         String statusName = status.name();
         if (isPendingStatus(statusName)) return;
 
