@@ -102,7 +102,7 @@ public final class GeyserBridge {
      */
     public boolean isAwaitingPackReady(UUID uuid) {
         String current = currentPackFingerprint();
-        return current != null && readiness.isAwaiting(uuid, current);
+        return current != null && readiness.isAwaiting(uuid.toString(), current);
     }
 
     /**
@@ -112,7 +112,7 @@ public final class GeyserBridge {
      */
     public boolean hasCurrentPackFor(UUID uuid) {
         String current = currentPackFingerprint();
-        return current != null && readiness.isReady(uuid, current);
+        return current != null && readiness.isReady(uuid.toString(), current);
     }
 
     private String currentPackFingerprint() {
