@@ -467,6 +467,11 @@ public final class PackManager {
         cleanupLibraryArchivesAsync();
     }
 
+    /** Removes obsolete Java library revisions after their replacement has been published. */
+    public void cleanupObsoleteLibraryArchives() {
+        cleanupLibraryArchivesAsync();
+    }
+
     private void cleanupLibraryArchivesAsync() {
         CompletableFuture.runAsync(this::cleanupLibraryArchives);
     }
