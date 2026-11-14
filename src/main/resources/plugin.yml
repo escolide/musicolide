@@ -16,6 +16,14 @@ commands:
     description: Play a track or import an administrator-allowlisted URL.
     usage: /play <track-title, search query or YouTube URL>
     permission: musicolide.dj
+  link:
+    description: Generate a one-time five-minute Discord account-link code.
+    usage: /link
+    permission: musicolide.use
+  unlink:
+    description: Unlink your Discord account from Minecraft.
+    usage: /unlink
+    permission: musicolide.use
 permissions:
   musicolide.use:
     description: Allows use of Musicolide playback commands.
