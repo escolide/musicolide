@@ -10,12 +10,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PackManager {
     private final JavaPlugin plugin;
     private final ResourcePackBuilder.BasePackInfo basePack;
     private final int detectedPublicPort;
+    private final CompletableFuture<String> publicBaseUrl;
     private final Set<UUID> baseReady = ConcurrentHashMap.newKeySet();
     private final Set<UUID> baseRequested = ConcurrentHashMap.newKeySet();
     private final Set<UUID> baseDeclined = ConcurrentHashMap.newKeySet();
@@ -31,9 +34,17 @@ public final class PackManager {
     private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
 
     public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort) {
+        this(plugin, basePack, detectedPublicPort,
+                CompletableFuture.completedFuture(plugin.getConfig().getString(
+                        "server.public-base-url", "http://127.0.0.1")));
+    }
+
+    public PackManager(JavaPlugin plugin, ResourcePackBuilder.BasePackInfo basePack, int detectedPublicPort,
+                       CompletableFuture<String> publicBaseUrl) {
         this.plugin = plugin;
         this.basePack = Objects.requireNonNull(basePack, "basePack");
         this.detectedPublicPort = detectedPublicPort;
+        this.publicBaseUrl = Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
     }
 
     public boolean isBaseDeclined(Player player) {
@@ -103,6 +114,9 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         if (baseReady.contains(playerId)) return true;
         if (baseDeclined.contains(playerId) || baseRequested.contains(playerId)) return false;
+        // Public-address discovery runs asynchronously. Playback ticks retry this
+        // check until the future resolves, without blocking the Paper main thread.
+        if (!publicBaseUrl.isDone()) return false;
 
         try {
             String url = packUrl(basePack.fileName());
@@ -120,7 +134,17 @@ public final class PackManager {
     }
 
     private String packUrl(String fileName) {
-        String base = plugin.getConfig().getString("server.public-base-url", "http://127.0.0.1");
+        final String base;
+        try {
+            base = publicBaseUrl.join();
+        } catch (CompletionException ex) {
+            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+            throw new IllegalStateException(cause.getMessage() == null
+                    ? "Public resource-pack address discovery failed." : cause.getMessage(), cause);
+        }
+        if (base == null || base.isBlank()) {
+            throw new IllegalStateException("No public resource-pack address is configured or could be discovered.");
+        }
         String prefix = plugin.getConfig().getString("server.path-prefix", "/packs");
         boolean autoDetectPort = plugin.getConfig().getBoolean("server.auto-detect-port", true);
         int detected = autoDetectPort ? detectedPublicPort : -1;
