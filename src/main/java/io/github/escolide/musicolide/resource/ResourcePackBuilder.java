@@ -12,7 +12,8 @@ import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 public final class ResourcePackBuilder {
-    private static final String LIBRARY_FILE = "musicolide-base.zip";
+    private static final String LEGACY_LIBRARY_FILE = "musicolide-base.zip";
+    private static final String LIBRARY_FILE_PREFIX = "musicolide-library-";
     private static final UUID LIBRARY_ID = UUID.nameUUIDFromBytes(
             "musicolide:java:base-pack".getBytes(StandardCharsets.UTF_8));
 
@@ -38,7 +39,6 @@ public final class ResourcePackBuilder {
      * clients to reuse an unchanged cached copy after reconnecting.
      */
     public synchronized BasePackInfo buildBasePack() throws IOException {
-        Path output = packsDirectory.resolve(LIBRARY_FILE);
         Path temporary = Files.createTempFile(packsDirectory, ".musicolide-library-", ".zip");
         try {
             Set<String> writtenEntries = new HashSet<>();
@@ -48,7 +48,8 @@ public final class ResourcePackBuilder {
                 try (var stream = Files.list(packsDirectory)) {
                     archives = stream.filter(Files::isRegularFile)
                             .filter(path -> path.getFileName().toString().endsWith(".zip"))
-                            .filter(path -> !path.getFileName().toString().equals(LIBRARY_FILE))
+                            .filter(path -> !path.getFileName().toString().equals(LEGACY_LIBRARY_FILE))
+                            .filter(path -> !path.getFileName().toString().startsWith(LIBRARY_FILE_PREFIX))
                             // Exclude the archive currently being written and per-session resume tails.
                             .filter(path -> !path.getFileName().toString().startsWith(".musicolide-library-"))
                             .filter(path -> !path.getFileName().toString().startsWith("mr_"))
@@ -84,19 +85,46 @@ public final class ResourcePackBuilder {
                 }
             }
 
-            try {
-                Files.move(temporary, output, StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException ex) {
-                Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
+            String hash = sha1(temporary);
+            String fileName = LIBRARY_FILE_PREFIX + hash + ".zip";
+            Path output = packsDirectory.resolve(fileName);
+            if (Files.exists(output)) {
+                Files.deleteIfExists(temporary);
+            } else {
+                try {
+                    Files.move(temporary, output, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException ex) {
+                    Files.move(temporary, output);
+                }
             }
+            BasePackInfo info = new BasePackInfo(fileName, LIBRARY_ID, hash);
+            currentBasePackInfo = info;
+            return info;
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
 
-        BasePackInfo info = new BasePackInfo(LIBRARY_FILE, LIBRARY_ID, sha1(output));
-        currentBasePackInfo = info;
-        return info;
+    /**
+     * Deletes immutable library revisions that are neither current nor still
+     * referenced by a client download. Download URLs always point at a
+     * content-specific filename, so publishing a new library cannot overwrite
+     * bytes being fetched for the previous revision.
+     */
+    public synchronized void cleanupLibraryArchives(Set<String> retainedHashes) throws IOException {
+        Set<String> keep = retainedHashes == null ? Set.of() : Set.copyOf(retainedHashes);
+        try (var files = Files.list(packsDirectory)) {
+            for (Path path : files.filter(Files::isRegularFile).toList()) {
+                String name = path.getFileName().toString();
+                if (name.equals(LEGACY_LIBRARY_FILE)) {
+                    Files.deleteIfExists(path);
+                    continue;
+                }
+                if (!name.startsWith(LIBRARY_FILE_PREFIX) || !name.endsWith(".zip")) continue;
+                String hash = name.substring(LIBRARY_FILE_PREFIX.length(), name.length() - 4);
+                if (!keep.contains(hash)) Files.deleteIfExists(path);
+            }
+        }
     }
 
     public BasePackInfo currentBasePackInfo() {
