@@ -152,7 +152,8 @@ public final class PlaybackEngine {
             }
 
             MusicTrack playbackTrack = session.playbackTrack();
-            if (playbackTrack == null) continue;
+            MusicTrack catalogueTrack = session.current();
+            if (playbackTrack == null || catalogueTrack == null) continue;
             boolean hasEligibleJavaListener = false;
             for (Player player : online) {
                 Candidate candidate = winners.get(player.getUniqueId());
@@ -162,8 +163,12 @@ public final class PlaybackEngine {
                     continue;
                 }
                 if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
-                if (packs.isBaseDeclined(player) || packs.isDeclined(player, playbackTrack)) continue;
-                if (!packs.isReady(player, playbackTrack,
+                if (packs.isBaseDeclined(player) || packs.isDeclined(player, catalogueTrack)) continue;
+                // Discord reads the original catalogue archive at the shared
+                // session clock. A Java entrant may still be downloading a
+                // private timestamp tail, so requiring the session's temporary
+                // playback pack here would wrongly suppress zone-only sessions.
+                if (!packs.isReady(player, catalogueTrack,
                         isAlreadyPlayingTrack(player, session, playbackTrack))) continue;
                 hasEligibleJavaListener = true;
                 break;
