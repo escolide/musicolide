@@ -68,7 +68,7 @@ public final class PlaybackEngine {
 
     /** True only when the optional WorldGuard adapter initialized successfully. */
     public boolean canUseWorldGuardRegions() {
-        return worldGuard != null;
+        return worldGuard != null && worldGuard.isAvailable();
     }
 
     private boolean isIgnoredBedrockPlayer(Player player) {
