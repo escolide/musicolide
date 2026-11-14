@@ -131,6 +131,10 @@ playback:
     # Maximum time to wait for pending Java resource packs before starting the track.
     # Players still pending at the deadline are skipped for this track.
     start-barrier-timeout-seconds: 7
+    late-join:
+      # Shared lead used by /music sync and the late-join audio-tail preparation path.
+      # The timestamp is captured from the live session timeline before FFmpeg and pack delivery.
+      delay-seconds: 4.0
     progress-update-ticks: 20
 
 playlists:
