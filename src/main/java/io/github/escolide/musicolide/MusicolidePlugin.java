@@ -288,6 +288,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
+        if (playback != null) playback.onJoin(event.getPlayer());
         if (packManager != null && getConfig().getString(
                 "resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
