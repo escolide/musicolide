@@ -77,6 +77,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.enabled", false);
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.broadcast-scope")) {
+            getConfig().set("discord.broadcast-scope", "global-only");
+            migratedConfig = true;
+        }
         if (!getConfig().contains("discord.bot-token")) {
             getConfig().set("discord.bot-token", "");
             migratedConfig = true;
