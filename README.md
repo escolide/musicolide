@@ -67,11 +67,11 @@ Linux and Windows use the FFmpeg-Builds LGPL variants. The macOS installer uses 
 The single deployable universal JAR has a build-time size check enforcing a strict limit below 30 MiB. It contains only a compact Discord runtime manifest with pinned artifact versions, Maven Central URLs and SHA-256 hashes, not the third-party Discord dependency JARs or platform-native binaries. When Discord is enabled, Musicolide downloads the Java dependencies and only the matching DAVE native JAR into the server's runtime cache, verifying each artifact before loading. The FFmpeg/yt-dlp/QuickJS tools are also downloaded and checksum-verified on first startup.
 
 The deployable plugin is `build/libs/musicolide-0.1.0-universal.jar`; use this same artifact across supported hosting providers and operating systems.
-## Discord voice broadcast (optional)
+## Discord bot and voice broadcast (optional)
 
-Musicolide can broadcast the server's selected playback session into one Discord voice channel. It is **one-way only**: the bot does not register chat, slash-command, or interaction controls, and Discord members cannot play, pause, resume, skip, seek, change volume, or edit the Minecraft queue.
+Musicolide can broadcast its selected server playback session into one configured Discord voice channel. Minecraft remains authoritative: Discord cannot alter a song's clock or affect Minecraft if Discord is disconnected. The bot's gateway stays online for slash commands, but its **voice connection is opened only after a Musicolide playback clock has started**. It leaves when no eligible playback session remains. A paused session keeps the bot in voice without sending audio; after resume it restarts from the current Minecraft timeline. If a resume is waiting for its resource-pack/start barrier, an already-established voice connection is held rather than being dropped and rejoined.
 
-After the first server start, configure the local `plugins/Musicolide/config.yml`:
+Configure the local `plugins/Musicolide/config.yml`:
 
 ```yaml
 discord:
@@ -80,15 +80,54 @@ discord:
   voice-channel-id: "YOUR_VOICE_CHANNEL_ID"
   broadcast-scope: "global-only" # or "zone-aware"
   reconnect-and-resync: true
+  embed-color: "#9B59B6"
+  presence:
+    enabled: true
+    template: "{title} • {elapsed}"
+    idle-text: ""
+    update-interval-seconds: 15
+  info:
+    enabled: true
+    server-name: "Minecraft Server"
+    show-server-address: false
+    server-ip: ""
+    server-port: 25565
+  commands:
+    enabled: true
+    guild-id: "" # blank = global commands; set a guild ID for faster registration
+    admin-authorization: "minecraft-op" # minecraft-op | discord-administrator | either | both
+    admin-role-ids: []
 ```
 
-Restart the Minecraft server after changing these settings; the Discord connection is initialized once during plugin startup.
+Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs **View Channel**, **Connect**, and **Speak** in the configured voice channel. For DM pairing, enable the bot's DM access and invite it with the normal application command scope. Restart the Minecraft server after changing the bot token or voice channel. The runtime bootstrap/download occurs on a background thread.
 
-Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs **View Channel**, **Connect**, and **Speak** in the configured voice channel. It uses the same imported track archive already stored by Musicolide and FFmpeg to decode it for Discord; it does not re-download the source audio.
+### Presence and /info
 
-The Minecraft session clock is authoritative. Pause, resume, seek, skip, track changes, playback speed and reconnect recovery are derived from read-only snapshots of that clock. If the bot disconnects, Minecraft continues uninterrupted. With `reconnect-and-resync: true`, the bot rejoins and starts from the current server timer instead of replaying stale buffered audio. Discord members joining or leaving the voice channel do not change the session.
+The bot can display the current track and elapsed time using Discord listening activity. The presence template supports `{title}`, `{artist}`, `{elapsed}`, `{duration}`, and `{state}`. Discord presence updates are rate-limited to at least 15 seconds, but a track or playback-state change is sent immediately. Set `presence.enabled: false` to disable activity or customize `idle-text`.
 
-A single configured Discord channel can broadcast only one session at a time. By default, `discord.broadcast-scope: "global-only"` mirrors only sessions explicitly addressed to all players (`@a`) with a global listening zone; player-targeted sessions and circle, square, or WorldGuard-region sessions are never sent to Discord. The optional `"zone-aware"` mode restores the previous behaviour: an eligible spatial session may be mirrored when at least one Java player is actually receiving it inside its zone. In either mode, the selected session must have at least one eligible Java listener with its required pack ready; Bedrock and pack-rejected/unready players do not make it eligible. Manual priority remains authoritative, with oldest-session ordering breaking ties. Discord cannot reproduce different per-player zone mixes because it has no Minecraft player position. This feature requires FFmpeg and the DAVE native runtime. The universal JAR includes a compact manifest containing pinned Maven Central artifact URLs and SHA-256 hashes. When Discord is enabled, Musicolide downloads the JDA/DAVE Java dependency set into `plugins/Musicolide/runtime/discord/lib/` and downloads only the matching platform-native JAR into the `native/` subdirectory. Each downloaded artifact is hash-verified before it can be loaded, and verified files are cached for later restarts. No Discord dependencies are downloaded or extracted while Discord is disabled. Supported native targets are Linux x86_64 (glibc), Linux ARM64 (glibc), Windows x86_64, and macOS Intel/Apple Silicon. Linux musl, Windows ARM64 and other architectures are not currently included. Runtime bootstrap and downloads run on a background thread, never the Bukkit main thread; a failure disables only Discord output and does not stop Minecraft playback.
+Discord `/info` is an ephemeral embed showing the selected Musicolide track, artist, current timestamp, duration and playback state. Set `info.show-server-address: true` and configure `server-ip` plus `server-port` to show a public server address; the address is hidden by default. The embed accent is configured through `embed-color` (six-digit hex, default purple).
+
+### Secure account linking and controls
+
+A player runs `/link` in Minecraft. Musicolide privately displays an eight-digit, one-use code valid for five minutes. The player DMs that code to the bot. The plugin stores only the Discord user ID, Minecraft UUID/name and link timestamp; it does not ask for or store Microsoft passwords, Minecraft passwords, session tokens or other authentication secrets. Each Discord account and each Minecraft account can be linked to only one counterpart. The player runs `/unlink` in Minecraft to remove the link. Pending codes are memory-only and are invalidated on restart.
+
+Linked players can use Discord `/play query:<song>` and `/music command:<command text>`. The latter routes existing Musicolide commands through the normal plugin command handler as the linked Minecraft player, so the Minecraft account must be online and existing DJ/use permissions continue to apply. It supports existing Musicolide game commands; player-location-only or interactive in-game steps may not be suitable from Discord. The `/play` option offers autocomplete suggestions from the local authorized catalogue. YouTube metadata suggestions are included only when the server administrator has enabled both YouTube search and `audio.yt-dlp.auto-import-on-play`; the regular allowlist and audio redistribution requirements still apply.
+
+Admin authorization is configurable:
+- `minecraft-op` (default): the linked Minecraft account must be OP or have the configured `permissions.admin` node.
+- `discord-administrator`: Discord Administrator permission or a role listed in `admin-role-ids` grants the plugin's admin/DJ permission for that command.
+- `either`: either of those checks is sufficient.
+- `both`: both must be satisfied.
+
+Role IDs are configured explicitly; ordinary Discord roles do not automatically confer Minecraft OP. Do not give bot Administrator permission unless the bot actually needs it. Slash command registration is global when `guild-id` is blank; a configured guild ID is useful for faster testing and development.
+
+### Voice broadcast selection and runtime
+
+The Minecraft session clock is authoritative. Pause, resume, seek, skip, track changes, playback speed and reconnect recovery are derived from read-only snapshots. Joining/leaving Discord voice does not change the Minecraft session. With `reconnect-and-resync: true`, an unexpected disconnect rejoins and starts from the current server timer instead of replaying stale buffered audio.
+
+A single configured Discord channel can broadcast only one session at a time. By default, `broadcast-scope: "global-only"` mirrors only sessions explicitly addressed to all players (`@a`) with a global listening zone. The optional `"zone-aware"` mode allows an eligible spatial session when at least one Java player is actually receiving it inside its zone. Discord cannot reproduce multiple per-player zone mixes because it has no Minecraft player position. In either mode, active playback must have an eligible Java listener with its required pack ready; Bedrock and pack-rejected/unready players do not make a session eligible. Paused sessions retain the existing voice connection.
+
+Musicolide uses the same imported track archive and FFmpeg to decode Discord audio; it does not re-download the source. The universal JAR includes a compact manifest with pinned Maven Central artifact URLs and SHA-256 hashes. When Discord is enabled, Musicolide downloads the JDA/DAVE Java dependencies and only the matching platform-native JAR into `plugins/Musicolide/runtime/discord/`, verifies each artifact and caches it. No Discord dependencies are downloaded when Discord is disabled. Supported native targets are Linux x86_64 (glibc), Linux ARM64 (glibc), Windows x86_64, and macOS Intel/Apple Silicon. Linux musl, Windows ARM64 and other architectures are not included. Runtime bootstrap and downloads run away from the Bukkit main thread; Discord failures do not stop Minecraft playback.
 
 ## Server setup
 
