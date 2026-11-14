@@ -369,8 +369,16 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&eUsage: /music search <song or artist>"));
             return;
         }
-        String query = String.join(" ", Arrays.copyOfRange(args, 1, args.length)).trim();
-        PlayRequest request = parseRequest(player, new String[]{"play", "search"});
+        int modifierStart = firstPlayModifierIndex(sender, args);
+        String query = String.join(" ", Arrays.copyOfRange(args, 1, modifierStart)).trim();
+        if (query.isBlank()) {
+            sender.sendMessage(msg("&eEnter a song or artist to search for."));
+            return;
+        }
+        String[] requestArgs = withPlayModifiers("play", query, args, modifierStart);
+        PlayRequest parsed = parseRequest(sender, requestArgs);
+        PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners,
+                parsed.priority, query);
         beginYouTubeSearch(sender, query, request);
     }
 
@@ -590,9 +598,16 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
         }
 
+        boolean spatialOption = circle || square || region != null || fadeEnabled;
         if (selector == null) {
-            if (sender instanceof Player) selector = "@s";
-            else throw new IllegalArgumentException("From console, specify a target such as @a or a player name.");
+            if (sender instanceof Player) {
+                // A range/region defines the audience when no explicit selector is
+                // supplied. Default to @a and let the zone decide who can hear it.
+                // Non-spatial /play keeps the historical self-only default.
+                selector = spatialOption ? "@a" : "@s";
+            } else {
+                throw new IllegalArgumentException("From console, specify a target such as @a or a player name.");
+            }
         }
 
         boolean all = selector.equalsIgnoreCase("@a");
@@ -622,7 +637,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             targets.add(target);
         }
 
-        boolean spatialOption = circle || square || region != null || fadeEnabled;
         MusicZone zone = MusicZone.global();
         if (spatialOption) {
             if (!(sender instanceof Player center)) {
