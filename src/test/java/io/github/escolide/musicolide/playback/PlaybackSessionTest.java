@@ -247,6 +247,29 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void enqueueDoesNotReplaceTheCurrentTrackOrResetItsTimeline() throws Exception {
+        MusicTrack current = sampleTrack("queue-current-track");
+        MusicTrack queued = sampleTrack("queue-next-track");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(current), 0);
+        session.startClockIfNeeded();
+        Thread.sleep(30);
+        long beforeQueue = session.elapsedMs();
+        long generation = session.timelineGeneration();
+
+        session.enqueue(queued);
+
+        assertEquals("queue-current-track", session.current().id());
+        assertEquals("queue-next-track", session.upcoming(1).get(0).id());
+        assertEquals(1, session.queueSize());
+        assertEquals(generation, session.timelineGeneration());
+        assertTrue(session.elapsedMs() >= beforeQueue,
+                "Adding a queued track must not reset the current playback clock.");
+        assertTrue(session.advance());
+        assertEquals("queue-next-track", session.current().id());
+    }
+
+    @Test
     void liveSpeedChangeIsStagedUntilTheNextTrackAndScalesItsClock() {
         MusicTrack first = sampleTrack("speed-first");
         MusicTrack second = sampleTrack("speed-second");
