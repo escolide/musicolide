@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.playback;
 
+import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.model.MusicZone;
@@ -17,6 +18,7 @@ import org.bukkit.scheduler.BukkitTask;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 public final class PlaybackEngine {
     // Minecraft labels SoundCategory.RECORDS as "Jukebox/Note Blocks".
@@ -24,6 +26,7 @@ public final class PlaybackEngine {
     private final JavaPlugin plugin;
     private final TrackRepository repository;
     private final PackManager packs;
+    private final AudioProcessor audioProcessor;
     private final List<PlaybackSession> sessions = new ArrayList<>();
     private final Map<UUID, PlayerPreferences> preferences = new ConcurrentHashMap<>();
     private final Map<UUID, PlayerPlayback> playerPlayback = new HashMap<>();
@@ -36,10 +39,11 @@ public final class PlaybackEngine {
     private BukkitTask segmentTask;
 
     public PlaybackEngine(JavaPlugin plugin, TrackRepository repository, PackManager packs,
-                          WorldGuardBridge worldGuard, GeyserBridge geyser) {
+                          AudioProcessor audioProcessor, WorldGuardBridge worldGuard, GeyserBridge geyser) {
         this.plugin = plugin;
         this.repository = repository;
         this.packs = packs;
+        this.audioProcessor = audioProcessor;
         this.worldGuard = worldGuard;
         this.geyser = geyser;
     }
@@ -81,19 +85,151 @@ public final class PlaybackEngine {
                 ? sessions.get(sessions.size() - 1) : null);
         if (session == null) return false;
         switch (action) {
-            case "pause" -> session.pause();
+            case "pause" -> {
+                session.pause();
+                stopPlayersInSession(session);
+            }
             case "resume" -> session.resume();
             case "skip" -> {
+                MusicTrack previous = session.playbackTrack();
+                stopPlayersInSession(session);
                 session.advance();
+                releaseGeneratedTrack(previous);
                 if (session.isEmpty()) sessions.remove(session);
             }
             case "stop" -> {
                 sessions.remove(session);
                 stopPlayersInSession(session);
+                releaseGeneratedTrack(session.playbackTrack());
+                session.cancelResumePreparation();
             }
             default -> { return false; }
         }
         return true;
+    }
+
+    public enum ResumeStart { NOT_FOUND, RESUMED, PREPARING, BEDROCK_FALLBACK, ALREADY_PREPARING }
+
+    /**
+     * Resumes a paused session. In resumable mode, Java Edition gets a newly
+     * encoded OGG tail and a transient pack; the session stays paused during
+     * processing and starts its clock when the new pack becomes playable.
+     */
+    public ResumeStart resume(UUID actor, boolean admin, Consumer<String> completion) {
+        PlaybackSession session = findControllable(actor, admin);
+        if (session == null) return ResumeStart.NOT_FOUND;
+        if (!session.paused()) return ResumeStart.RESUMED;
+
+        MusicTrack original = session.current();
+        boolean resumableMode = "resumable".equalsIgnoreCase(
+                plugin.getConfig().getString("audio.playback-mode", "resumable"));
+        if (!resumableMode || original == null || !original.isStreamed()) {
+            session.resume();
+            return ResumeStart.RESUMED;
+        }
+
+        // Geyser's aggregate pack is assembled at startup and cannot receive
+        // these per-resume transient packs. Keep mixed sessions compatible.
+        if (hasOnlineBedrockTarget(session)) {
+            session.resume();
+            return ResumeStart.BEDROCK_FALLBACK;
+        }
+
+        long offsetMs = session.elapsedMs();
+        long generation = session.beginResumePreparation();
+        if (generation < 0) return ResumeStart.ALREADY_PREPARING;
+        stopPlayersInSession(session);
+        generateAndInstallRemainder(session, original, offsetMs, generation,
+                "&aThe remaining audio is ready from " + formatTime(offsetMs)
+                        + ". Waiting for the resource pack to load.", completion);
+        return ResumeStart.PREPARING;
+    }
+
+    public enum SeekStart { NOT_FOUND, SEEKED, PREPARING, BEDROCK_UNSUPPORTED, UNSUPPORTED, ALREADY_PREPARING }
+
+    /**
+     * Seeks legacy segmented tracks directly. In resumable mode, seeking a
+     * streamed track regenerates the remaining OGG from the requested timestamp.
+     */
+    public SeekStart seek(UUID actor, boolean admin, long targetMs, Consumer<String> completion) {
+        PlaybackSession session = findControllable(actor, admin);
+        if (session == null || session.current() == null) return SeekStart.NOT_FOUND;
+
+        MusicTrack original = session.current();
+        if (targetMs < 0 || targetMs >= original.durationMs()) {
+            throw new IllegalArgumentException("Seek position must be within the track duration.");
+        }
+        if (!original.isStreamed()) {
+            session.seek(targetMs);
+            return SeekStart.SEEKED;
+        }
+        boolean resumableMode = "resumable".equalsIgnoreCase(
+                plugin.getConfig().getString("audio.playback-mode", "resumable"));
+        if (!resumableMode) return SeekStart.UNSUPPORTED;
+        if (hasOnlineBedrockTarget(session)) return SeekStart.BEDROCK_UNSUPPORTED;
+
+        boolean wasPaused = session.paused();
+        long generation = session.beginSeekPreparation(targetMs);
+        if (generation < 0) return SeekStart.ALREADY_PREPARING;
+        stopPlayersInSession(session);
+        String message = wasPaused
+                ? "&aSeek position set to " + formatTime(targetMs) + ". Use /music resume to continue."
+                : "&aSeeking to " + formatTime(targetMs)
+                        + ". Playback will restart after the temporary resource pack loads.";
+        generateAndInstallRemainder(session, original, targetMs, generation, message, completion);
+        return SeekStart.PREPARING;
+    }
+
+    private PlaybackSession findControllable(UUID actor, boolean admin) {
+        synchronized (this) {
+            return findOwned(actor).orElseGet(() -> admin && !sessions.isEmpty()
+                    ? sessions.get(sessions.size() - 1) : null);
+        }
+    }
+
+    private boolean hasOnlineBedrockTarget(PlaybackSession session) {
+        return geyser != null && Bukkit.getOnlinePlayers().stream()
+                .anyMatch(player -> session.targets(player.getUniqueId())
+                        && geyser.isBedrockPlayer(player.getUniqueId()));
+    }
+
+    private void generateAndInstallRemainder(PlaybackSession session, MusicTrack original,
+                                              long targetMs, long generation, String readyMessage,
+                                              Consumer<String> completion) {
+        audioProcessor.createResumeTrack(original, targetMs).whenComplete((remainder, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (error != null) {
+                        boolean currentOperation = session.failResumePreparation(generation);
+                        if (currentOperation && completion != null) {
+                            completion.accept("&cCould not prepare audio: " + rootMessage(error));
+                        }
+                        return;
+                    }
+
+                    MusicTrack previous = session.playbackTrack();
+                    boolean stillActive;
+                    synchronized (PlaybackEngine.this) {
+                        stillActive = sessions.contains(session);
+                    }
+                    if (!stillActive || !session.completeResumePreparation(generation, remainder)) {
+                        packs.releaseGeneratedTrack(remainder);
+                        return;
+                    }
+                    if (previous != remainder) releaseGeneratedTrack(previous);
+                    if (completion != null) completion.accept(readyMessage);
+                }));
+    }
+
+    private String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    private void releaseGeneratedTrack(MusicTrack track) {
+        if (track != null && track.namespace() != null && track.namespace().startsWith("mr_")) {
+            packs.releaseGeneratedTrack(track);
+        }
     }
 
     public synchronized boolean enqueue(UUID actor, boolean admin, MusicTrack track) {
@@ -146,7 +282,13 @@ public final class PlaybackEngine {
         List<Player> online = new ArrayList<>(Bukkit.getOnlinePlayers());
         List<PlaybackSession> active;
         synchronized (this) {
-            for (PlaybackSession session : sessions) if (session.finished()) session.advance();
+            for (PlaybackSession session : sessions) {
+                if (session.finished()) {
+                    MusicTrack previous = session.playbackTrack();
+                    session.advance();
+                    releaseGeneratedTrack(previous);
+                }
+            }
             sessions.removeIf(PlaybackSession::isEmpty);
             active = List.copyOf(sessions);
         }
@@ -227,7 +369,7 @@ public final class PlaybackEngine {
 
             PlaybackSession session = activeById.get(state.sessionId);
             if (session == null || session.paused() || !session.targets(playerId)) continue;
-            MusicTrack track = session.current();
+            MusicTrack track = session.playbackTrack();
             if (track == null || !track.id().equals(state.trackId)) continue;
 
             int segment = session.segmentIndex();
@@ -266,15 +408,23 @@ public final class PlaybackEngine {
 
     private void playFor(Player player, Candidate candidate) {
         PlaybackSession session = candidate.session;
-        MusicTrack track = session.current();
+        MusicTrack track = session.playbackTrack();
+        MusicTrack originalTrack = session.current();
         PlayerPlayback state = playerPlayback.computeIfAbsent(player.getUniqueId(), ignored -> new PlayerPlayback());
-        if (session.paused()) {
+        if (session.paused() || session.resumePreparing()) {
             stopPlayer(player);
             return;
         }
         boolean bedrock = geyser != null && geyser.isBedrockPlayer(player.getUniqueId());
         if (bedrock) {
             // Bedrock receives the aggregate mcpack at Geyser connection time.
+            // A late Bedrock joiner cannot receive an in-session regenerated Java pack.
+            // Do not play the original from 00:00 against an already-advanced session clock.
+            if (track != null && track.namespace() != null && track.namespace().startsWith("mr_")) {
+                warnBedrockUnavailable(player, "messages.bedrock-resume-unsupported");
+                stopPlayer(player);
+                return;
+            }
             // Never send Java Edition packs to a Bedrock client.
             packs.releaseAll(player);
             if (!geyser.isBedrockPackAvailable()) {
@@ -337,8 +487,9 @@ public final class PlaybackEngine {
             playerPlayback.put(player.getUniqueId(), state);
         }
         if (plugin.getConfig().getBoolean("playback.synchronization.action-bar-now-playing", true)) {
-            player.sendActionBar(Component.text("♫ " + track.title() + "  •  " + formatTime(session.elapsedMs())
-                    + " / " + formatTime(track.durationMs())));
+            MusicTrack displayTrack = originalTrack == null ? track : originalTrack;
+            player.sendActionBar(Component.text("♫ " + displayTrack.title() + "  •  " + formatTime(session.elapsedMs())
+                    + " / " + formatTime(displayTrack.durationMs())));
         }
     }
 
@@ -389,7 +540,10 @@ public final class PlaybackEngine {
             stopPlayer(player);
             packs.releaseAll(player);
         }
-        synchronized (this) { sessions.clear(); }
+        synchronized (this) {
+            for (PlaybackSession session : sessions) releaseGeneratedTrack(session.playbackTrack());
+            sessions.clear();
+        }
         bedrockWarnings.clear();
     }
 

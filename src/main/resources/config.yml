@@ -32,6 +32,13 @@ audio:
   ffmpeg:
     executable: "ffmpeg"
     required: false
+  # Controls how NEW imports are encoded. Existing catalogue tracks keep their format.
+  # segmented: legacy short OGG segments; pause/resume preserves position at segment timing.
+  # continuous: one streamed OGG; resume restarts at the beginning (Minecraft exposes no stream seek).
+  # resumable: one streamed OGG; resume creates a timestamped OGG tail with FFmpeg and a temporary pack.
+  # Timestamp-based resume is for Java clients. Mixed sessions with online Bedrock players use the
+  # compatible restart-from-beginning fallback because Geyser's aggregate pack is fixed at join time.
+  playback-mode: "resumable"
   yt-dlp:
     enabled: true
     executable: "yt-dlp"
@@ -55,7 +62,7 @@ audio:
       - "soundcloud.com"
   format: "ogg"
   sample-rate: 44100
-  # Legacy segmented-track setting. New imports use one continuous streamed OGG instead.
+  # Used only when audio.playback-mode is 'segmented'.
   segment-duration-ms: 1000
   stereo-quality: 5
   max-track-duration-seconds: 1800
@@ -152,6 +159,7 @@ messages:
   import-failed: "&cAudio import failed: {reason}"
   bedrock-not-supported: "&eMusicolide Bedrock audio is unavailable until a Bedrock music pack has been generated."
   bedrock-pack-reconnect: "&eThe Bedrock music pack changed after you joined. Reconnect to receive the latest music library."
+  bedrock-resume-unsupported: "&eThis track resumed at a timestamp using a temporary Java pack. Bedrock playback is unavailable until the next track."
   playback-started: "&aNow playing: &f{title}"
   playback-paused: "&ePlayback paused."
   playback-resumed: "&aPlayback resumed."

@@ -32,7 +32,7 @@ public record MusicTrack(
 
     /** New imports use the ms_ namespace and one client-streamed OGG sound. */
     public boolean isStreamed() {
-        return namespace != null && namespace.startsWith("ms_");
+        return namespace != null && (namespace.startsWith("ms_") || namespace.startsWith("mr_"));
     }
 
     public String soundKey(int segmentIndex) {

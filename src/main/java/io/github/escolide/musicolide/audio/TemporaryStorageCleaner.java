@@ -17,6 +17,7 @@ import java.util.stream.Stream;
  */
 public final class TemporaryStorageCleaner {
     private static final String URL_TEMP_PREFIX = ".musicolide-url-";
+    private static final String RESUME_TEMP_PREFIX = ".musicolide-resume-";
     private static final String PROBE_TEMP_PREFIX = ".musicolide-probe-";
 
     private TemporaryStorageCleaner() {}
@@ -34,11 +35,17 @@ public final class TemporaryStorageCleaner {
 
         // URL imports use private temporary directories inside incoming/.
         removed += cleanChildren(data.resolve("incoming"),
-                path -> path.getFileName().toString().startsWith(URL_TEMP_PREFIX), failures);
+                path -> path.getFileName().toString().startsWith(URL_TEMP_PREFIX)
+                        || path.getFileName().toString().startsWith(RESUME_TEMP_PREFIX), failures);
 
         // tracks/ contains only transient OGG segment work directories. The
         // finished catalogue is stored as immutable ZIPs in packs/.
         removed += cleanChildren(data.resolve("tracks"), path -> true, failures);
+
+        // Timestamp-regenerated packs are session-only and are never catalogue entries.
+        removed += cleanChildren(data.resolve("packs"),
+                path -> path.getFileName().toString().startsWith("mr_")
+                        && path.getFileName().toString().endsWith(".zip"), failures);
 
         // Native version-check logs and other transient worker files.
         removed += cleanChildren(data.resolve("temp"), path -> true, failures);

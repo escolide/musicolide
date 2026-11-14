@@ -45,6 +45,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        // Older config.yml files are not overwritten on upgrades; add this new
+        // selector once so administrators can choose a playback format explicitly.
+        if (!getConfig().contains("audio.playback-mode")) {
+            getConfig().set("audio.playback-mode", "resumable");
+            saveConfig();
+        }
         try {
             Path data = getDataFolder().toPath();
             Files.createDirectories(data.resolve("incoming"));
@@ -121,7 +127,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             if (getConfig().getBoolean("worldguard.require-plugin", false) && worldGuard == null) {
                 throw new IllegalStateException("WorldGuard is required but unavailable.");
             }
-            playback = new PlaybackEngine(this, repository, packManager, worldGuard, geyserBridge);
+            playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
             scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);
