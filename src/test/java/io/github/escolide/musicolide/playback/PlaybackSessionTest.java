@@ -31,6 +31,31 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void timelineGenerationChangesWhenTheSameTrackIsRestartedOrAdvanced() {
+        MusicTrack first = new MusicTrack("timeline-first", "First", "", "mc_timeline_first",
+                "first.zip", "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
+        MusicTrack second = new MusicTrack("timeline-second", "Second", "", "mc_timeline_second",
+                "second.zip", "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first, second), 0);
+
+        long initial = session.timelineGeneration();
+        session.startClockIfNeeded();
+        session.pause();
+        session.resume();
+        long resumed = session.timelineGeneration();
+        assertTrue(resumed > initial);
+
+        session.seek(2500);
+        long sought = session.timelineGeneration();
+        assertTrue(sought > resumed);
+
+        session.advance();
+        assertTrue(session.timelineGeneration() > sought);
+        assertEquals("timeline-second", session.current().id());
+    }
+
+    @Test
     void sessionWaitsForFirstPackReadySignalAndSupportsSegmentSeeking() {
         MusicTrack track = new MusicTrack("demo", "Demo", "", "mc_demo", "demo.zip",
                 "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
