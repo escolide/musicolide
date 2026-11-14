@@ -2,6 +2,8 @@ package io.github.escolide.musicolide.runtime;
 
 import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
+import io.github.escolide.musicolide.command.MusicCommand;
+import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.ByteArrayInputStream;
@@ -78,7 +80,8 @@ public final class DiscordRuntimeBundle {
     private DiscordRuntimeBundle() {}
 
     public static AutoCloseable start(JavaPlugin plugin, PlaybackEngine playback,
-                                      NativeToolchain toolchain) throws Exception {
+                                      NativeToolchain toolchain, MusicCommand musicCommand,
+                                      DiscordAccountLinkManager accountLinks) throws Exception {
         URLClassLoader runtimeLoader = null;
         Object service = null;
         try {
@@ -116,8 +119,8 @@ public final class DiscordRuntimeBundle {
                 currentThread.setContextClassLoader(runtimeLoader);
                 Class<?> serviceType = Class.forName(SERVICE_CLASS, true, runtimeLoader);
                 service = serviceType.getConstructor(JavaPlugin.class, PlaybackEngine.class,
-                                NativeToolchain.class)
-                        .newInstance(plugin, playback, toolchain);
+                                NativeToolchain.class, MusicCommand.class, DiscordAccountLinkManager.class)
+                        .newInstance(plugin, playback, toolchain, musicCommand, accountLinks);
                 serviceType.getMethod("start").invoke(service);
             } finally {
                 currentThread.setContextClassLoader(previousContextLoader);
