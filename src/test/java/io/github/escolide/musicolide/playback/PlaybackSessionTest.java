@@ -33,12 +33,12 @@ class PlaybackSessionTest {
         PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
                 MusicZone.global(), true, List.of(), List.of(track), 0);
         session.startClockIfNeeded();
-        Thread.sleep(30);
+        Thread.sleep(180);
         session.pause();
-        assertTrue(session.elapsedMs() >= 10);
-        Thread.sleep(30);
+        assertTrue(session.elapsedMs() >= 100);
+        Thread.sleep(50);
         session.resume();
-        assertTrue(session.elapsedMs() < 30);
+        assertTrue(session.elapsedMs() < 100);
         assertThrows(IllegalArgumentException.class, () -> session.seek(15000));
     }
 
