@@ -382,6 +382,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         long now = System.currentTimeMillis();
         pendingSearches.entrySet().removeIf(entry ->
                 now - entry.getValue().createdAtMillis > SEARCH_RESULT_TTL_MILLIS);
+        pendingSearches.remove(player.getUniqueId());
         sender.sendMessage(msg("&eSearching YouTube for: &f" + safeChat(query)));
 
         processor.searchYouTube(query).whenComplete((results, error) ->
@@ -943,7 +944,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
         sender.sendMessage(msg("&f/music search <query> &7- search YouTube without downloading audio"));
         sender.sendMessage(msg("&f/music select <number> &7- import and play a selected YouTube result"));
-        sender.sendMessage(msg("&f/play <track-or-url> [@a|@p|@s|playername] [zone options] &7- short playback command"));
+        sender.sendMessage(msg("&f/play <track, query or URL> [target] [zone options] &7- search YouTube when no local track matches"));
         sender.sendMessage(msg("&f/music play <track-or-url> [@a|@p|@s|playername] [--circle r|--square WxL|--region id] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
