@@ -19,6 +19,18 @@ class BedrockPackReadinessTest {
     }
 
     @Test
+    void loginAssociationExposesPendingReadinessBeforePlayReady() {
+        BedrockPackReadiness readiness = new BedrockPackReadiness();
+        readiness.offered("xuid:1234", "revision-1");
+        readiness.associate("xuid:1234", "player-1");
+
+        assertTrue(readiness.isAwaiting("player-1", "revision-1"));
+        assertFalse(readiness.isReady("player-1", "revision-1"));
+        assertTrue(readiness.markReady("xuid:1234", "player-1"));
+        assertTrue(readiness.isReady("player-1", "revision-1"));
+    }
+
+    @Test
     void newerPackOfferInvalidatesPreviousReadyRevision() {
         BedrockPackReadiness readiness = new BedrockPackReadiness();
         readiness.offered("xuid:1234", "revision-1");
