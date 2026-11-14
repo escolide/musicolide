@@ -71,6 +71,33 @@ public final class PlaybackEngine {
         return session;
     }
 
+    public enum PlayDisposition { STARTED, QUEUED, QUEUE_FULL }
+
+    /**
+     * Starts a new playback session, or appends /play to the sender's existing
+     * session when its audience and listening zone are identical. This avoids
+     * accidental per-player overlap when the DJ simply wants the next song.
+     */
+    public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
+                                                      boolean allPlayers, Collection<UUID> listeners,
+                                                      MusicTrack track, int priority) {
+        if (owner != null) {
+            PlaybackSession existing = sessions.stream()
+                    .filter(session -> session.isOwner(owner))
+                    .filter(session -> session.matchesPlaybackRequest(allPlayers, listeners, zone))
+                    .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                    .orElse(null);
+            if (existing != null && !existing.isEmpty()) {
+                int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
+                if (existing.queueSize() >= maximumQueue) return PlayDisposition.QUEUE_FULL;
+                existing.enqueue(track);
+                return PlayDisposition.QUEUED;
+            }
+        }
+        startSession(owner, ownerName, zone, allPlayers, listeners, List.of(track), priority);
+        return PlayDisposition.STARTED;
+    }
+
     public synchronized Optional<PlaybackSession> findOwned(UUID owner) {
         return sessions.stream().filter(s -> s.isOwner(owner)).max(Comparator.comparingLong(PlaybackSession::startedAt));
     }
@@ -428,7 +455,8 @@ public final class PlaybackEngine {
         for (Player player : online) {
             Candidate winner = null;
             for (PlaybackSession session : active) {
-                if (!session.targets(player.getUniqueId()) || session.current() == null) continue;
+                if (!session.targets(player.getUniqueId()) || session.current() == null
+                        || session.paused() || session.resumePreparing()) continue;
                 MusicZone zone = session.zone();
                 if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
                 MusicZone.AudioMode mode;
@@ -471,6 +499,12 @@ public final class PlaybackEngine {
             for (Map.Entry<PlaybackSession, Set<UUID>> entry : suppressed.entrySet()) {
                 PlaybackSession session = entry.getKey();
                 if (session.owner() == null || entry.getValue().isEmpty()) continue;
+                boolean blockedByAudibleSession = entry.getValue().stream()
+                        .map(winners::get)
+                        .filter(Objects::nonNull)
+                        .anyMatch(winner -> winner.session.clockStarted()
+                                && !winner.session.paused() && !winner.session.resumePreparing());
+                if (!blockedByAudibleSession) continue;
                 long last = warningTimes.getOrDefault(session.id(), 0L);
                 if (System.currentTimeMillis() - last >= cooldown) {
                     Player owner = Bukkit.getPlayer(session.owner());
@@ -482,11 +516,21 @@ public final class PlaybackEngine {
 
         for (Player player : online) {
             Candidate winner = winners.get(player.getUniqueId());
-            if (winner == null || isPlayerMuted(player)) {
+            if (winner == null) {
                 stopPlayer(player);
-                packs.releaseAll(player);
+                boolean hasTargetedSession = active.stream()
+                        .anyMatch(session -> session.targets(player.getUniqueId()));
+                // "remove-pack-after-session" means after the player's targeted
+                // session ends, not whenever they step outside a spatial zone.
+                if (!hasTargetedSession) packs.releaseAll(player);
                 continue;
             }
+            if (isPlayerMuted(player)) {
+                stopPlayer(player);
+                continue;
+            }
+
+            startAutomaticCatchUpIfNeeded(player, winner);
             playFor(player, winner);
         }
     }
@@ -822,10 +866,41 @@ public final class PlaybackEngine {
         syncGenerations.clear();
     }
 
+    /**
+     * If the bounded start barrier released this player before their pack was
+     * ready, automatically run the same private-tail recovery as /music sync
+     * once the original track's pack is finally available.
+     */
+    private void startAutomaticCatchUpIfNeeded(Player player, Candidate candidate) {
+        if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) return;
+        MusicTrack sessionTrack = candidate.session.playbackTrack();
+        if (sessionTrack == null
+                || !barrierTrackKey(candidate.session, sessionTrack)
+                .equals(barrierExcludedTracks.get(player.getUniqueId()))) return;
+
+        PlayerPlayback state = playerPlayback.get(player.getUniqueId());
+        if (state != null && (state.syncPreparing || state.syncTrack != null)) return;
+        if (!packs.isReady(player, sessionTrack) || packs.isDeclined(player, sessionTrack)) return;
+
+        SyncStart result = synchronizePlayer(player, notification -> {
+            if (player.isOnline() && notification != null && notification.startsWith("&c")) {
+                player.sendMessage(message(notification));
+            }
+        });
+        if (result == SyncStart.TRACK_NEAR_END || result == SyncStart.PACK_DECLINED) {
+            // There is too little remaining audio to build a meaningful tail.
+            // Let the ordinary playback path attempt the track rather than
+            // leaving the player permanently excluded.
+            barrierExcludedTracks.remove(player.getUniqueId(),
+                    barrierTrackKey(candidate.session, sessionTrack));
+        }
+    }
+
     private Candidate findCandidate(Player player) {
         Candidate winner = null;
         for (PlaybackSession session : sessions()) {
-            if (!session.targets(player.getUniqueId()) || session.current() == null) continue;
+            if (!session.targets(player.getUniqueId()) || session.current() == null
+                    || session.paused() || session.resumePreparing()) continue;
             MusicZone zone = session.zone();
             if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
             MusicZone.AudioMode mode;
