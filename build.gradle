@@ -115,8 +115,7 @@ tasks.register('generateDiscordRuntimeManifest') {
             def module = artifact.moduleVersion.id
             def groupPath = module.group.replace('.', '/')
             def file = artifact.file
-            def url = 'https://repo.maven.apache.org/maven2/' + groupPath + '/'
-                    + module.name + '/' + module.version + '/' + file.name
+            def url = 'https://repo.maven.apache.org/maven2/' + groupPath + '/' + module.name + '/' + module.version + '/' + file.name
             file.name + '|' + sha256(file) + '|' + url
         }
         def requiredDiscordFiles = [
@@ -130,7 +129,7 @@ tasks.register('generateDiscordRuntimeManifest') {
         }
         def runtimeManifest = discordRuntimeManifestFile.get().asFile
         runtimeManifest.parentFile.mkdirs()
-        runtimeManifest.setText(runtimeLines.join('\\n') + '\\n', 'UTF-8')
+        runtimeManifest.setText(runtimeLines.join('\n') + '\n', 'UTF-8')
 
         def platformByNativeFile = [
                 'natives-linux-x86-64-0.1.2.jar': 'linux-x86-64',
@@ -144,13 +143,12 @@ tasks.register('generateDiscordRuntimeManifest') {
                 throw new GradleException('Unexpected DAVE native artifact: ' + file.name)
             }
             def artifactId = file.name.substring(0, file.name.lastIndexOf('-0.1.2.jar'))
-            def url = 'https://repo.maven.apache.org/maven2/moe/kyokobot/libdave/'
-                    + artifactId + '/0.1.2/' + file.name
+            def url = 'https://repo.maven.apache.org/maven2/moe/kyokobot/libdave/' + artifactId + '/0.1.2/' + file.name
             platform + '|' + file.name + '|' + sha256(file) + '|' + url
         }
         def nativeManifest = discordNativeManifestFile.get().asFile
         nativeManifest.parentFile.mkdirs()
-        nativeManifest.setText(nativeLines.join('\\n') + '\\n', 'UTF-8')
+        nativeManifest.setText(nativeLines.join('\n') + '\n', 'UTF-8')
     }
 }
 
