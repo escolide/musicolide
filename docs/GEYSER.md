@@ -10,7 +10,7 @@ The branch now:
 - Uses an optional compile-only Geyser API adapter, loaded only when Geyser-Spigot is detected.
 - Registers the aggregate pack for each incoming Bedrock session through `SessionLoadResourcePacksEvent`.
 - Tracks the exact aggregate-pack file revision offered during `SessionLoadResourcePacksEvent`, associates the Bedrock XUID (or username fallback) with its Java UUID during `SessionLoginEvent`, and marks it ready on `SessionJoinEvent`, which is fired when the Bedrock connection reaches its play-ready state.
-- Includes ready Bedrock recipients in the shared playback start barrier; a Bedrock client still completing the current pack exchange holds the shared clock, while a client with a stale pack is told to reconnect rather than being treated as synchronized.
+- Keeps Bedrock readiness entirely outside the Java playback start barrier. A Bedrock client that is not ready never delays Java playback; Bedrock playback is attempted independently when its current aggregate pack is ready.
 - Uses the shared Musicolide playback session engine for Bedrock clients without sending them Java Edition resource packs.
 - Requires Bedrock players to reconnect when a new import changes the aggregate pack.
 
@@ -40,7 +40,7 @@ Initial Bedrock support uses one stable-UUID music library pack. Its version is 
 
 Musicolide calls the normal Bukkit player sound API with its namespaced custom sound identifier. In the current Geyser source, the Java sound translator passes an unmapped custom Java sound identifier through to a Bedrock play-sound packet; the generated Bedrock pack defines that same identifier in its sound definitions. This provides a source-level shared-trigger path without reflection into Geyser internals or unversioned packet classes.
 
-The start-barrier integration is source-level implemented but remains unverified on a real Bedrock client. Geyser's `SessionLoginEvent` runs after Bedrock resource-pack negotiation, and `SessionJoinEvent` fires after its Bedrock connection reaches the play-ready stage. A client that refuses the offered pack is disconnected by Geyser's resource-pack exchange. Verify that the event ordering and XUID/Java UUID association match these assumptions on the exact Geyser build used by the server.
+Bedrock readiness is tracked only to decide whether that Bedrock player can receive playback; it is not part of the Java start barrier. Geyser's `SessionLoginEvent` runs after Bedrock resource-pack negotiation, and `SessionJoinEvent` fires after its Bedrock connection reaches the play-ready stage. A client that refuses the offered pack is disconnected by Geyser's resource-pack exchange. Verify that the event ordering and XUID/Java UUID association match these assumptions on the exact Geyser build used by the server.
 
 This synchronization change only covers assets already present in the aggregate Bedrock library. It does not make new packs dynamically loadable in an existing Bedrock session, and it does not add timestamp-tail packs for continuous/resumable late joins. Segmented tracks can select the current segment already present in the pack, subject to segment-boundary precision. Verify start, stop, volume, positional attenuation/fade, segment continuity and multiple simultaneous sessions. Also verify pack acceptance and updates on each target Bedrock platform. If an official Geyser release changes custom-sound translation, disable Bedrock playback until the adapter has been retested.
 
