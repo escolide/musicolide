@@ -30,6 +30,11 @@ public final class YtDlpDownloader {
 
     public record DownloadResult(Path audioFile, String title, String artist,
                                  String sourceId, String extractor) {}
+
+    public record SearchResult(String videoId, String title, String uploader,
+                               long durationSeconds, String url) {}
+
+    private record RankedSearchResult(SearchResult result, int score, int originalOrder) {}
     private final JavaPlugin plugin;
     private final NativeToolchain toolchain;
 
@@ -123,6 +128,193 @@ public final class YtDlpDownloader {
         }
     }
 
+
+
+    /**
+     * Searches YouTube for metadata only. No media formats are selected and
+     * --skip-download is always present; a player must explicitly choose a result
+     * before the normal, allowlist-checked import path can download audio.
+     */
+    public List<SearchResult> searchYouTube(String query) throws IOException, InterruptedException {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            throw new IOException("YouTube search is disabled. Enable audio.yt-dlp first.");
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)) {
+            throw new IOException("yt-dlp is unavailable. Install it or provide a bundled executable.");
+        }
+        if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            throw new IOException("QuickJS is unavailable; YouTube search cannot start.");
+        }
+
+        String normalizedQuery = query == null ? "" : query.trim().replaceAll("[\\r\\n\\t]+", " ");
+        if (normalizedQuery.isBlank()) throw new IOException("Enter a YouTube search query.");
+        if (normalizedQuery.length() > 180) throw new IOException("Search queries must be 180 characters or fewer.");
+
+        List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");
+        if (!isHostAllowed("youtube.com", allowedHosts)
+                && !isHostAllowed("youtu.be", allowedHosts)) {
+            throw new IOException("Add youtube.com or youtu.be to audio.yt-dlp.allowed-hosts before searching.");
+        }
+
+        int resultCount = bounded(plugin.getConfig().getInt("audio.yt-dlp.search.result-count", 6), 1, 20);
+        boolean prioritizeSongs = plugin.getConfig().getBoolean(
+                "audio.yt-dlp.search.prioritize-songs", true);
+        int fetchCount = prioritizeSongs ? Math.min(30, Math.max(resultCount, resultCount * 3)) : resultCount;
+
+        Path temporaryDirectory = plugin.getDataFolder().toPath().resolve("temp");
+        Files.createDirectories(temporaryDirectory);
+        Path output = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".json");
+        Path errorLog = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".log");
+        Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
+        Files.createDirectories(cacheDirectory);
+        Process process = null;
+        try {
+            String jsRuntime = toolchain.executable(NativeToolchain.Tool.JS_RUNTIME);
+            List<String> command = buildSearchCommand(
+                    toolchain.executable(NativeToolchain.Tool.YT_DLP), jsRuntime, cacheDirectory,
+                    fetchCount, normalizedQuery);
+            process = toolchain.start(new ProcessBuilder(command)
+                    .redirectOutput(output.toFile())
+                    .redirectError(errorLog.toFile()));
+
+            int timeoutSeconds = bounded(plugin.getConfig().getInt(
+                    "audio.processing.yt-dlp-search-timeout-seconds", 45), 10, 180);
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                toolchain.terminate(process);
+                throw new IOException("YouTube search exceeded its " + timeoutSeconds + " second timeout.");
+            }
+            int exit = process.exitValue();
+            toolchain.finished(process);
+            if (exit != 0) {
+                String details = readErrorSummary(errorLog, normalizedQuery);
+                throw new IOException("YouTube search failed with exit code " + exit
+                        + (details.isBlank() ? ". Check server connectivity and yt-dlp diagnostics."
+                        : ". Details: " + details));
+            }
+
+            long outputSize = Files.size(output);
+            if (outputSize <= 0 || outputSize > MAX_INFO_JSON_BYTES) {
+                throw new IOException("YouTube search returned an empty or oversized metadata response.");
+            }
+            String json = Files.readString(output, StandardCharsets.UTF_8);
+            return parseSearchResults(json, resultCount, prioritizeSongs);
+        } catch (InterruptedException ex) {
+            if (process != null) toolchain.terminate(process);
+            Thread.currentThread().interrupt();
+            throw ex;
+        } finally {
+            if (process != null) toolchain.finished(process);
+            Files.deleteIfExists(output);
+            Files.deleteIfExists(errorLog);
+        }
+    }
+
+    static List<String> buildSearchCommand(String executable, String jsRuntimeExecutable,
+                                           Path cacheDirectory, int searchLimit, String query) {
+        if (jsRuntimeExecutable == null || jsRuntimeExecutable.isBlank()) {
+            throw new IllegalArgumentException("A JavaScript runtime is required for YouTube search.");
+        }
+        int boundedLimit = bounded(searchLimit, 1, 30);
+        List<String> command = new ArrayList<>();
+        command.add(executable);
+        command.addAll(List.of(
+                "--js-runtimes", "quickjs:" + jsRuntimeExecutable,
+                "--remote-components", "ejs:github",
+                "--ignore-config",
+                "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
+                "--no-warnings",
+                "--no-progress",
+                "--no-colors",
+                "--socket-timeout", "15",
+                "--retries", "1",
+                "--flat-playlist",
+                "--skip-download",
+                "--dump-single-json",
+                "--playlist-end", Integer.toString(boundedLimit),
+                "--", "ytsearch" + boundedLimit + ":" + query
+        ));
+        return List.copyOf(command);
+    }
+
+    static List<SearchResult> parseSearchResults(String json, int resultLimit, boolean prioritizeSongs)
+            throws IOException {
+        final JsonElement root;
+        try {
+            root = JsonParser.parseString(json);
+        } catch (RuntimeException ex) {
+            throw new IOException("yt-dlp returned invalid YouTube search JSON.", ex);
+        }
+        if (!root.isJsonObject()) throw new IOException("yt-dlp returned an unexpected YouTube search response.");
+        JsonArray entries = root.getAsJsonObject().getAsJsonArray("entries");
+        if (entries == null) return List.of();
+
+        List<RankedSearchResult> results = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>();
+        int order = 0;
+        for (JsonElement entry : entries) {
+            int currentOrder = order++;
+            if (entry == null || !entry.isJsonObject()) continue;
+            JsonObject object = entry.getAsJsonObject();
+            String id = firstNonBlank(object, "id");
+            String title = firstNonBlank(object, "title");
+            if (!id.matches("[A-Za-z0-9_-]{6,32}") || title.isBlank() || !seenIds.add(id)) continue;
+
+            String liveStatus = firstNonBlank(object, "live_status").toLowerCase(Locale.ROOT);
+            boolean live = object.has("is_live") && !object.get("is_live").isJsonNull()
+                    && object.get("is_live").isJsonPrimitive()
+                    && object.get("is_live").getAsBoolean();
+            if (live || liveStatus.equals("is_live") || liveStatus.equals("is_upcoming")) continue;
+
+            String uploader = firstNonBlank(object, "uploader", "channel", "channel_name", "creator");
+            long durationSeconds = -1L;
+            JsonElement duration = object.get("duration");
+            if (duration != null && duration.isJsonPrimitive() && duration.getAsJsonPrimitive().isNumber()) {
+                double value = duration.getAsDouble();
+                if (Double.isFinite(value) && value >= 0 && value <= Long.MAX_VALUE) {
+                    durationSeconds = Math.round(value);
+                }
+            }
+
+            SearchResult result = new SearchResult(id, title, uploader, durationSeconds,
+                    "https://www.youtube.com/watch?v=" + id);
+            int score = prioritizeSongs ? songMaterialScore(title, uploader, durationSeconds) : 0;
+            results.add(new RankedSearchResult(result, score, currentOrder));
+        }
+
+        if (prioritizeSongs) {
+            results.sort(Comparator.comparingInt(RankedSearchResult::score).reversed()
+                    .thenComparingInt(RankedSearchResult::originalOrder));
+        } else {
+            results.sort(Comparator.comparingInt(RankedSearchResult::originalOrder));
+        }
+        return results.stream().limit(bounded(resultLimit, 1, 20))
+                .map(RankedSearchResult::result).toList();
+    }
+
+    static int songMaterialScore(String title, String uploader, long durationSeconds) {
+        String normalizedTitle = title == null ? "" : title.toLowerCase(Locale.ROOT);
+        String normalizedUploader = uploader == null ? "" : uploader.toLowerCase(Locale.ROOT);
+        int score = 0;
+
+        if (normalizedTitle.contains("official audio")) score += 9;
+        if (normalizedTitle.contains("official music video")) score += 7;
+        else if (normalizedTitle.contains("official video")) score += 4;
+        if (normalizedTitle.contains("lyric video") || normalizedTitle.contains("lyrics")) score += 4;
+        if (normalizedTitle.contains("visualizer")) score += 3;
+        if (normalizedUploader.endsWith(" - topic")) score += 7;
+        else if (normalizedUploader.contains("vevo")) score += 3;
+
+        for (String term : List.of("reaction", "tutorial", "how to", "review", "karaoke",
+                "full album", "compilation", "playlist", "live stream", "explained")) {
+            if (normalizedTitle.contains(term)) score -= 8;
+        }
+        if (normalizedTitle.contains("cover")) score -= 2;
+        if (normalizedTitle.contains("fan made") || normalizedTitle.contains("fan-made")) score -= 3;
+        if (durationSeconds >= 120 && durationSeconds <= 600) score += 2;
+        else if (durationSeconds > 0 && durationSeconds < 45) score -= 3;
+        else if (durationSeconds > 900) score -= 2;
+        return score;
+    }
 
     record Metadata(String title, String artist, String sourceId, String extractor) {
         private static final Metadata EMPTY = new Metadata("", "", "", "");
