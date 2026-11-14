@@ -71,6 +71,43 @@ public final class AudioProcessor implements AutoCloseable {
      * uses the same local validation/encoding path as a file import. yt-dlp exits
      * before FFmpeg is launched.
      */
+
+    /**
+     * Runs a bounded, metadata-only YouTube search on the serial audio worker.
+     * The search itself never downloads media; selected URLs still pass through
+     * the normal allowlist and explicit auto-import configuration.
+     */
+    public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query) {
+        if (!toolchain.isInitialized()) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Native audio tools are still being checked during startup. Try again in a moment."));
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "YouTube search is disabled. Enable audio.yt-dlp in config.yml first."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "yt-dlp is unavailable. Install it or provide a bundled executable."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "QuickJS is unavailable; YouTube search cannot start."));
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new YtDlpDownloader(plugin, toolchain).searchYouTube(query);
+                } catch (Exception ex) {
+                    throw new CompletionException(ex);
+                }
+            }, worker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
+        }
+    }
+
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
         String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
         if (sourceKey.isBlank()) {
