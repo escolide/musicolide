@@ -1,5 +1,6 @@
 package io.github.escolide.musicolide.model;
 
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -72,6 +73,25 @@ public final class MusicZone {
     public Shape shape() { return shape; }
     public UUID worldId() { return worldId; }
     public String regionId() { return regionId; }
+
+    /** True when two requests describe exactly the same listening zone. */
+    public boolean sameAs(MusicZone other) {
+        return other != null
+                && shape == other.shape
+                && Objects.equals(worldId, other.worldId)
+                && Double.compare(centerX, other.centerX) == 0
+                && Double.compare(centerY, other.centerY) == 0
+                && Double.compare(centerZ, other.centerZ) == 0
+                && Double.compare(radius, other.radius) == 0
+                && Double.compare(width, other.width) == 0
+                && Double.compare(length, other.length) == 0
+                && Double.compare(rotationRadians, other.rotationRadians) == 0
+                && verticalLimited == other.verticalLimited
+                && Double.compare(verticalLimit, other.verticalLimit) == 0
+                && fadeEnabled == other.fadeEnabled
+                && Double.compare(fadeDistance, other.fadeDistance) == 0
+                && Objects.equals(regionId, other.regionId);
+    }
     public boolean fadeEnabled() { return fadeEnabled; }
     public double fadeDistance() { return fadeDistance; }
 
