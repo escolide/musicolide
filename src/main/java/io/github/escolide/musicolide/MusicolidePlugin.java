@@ -13,6 +13,7 @@ import io.github.escolide.musicolide.resource.SharedPortPackServer;
 import io.github.escolide.musicolide.resource.PackManager;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
 import io.github.escolide.musicolide.resource.ResourcePackFormat;
+import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -44,6 +45,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        // Older config.yml files are not overwritten on upgrades; add this new
+        // selector once so administrators can choose a playback format explicitly.
+        if (!getConfig().contains("audio.playback-mode")) {
+            getConfig().set("audio.playback-mode", "resumable");
+            saveConfig();
+        }
         try {
             Path data = getDataFolder().toPath();
             Files.createDirectories(data.resolve("incoming"));
@@ -64,6 +71,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                     + packFormat.displayName() + ".");
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
             resourcePackBuilder = builder;
+            SoundPackNamespaceMigration.migrate(data.resolve("packs"), repository, getLogger());
             ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
@@ -119,7 +127,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             if (getConfig().getBoolean("worldguard.require-plugin", false) && worldGuard == null) {
                 throw new IllegalStateException("WorldGuard is required but unavailable.");
             }
-            playback = new PlaybackEngine(this, repository, packManager, worldGuard, geyserBridge);
+            playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
             scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback);

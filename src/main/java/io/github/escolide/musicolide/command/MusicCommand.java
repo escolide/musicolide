@@ -421,8 +421,26 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
         if (actor == null) { sender.sendMessage(msg("&cConsole control is not supported; use an in-game DJ.")); return; }
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
-        if (!playback.control(actor, admin, action)) sender.sendMessage(msg("&cNo controllable session was found."));
-        else sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+        if (action.equals("resume")) {
+            PlaybackEngine.ResumeStart result = playback.resume(actor, admin, notification -> {
+                if (sender instanceof Player player && player.isOnline()) sender.sendMessage(msg(notification));
+            });
+            switch (result) {
+                case NOT_FOUND -> sender.sendMessage(msg("&cNo controllable session was found."));
+                case RESUMED -> sender.sendMessage(msg("&aPlayback resumed."));
+                case PREPARING -> sender.sendMessage(msg(
+                        "&ePreparing the remaining audio. Playback will continue after its temporary pack is ready."));
+                case BEDROCK_FALLBACK -> sender.sendMessage(msg(
+                        "&eA Bedrock player is in this session, so playback restarted from the beginning for compatibility."));
+                case ALREADY_PREPARING -> sender.sendMessage(msg("&eThe remaining audio is already being prepared."));
+            }
+            return;
+        }
+        if (!playback.control(actor, admin, action)) {
+            sender.sendMessage(msg("&cNo controllable session was found."));
+        } else {
+            sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+        }
     }
 
     private void queue(CommandSender sender, String[] args) throws SQLException {
@@ -465,10 +483,24 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
         if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music seek <seconds>")); return; }
         double seconds = Double.parseDouble(args[1]);
-        if (!Double.isFinite(seconds) || seconds < 0) throw new IllegalArgumentException("Seek position must be finite and non-negative.");
-        PlaybackSession session = playback.findOwned(player.getUniqueId()).orElseThrow(() -> new IllegalArgumentException("No session found."));
-        session.seek((long) (seconds * 1000));
-        sender.sendMessage(msg("&aSeeked to " + format((long) (seconds * 1000)) + "."));
+        if (!Double.isFinite(seconds) || seconds < 0 || seconds > Long.MAX_VALUE / 1000.0)
+            throw new IllegalArgumentException("Seek position must be finite and non-negative.");
+        long targetMs = (long) (seconds * 1000.0);
+        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
+        PlaybackEngine.SeekStart result = playback.seek(player.getUniqueId(), admin, targetMs, notification -> {
+            if (player.isOnline()) sender.sendMessage(msg(notification));
+        });
+        switch (result) {
+            case NOT_FOUND -> throw new IllegalArgumentException("No controllable session found.");
+            case SEEKED -> sender.sendMessage(msg("&aSeeked to " + format(targetMs) + "."));
+            case PREPARING -> sender.sendMessage(msg(
+                    "&ePreparing audio from " + format(targetMs) + ". Playback will continue after its temporary pack loads."));
+            case BEDROCK_UNSUPPORTED -> throw new IllegalArgumentException(
+                    "Timestamp-based seeking is not available while a Bedrock player is in this session. Use segmented mode for Bedrock-compatible seeking.");
+            case UNSUPPORTED -> throw new IllegalArgumentException(
+                    "Streamed seeking requires audio.playback-mode: resumable. The continuous mode can only restart from the beginning.");
+            case ALREADY_PREPARING -> sender.sendMessage(msg("&eAn audio seek or resume is already being prepared."));
+        }
     }
 
     private void playlist(CommandSender sender, String[] args) throws SQLException {
