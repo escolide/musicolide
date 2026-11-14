@@ -74,18 +74,19 @@ public final class GeyserBridge {
      * Called from SessionLoadResourcePacksEvent after the current aggregate
      * library has been registered for this Bedrock connection.
      */
-    public void recordPackOffered(UUID uuid) {
-        if (uuid == null) return;
+    public void recordPackOffered(String identity) {
+        if (identity == null || identity.isBlank()) return;
         String fingerprint = currentPackFingerprint();
-        if (fingerprint != null) readiness.offered(uuid, fingerprint);
+        if (fingerprint != null) readiness.offered(identity, fingerprint);
     }
 
     /**
      * Called from Geyser SessionJoinEvent. Geyser fires this after the Bedrock
      * client completes its initial resource-pack exchange and becomes play-ready.
      */
-    public boolean recordSessionReady(UUID uuid) {
-        return uuid != null && readiness.markReady(uuid) && hasCurrentPackFor(uuid);
+    public boolean recordSessionReady(UUID uuid, String identity) {
+        if (uuid == null || identity == null || identity.isBlank()) return false;
+        return readiness.markReady(identity, uuid.toString()) && hasCurrentPackFor(uuid);
     }
 
     /**
@@ -158,10 +159,13 @@ public final class GeyserBridge {
         }
     }
 
+    public void removePlayer(UUID uuid, String identity) {
+        if (uuid != null) bedrockPlayers.remove(uuid);
+        readiness.remove(uuid == null ? null : uuid.toString(), identity);
+    }
+
     public void removePlayer(UUID uuid) {
-        if (uuid == null) return;
-        bedrockPlayers.remove(uuid);
-        readiness.remove(uuid);
+        removePlayer(uuid, null);
     }
 
     private record FileStamp(long modifiedMillis, long size, String fileKey) {}
