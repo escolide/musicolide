@@ -553,14 +553,28 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length < 2) { sender.sendMessage(msg("&eYour volume: " + playback.getPlayerVolume(player) + "%")); return; }
         int value = Integer.parseInt(args[1]);
         if (value < 0 || value > 100) throw new IllegalArgumentException("Volume must be between 0 and 100.");
-        playback.setPlayerVolume(player, value);
+        PlaybackEngine.VolumeChangeResult result = playback.setPlayerVolume(player, value, notification -> {
+            if (player.isOnline()) sender.sendMessage(msg(notification));
+        });
         sender.sendMessage(msg("&aYour music volume is now " + value + "%."));
+        if (result == PlaybackEngine.VolumeChangeResult.RESYNCHRONIZING) {
+            sender.sendMessage(msg("&eYour current track is being reloaded at the new volume."));
+        } else if (result == PlaybackEngine.VolumeChangeResult.NEXT_TRACK) {
+            sender.sendMessage(msg("&eThis change will take effect with the next track."));
+        }
     }
 
     private void mute(CommandSender sender, boolean muted) {
         if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
-        playback.setPlayerMuted(player, muted);
+        PlaybackEngine.VolumeChangeResult result = playback.setPlayerMuted(player, muted, notification -> {
+            if (player.isOnline()) sender.sendMessage(msg(notification));
+        });
         sender.sendMessage(msg(muted ? "&eMusic muted." : "&aMusic unmuted."));
+        if (!muted && result == PlaybackEngine.VolumeChangeResult.RESYNCHRONIZING) {
+            sender.sendMessage(msg("&eYour current track is being reloaded at your saved volume."));
+        } else if (!muted && result == PlaybackEngine.VolumeChangeResult.NEXT_TRACK) {
+            sender.sendMessage(msg("&eYour saved volume will apply from the next track."));
+        }
     }
 
     private void sync(CommandSender sender, String[] args) {
