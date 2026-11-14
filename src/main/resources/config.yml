@@ -128,8 +128,10 @@ playback:
     action-bar-now-playing: true
     # Synchronize Java recipients, but never let one slow client hold playback indefinitely.
     start-barrier: true
-    # Maximum time to wait for pending Java resource packs before starting the track.
-    # Players still pending at the deadline are skipped for this track.
+    # Maximum time to wait for slow Java resource packs after at least one Java
+    # recipient is ready. Late clients automatically receive a timeline-aligned
+    # temporary audio tail when their original library pack finishes loading.
+    # If nobody is ready yet, the session clock waits rather than consuming the track.
     start-barrier-timeout-seconds: 7
     late-join:
       # Shared lead used by /music sync and the late-join audio-tail preparation path.
