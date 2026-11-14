@@ -36,6 +36,9 @@ public final class PlaybackEngine {
     private final WorldGuardBridge worldGuard;
     private final GeyserBridge geyser;
     private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
+    // Per-session barrier deadline and players excluded after missing that deadline.
+    private final Map<UUID, BarrierWait> barrierWaits = new HashMap<>();
+    private final Map<UUID, String> barrierExcludedTracks = new HashMap<>();
     private BukkitTask task;
     private BukkitTask segmentTask;
 
@@ -300,6 +303,15 @@ public final class PlaybackEngine {
             active = List.copyOf(sessions);
         }
 
+        Set<String> activeTrackKeys = new HashSet<>();
+        for (PlaybackSession session : active) {
+            MusicTrack track = session.playbackTrack();
+            if (track != null) activeTrackKeys.add(barrierTrackKey(session, track));
+        }
+        barrierWaits.entrySet().removeIf(entry ->
+                !activeTrackKeys.contains(entry.getKey() + ":" + entry.getValue().trackId()));
+        barrierExcludedTracks.entrySet().removeIf(entry -> !activeTrackKeys.contains(entry.getValue()));
+
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
@@ -369,10 +381,10 @@ public final class PlaybackEngine {
     }
 
     /**
-     * Starts each session once all its currently selected, audible recipients
-     * have settled their resource-pack state. A declined/unavailable listener
-     * does not hold everyone else indefinitely; at least one recipient must be
-     * ready before the common clock can begin.
+     * Java-only bounded start barrier. Bedrock clients never participate in
+     * this wait. Java clients that are still pending at the deadline are
+     * excluded from this track so they cannot begin it out of sync later.
+     * A declined Java pack is already settled and never holds the barrier.
      */
     private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
         if (!plugin.getConfig().getBoolean("playback.synchronization.start-barrier", true)) {
@@ -382,49 +394,60 @@ public final class PlaybackEngine {
 
         Set<PlaybackSession> candidates = new HashSet<>();
         winners.values().forEach(candidate -> candidates.add(candidate.session));
+        long timeoutMillis = Math.max(0L,
+                plugin.getConfig().getLong("playback.synchronization.start-barrier-timeout-seconds", 7L)) * 1000L;
+        long now = System.currentTimeMillis();
+
         for (PlaybackSession session : candidates) {
             if (session.clockStarted() || session.paused() || session.resumePreparing()) continue;
-
-            boolean hasReadyRecipient = false;
-            boolean allRecipientsSettled = true;
             MusicTrack track = session.playbackTrack();
+            if (track == null) continue;
 
+            boolean allJavaRecipientsSettled = true;
             for (Player player : online) {
                 Candidate candidate = winners.get(player.getUniqueId());
                 if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
                 if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
 
-                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-                    // Geyser's play-ready event is the Bedrock equivalent of the
-                    // Java resource-pack SUCCESSFULLY_LOADED status. Only tracks
-                    // contained in the current aggregate pack can join this barrier.
-                    boolean bedrockTrackAvailable = track != null && track.namespace() != null
-                            && !track.namespace().startsWith("mr_")
-                            && geyser.isBedrockPackAvailable();
-                    if (bedrockTrackAvailable && geyser.hasCurrentPackFor(player.getUniqueId())) {
-                        // Even with the Bedrock barrier disabled, a player with the
-                        // current pack is a valid ready recipient for a Bedrock-only session.
-                        hasReadyRecipient = true;
-                    } else if (plugin.getConfig().getBoolean(
-                            "playback.synchronization.bedrock.enabled", true)
-                            && bedrockTrackAvailable
-                            && geyser.isAwaitingPackReady(player.getUniqueId())) {
-                        // Do not start Java or Bedrock listeners while a current
-                        // Bedrock recipient is still completing its initial pack load.
-                        allRecipientsSettled = false;
-                    }
-                    continue;
-                }
+                // Bedrock readiness is deliberately independent of the Java barrier.
+                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
 
-                if (packs.isReady(player, track)) {
-                    hasReadyRecipient = true;
-                } else if (!packs.isDeclined(player, track)) {
-                    allRecipientsSettled = false;
+                if (!packs.isReady(player, track) && !packs.isDeclined(player, track)) {
+                    allJavaRecipientsSettled = false;
                 }
             }
 
-            if (hasReadyRecipient && allRecipientsSettled) session.startClockIfNeeded();
+            if (allJavaRecipientsSettled) {
+                session.startClockIfNeeded();
+                barrierWaits.remove(session.id());
+                continue;
+            }
+
+            BarrierWait wait = barrierWaits.get(session.id());
+            if (wait == null || !wait.trackId().equals(track.id())) {
+                wait = new BarrierWait(track.id(), now);
+                barrierWaits.put(session.id(), wait);
+            }
+
+            if (now - wait.startedAtMillis() >= timeoutMillis) {
+                String trackKey = barrierTrackKey(session, track);
+                for (Player player : online) {
+                    Candidate candidate = winners.get(player.getUniqueId());
+                    if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
+                    if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
+                    if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
+                    if (!packs.isReady(player, track) && !packs.isDeclined(player, track)) {
+                        barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                    }
+                }
+                session.startClockIfNeeded();
+                barrierWaits.remove(session.id());
+            }
         }
+    }
+
+    private String barrierTrackKey(PlaybackSession session, MusicTrack track) {
+        return session.id() + ":" + track.id();
     }
 
     /**
@@ -498,6 +521,11 @@ public final class PlaybackEngine {
             return;
         }
         boolean bedrock = geyser != null && geyser.isBedrockPlayer(player.getUniqueId());
+        if (!bedrock && barrierTrackKey(session, track).equals(
+                barrierExcludedTracks.get(player.getUniqueId()))) {
+            stopPlayer(player);
+            return;
+        }
         if (bedrock) {
             // Bedrock receives the aggregate mcpack at Geyser connection time.
             // A late Bedrock joiner cannot receive an in-session regenerated Java pack.
@@ -615,6 +643,7 @@ public final class PlaybackEngine {
 
     public void onQuit(Player player) {
         stopPlayer(player);
+        barrierExcludedTracks.remove(player.getUniqueId());
         packs.removePlayer(player.getUniqueId());
         preferences.remove(player.getUniqueId());
         declinedWarnings.remove(player.getUniqueId());
@@ -634,8 +663,11 @@ public final class PlaybackEngine {
             sessions.clear();
         }
         bedrockWarnings.clear();
+        barrierWaits.clear();
+        barrierExcludedTracks.clear();
     }
 
+    private record BarrierWait(String trackId, long startedAtMillis) {}
     private record Candidate(PlaybackSession session, MusicZone.AudioMode mode) {}
     private static final class PlayerPlayback {
         UUID sessionId;
