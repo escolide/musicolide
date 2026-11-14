@@ -40,6 +40,9 @@ public final class PlaybackEngine {
     private final Map<UUID, BarrierWait> barrierWaits = new HashMap<>();
     private final Map<UUID, String> barrierExcludedTracks = new HashMap<>();
     private final Map<UUID, String> automaticSyncAttempts = new HashMap<>();
+    // Players who received the current track at its start; returning after leaving
+    // or entering after start must use a timeline-aligned private audio tail.
+    private final Map<String, Set<UUID>> sessionStartCohorts = new HashMap<>();
     private final Map<UUID, Long> syncGenerations = new HashMap<>();
     private BukkitTask task;
     private BukkitTask segmentTask;
@@ -513,13 +516,19 @@ public final class PlaybackEngine {
         }
 
         Set<String> activeTrackKeys = new HashSet<>();
+        Map<UUID, String> activeTrackKeysBySession = new HashMap<>();
         for (PlaybackSession session : active) {
             MusicTrack track = session.playbackTrack();
-            if (track != null) activeTrackKeys.add(barrierTrackKey(session, track));
+            if (track != null) {
+                String key = barrierTrackKey(session, track);
+                activeTrackKeys.add(key);
+                activeTrackKeysBySession.put(session.id(), key);
+            }
         }
         barrierWaits.entrySet().removeIf(entry ->
-                !activeTrackKeys.contains(entry.getKey() + ":" + entry.getValue().trackId()));
+                !Objects.equals(activeTrackKeysBySession.get(entry.getKey()), entry.getValue().trackKey()));
         barrierExcludedTracks.entrySet().removeIf(entry -> !activeTrackKeys.contains(entry.getValue()));
+        sessionStartCohorts.keySet().removeIf(key -> !activeTrackKeys.contains(key));
 
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
@@ -576,6 +585,7 @@ public final class PlaybackEngine {
             }
         }
         startReadySessionClocks(online, winners);
+        recordSessionStartCohorts(online, winners, active);
 
         if (plugin.getConfig().getBoolean("playback.overlap.warn-session-owner", true)) {
             long cooldown = plugin.getConfig().getLong("playback.overlap.warning-cooldown-seconds", 60) * 1000L;
@@ -626,6 +636,55 @@ public final class PlaybackEngine {
      * so a slow solo player does not lose the track before their pack arrives.
      * A declined Java pack is already settled and never holds the barrier.
      */
+    /**
+     * Remembers who joined each track's initial playback cohort. Later entrants,
+     * and listeners who leave and re-enter, use timeline-aligned catch-up instead
+     * of starting a streamed OGG at 00:00 against an advanced session clock.
+     */
+    private void recordSessionStartCohorts(List<Player> online, Map<UUID, Candidate> winners,
+                                           List<PlaybackSession> active) {
+        for (PlaybackSession session : active) {
+            if (!session.clockStarted() || session.paused() || session.resumePreparing()) continue;
+            MusicTrack track = session.playbackTrack();
+            if (track == null) continue;
+
+            String trackKey = barrierTrackKey(session, track);
+            Set<UUID> cohort = sessionStartCohorts.computeIfAbsent(trackKey, ignored -> {
+                Set<UUID> readyAtStart = new HashSet<>();
+                for (Player player : online) {
+                    Candidate candidate = winners.get(player.getUniqueId());
+                    if (candidate == null || candidate.session != session || isPlayerMuted(player)
+                            || playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) {
+                        continue;
+                    }
+                    boolean packReady = geyser != null && geyser.isBedrockPlayer(player.getUniqueId())
+                            ? geyser.isBedrockPackAvailable() && geyser.hasCurrentPackFor(player.getUniqueId())
+                            : packs.isReady(player, track);
+                    if (packReady) readyAtStart.add(player.getUniqueId());
+                }
+                return readyAtStart;
+            });
+
+            // Leaving this session's winning audience removes the player from
+            // its cohort. Returning later must be treated as a late entry.
+            for (UUID playerId : new HashSet<>(cohort)) {
+                Candidate winner = winners.get(playerId);
+                if (winner == null || winner.session != session) cohort.remove(playerId);
+            }
+
+            for (Map.Entry<UUID, Candidate> entry : winners.entrySet()) {
+                Candidate candidate = entry.getValue();
+                if (candidate.session != session || cohort.contains(entry.getKey())) continue;
+                Player player = Bukkit.getPlayer(entry.getKey());
+                if (player == null || isPlayerMuted(player)
+                        || playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) {
+                    continue;
+                }
+                barrierExcludedTracks.put(entry.getKey(), trackKey);
+            }
+        }
+    }
+
     private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
         if (!plugin.getConfig().getBoolean("playback.synchronization.start-barrier", true)) {
             for (Candidate candidate : winners.values()) candidate.session.startClockIfNeeded();
@@ -668,9 +727,10 @@ public final class PlaybackEngine {
                 continue;
             }
 
+            String trackKey = barrierTrackKey(session, track);
             BarrierWait wait = barrierWaits.get(session.id());
-            if (wait == null || !wait.trackId().equals(track.id())) {
-                wait = new BarrierWait(track.id(), now);
+            if (wait == null || !wait.trackKey().equals(trackKey)) {
+                wait = new BarrierWait(trackKey, now);
                 barrierWaits.put(session.id(), wait);
             }
 
@@ -699,7 +759,7 @@ public final class PlaybackEngine {
     }
 
     private String barrierTrackKey(PlaybackSession session, MusicTrack track) {
-        return session.id() + ":" + track.id();
+        return session.id() + ":" + session.timelineGeneration() + ":" + track.id();
     }
 
     /**
@@ -803,7 +863,9 @@ public final class PlaybackEngine {
             return;
         }
         if (synchronizedTail && packs.isReady(player, track)) {
-            barrierExcludedTracks.remove(playerId, barrierTrackKey(session, session.playbackTrack()));
+            String sourceTrackKey = barrierTrackKey(session, session.playbackTrack());
+            barrierExcludedTracks.remove(playerId, sourceTrackKey);
+            sessionStartCohorts.computeIfAbsent(sourceTrackKey, ignored -> new HashSet<>()).add(playerId);
         }
         if (bedrock) {
             // Bedrock receives the aggregate mcpack at Geyser connection time.
@@ -1039,7 +1101,7 @@ public final class PlaybackEngine {
         return winner;
     }
 
-    private record BarrierWait(String trackId, long startedAtMillis) {}
+    private record BarrierWait(String trackKey, long startedAtMillis) {}
     private record Candidate(PlaybackSession session, MusicZone.AudioMode mode) {}
     private static final class PlayerPlayback {
         UUID sessionId;
