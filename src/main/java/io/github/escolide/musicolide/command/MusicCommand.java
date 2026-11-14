@@ -581,10 +581,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg(status));
             return;
         }
-        if (args.length != 2) throw new IllegalArgumentException("Usage: /music speed <0.25-2.0>");
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music speed <0.5-2.0>");
         double value = Double.parseDouble(args[1]);
-        if (!Double.isFinite(value) || value < 0.25 || value > 2.0) {
-            throw new IllegalArgumentException("Playback speed must be between 0.25x and 2.0x.");
+        if (!Double.isFinite(value) || value < 0.5 || value > 2.0) {
+            throw new IllegalArgumentException("Playback speed must be between 0.5x and 2.0x.");
         }
         PlaybackEngine.SpeedChangeResult result = playback.setPlaybackSpeed(actor, admin, value);
         switch (result) {
@@ -784,7 +784,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music play <track-or-url> [@a|@p|@s|playername] [--circle r|--square WxL|--region id] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
-        sender.sendMessage(msg("&f/music volume <0-100>|speed <0.25-2.0>|mute|unmute|seek <seconds>|nowplaying"));
+        sender.sendMessage(msg("&f/music volume <0-100>|speed <0.5-2.0>|mute|unmute|seek <seconds>|nowplaying"));
         sender.sendMessage(msg("&f/music sync &7- re-synchronize your own audio with the active session"));
         sender.sendMessage(msg("&f/music sync <seconds> &7- set the shared sync offset (admin)"));
         sender.sendMessage(msg("&f/music alias add <url> <track-id> &7- map a URL to local audio"));
@@ -812,6 +812,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
+        if (args.length == 2 && args[0].equalsIgnoreCase("speed"))
+            return partial(List.of("0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"), args[1]);
+        if (args.length == 2 && args[0].equalsIgnoreCase("volume"))
+            return partial(List.of("0", "25", "50", "75", "100"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
