@@ -3,10 +3,13 @@ package io.github.escolide.musicolide.discord;
 import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.playback.DiscordPlaybackSnapshot;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
+import io.github.escolide.musicolide.command.MusicCommand;
+import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import moe.kyokobot.libdave.NativeDaveFactory;
 import moe.kyokobot.libdave.jda.LDJDADaveSessionFactory;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.audio.AudioModuleConfig;
 import net.dv8tion.jda.api.audio.hooks.ConnectionStatus;
 import net.dv8tion.jda.api.entities.Guild;
@@ -36,6 +39,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private static final long MAX_DRIFT_MS = 1_500L;
 
     private final PlaybackEngine playback;
+    private final DiscordCommandService commandService;
     private final NativeToolchain toolchain;
     private final Logger logger;
     private final String token;
@@ -58,10 +62,14 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private boolean hasEverConnected;
     private long lastVoiceConnectAttemptNanos;
     private long lastRestartAttemptNanos;
+    private long lastPresenceUpdateNanos;
+    private String lastPresenceText = "";
 
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
-                                   PlaybackEngine playback, NativeToolchain toolchain) {
+                                   PlaybackEngine playback, NativeToolchain toolchain,
+                                   MusicCommand musicCommand, DiscordAccountLinkManager accountLinks) {
         this.playback = playback;
+        this.commandService = new DiscordCommandService(plugin, playback, musicCommand, accountLinks);
         this.toolchain = toolchain;
         this.logger = plugin.getLogger();
         this.token = plugin.getConfig().getString("discord.bot-token", "").trim();
@@ -104,12 +112,13 @@ public final class DiscordBroadcastService implements AutoCloseable {
         try {
             NativeDaveFactory.ensureAvailable();
             JDA client = JDABuilder.createLight(token,
-                            GatewayIntent.GUILD_VOICE_STATES)
+                            GatewayIntent.GUILD_VOICE_STATES, GatewayIntent.DIRECT_MESSAGES)
                     .setAutoReconnect(reconnectAndResync)
                     .enableCache(CacheFlag.VOICE_STATE)
                     .setAudioModuleConfig(new AudioModuleConfig().withDaveSessionFactory(
                             new LDJDADaveSessionFactory(new NativeDaveFactory())))
                     .build();
+            client.addEventListener(commandService);
             jda = client;
             executor.scheduleWithFixedDelay(this::tickSafely, 500, 500, TimeUnit.MILLISECONDS);
             logger.info("Discord broadcaster initialized. Waiting for the configured voice channel.");
@@ -154,6 +163,9 @@ public final class DiscordBroadcastService implements AutoCloseable {
             return;
         }
 
+        Optional<DiscordPlaybackSnapshot> selected = playback.discordBroadcastSnapshot();
+        updatePresence(client, selected);
+
         VoiceChannel channel = client.getVoiceChannelById(parsedChannelId);
         if (channel == null) {
             streamer.stop();
@@ -184,6 +196,19 @@ public final class DiscordBroadcastService implements AutoCloseable {
         AudioManager audio = guild.getAudioManager();
         audio.setSendingHandler(sendHandler);
         audio.setAutoReconnect(reconnectAndResync);
+
+        // Keep the gateway online for slash commands and /info, but only hold a
+        // voice connection while a selected Musicolide session has actually
+        // started. A paused session remains selected and therefore keeps VC.
+        if (selected.isEmpty() || selected.get().track() == null || !selected.get().clockStarted()) {
+            streamer.stop();
+            lastTimelineKey = null;
+            if (audio.isConnected()) audio.closeAudioConnection();
+            voiceWasConnected = false;
+            hasEverConnected = false;
+            return;
+        }
+
         if (audio.isConnected() && !channel.equals(audio.getConnectedChannel())) {
             // JDA moves an existing voice connection directly; closing it first
             // creates an avoidable disconnect/reconnect window.
@@ -218,6 +243,16 @@ public final class DiscordBroadcastService implements AutoCloseable {
             hasEverConnected = true;
         }
 
+        DiscordPlaybackSnapshot snapshot = selected.get();
+        if (!snapshot.isAudible()) {
+            // Paused and resume-preparing sessions keep the bot in voice but
+            // stop sending PCM. A later resume starts a fresh decoder at the
+            // authoritative Minecraft timestamp.
+            streamer.stop();
+            lastTimelineKey = timelineKey(snapshot) + ":paused:" + snapshot.preparing();
+            return;
+        }
+
         if (!toolchain.isInitialized()) {
             streamer.stop();
             lastTimelineKey = null;
@@ -234,20 +269,6 @@ public final class DiscordBroadcastService implements AutoCloseable {
             return;
         }
         ffmpegUnavailableLogged = false;
-
-        Optional<DiscordPlaybackSnapshot> selected = playback.discordBroadcastSnapshot();
-        if (selected.isEmpty()) {
-            streamer.stop();
-            lastTimelineKey = null;
-            return;
-        }
-
-        DiscordPlaybackSnapshot snapshot = selected.get();
-        if (!snapshot.isAudible()) {
-            streamer.stop();
-            lastTimelineKey = timelineKey(snapshot) + ":inactive";
-            return;
-        }
 
         String key = timelineKey(snapshot);
         if (!key.equals(lastTimelineKey)) {
@@ -278,6 +299,50 @@ public final class DiscordBroadcastService implements AutoCloseable {
         }
     }
 
+    private void updatePresence(JDA client, Optional<DiscordPlaybackSnapshot> selected) {
+        if (!plugin.getConfig().getBoolean("discord.presence.enabled", true)) {
+            if (!lastPresenceText.isEmpty()) {
+                client.getPresence().setActivity(null);
+                lastPresenceText = "";
+                lastPresenceUpdateNanos = System.nanoTime();
+            }
+            return;
+        }
+        long now = System.nanoTime();
+        long intervalSeconds = Math.max(15L,
+                plugin.getConfig().getLong("discord.presence.update-interval-seconds", 15L));
+        if (now - lastPresenceUpdateNanos < TimeUnit.SECONDS.toNanos(intervalSeconds)) return;
+
+        String text;
+        if (selected.isPresent() && selected.get().track() != null) {
+            DiscordPlaybackSnapshot snapshot = selected.get();
+            String template = plugin.getConfig().getString(
+                    "discord.presence.template", "{title} • {elapsed}");
+            text = template
+                    .replace("{title}", snapshot.track().title() == null ? "Unknown" : snapshot.track().title())
+                    .replace("{artist}", snapshot.track().artist() == null ? "" : snapshot.track().artist())
+                    .replace("{elapsed}", formatPresenceTime(snapshot.elapsedMs()))
+                    .replace("{duration}", formatPresenceTime(snapshot.track().durationMs()))
+                    .replace("{state}", snapshot.paused() ? "Paused"
+                            : snapshot.preparing() ? "Preparing" : snapshot.isAudible() ? "Playing" : "Waiting");
+        } else {
+            text = plugin.getConfig().getString("discord.presence.idle-text", "").trim();
+        }
+        if (text.length() > 128) text = text.substring(0, 127) + "…";
+        if (text.equals(lastPresenceText)) {
+            lastPresenceUpdateNanos = now;
+            return;
+        }
+        client.getPresence().setActivity(text.isBlank() ? null : Activity.listening(text));
+        lastPresenceText = text;
+        lastPresenceUpdateNanos = now;
+    }
+
+    private String formatPresenceTime(long millis) {
+        long seconds = Math.max(0L, millis / 1000L);
+        return String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60L, seconds % 60L);
+    }
+
     private String timelineKey(DiscordPlaybackSnapshot snapshot) {
         return snapshot.sessionId() + ":" + snapshot.timelineGeneration() + ":"
                 + snapshot.track().id() + ":" + String.format(java.util.Locale.ROOT, "%.3f", snapshot.speed());
@@ -293,6 +358,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
         jda = null;
         if (client != null) {
             try {
+                client.removeEventListener(commandService);
                 client.getGuilds().forEach(guild -> {
                     AudioManager manager = guild.getAudioManager();
                     manager.closeAudioConnection();
