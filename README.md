@@ -99,7 +99,7 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 - /music import <filename> [title] (admin)
 - /music import all (admin; imports supported files from incoming/ one at a time)
 - /music import-url <url> --rights-confirmed [title] (admin; requires yt-dlp and an allowlisted source host)
-- /play <track-or-url> (DJ for saved tracks; URL auto-import additionally requires admin permission, audio.yt-dlp.auto-import-on-play: true, and an allowlisted host)
+- /play <track-or-url> (DJ for saved tracks; appends to the sender's existing session when its audience and zone match; URL auto-import additionally requires admin permission, audio.yt-dlp.auto-import-on-play: true, and an allowlisted host)
 - /music diagnostics (admin; reports native audio-tool availability)
 - /music list [search]
 - /music play <track-id-or-title> [--all | --player name | --circle radius | --square widthxlength | --region id] [--fade blocks]
