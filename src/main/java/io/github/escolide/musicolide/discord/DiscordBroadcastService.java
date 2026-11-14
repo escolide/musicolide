@@ -1,0 +1,248 @@
+package io.github.escolide.musicolide.discord;
+
+import io.github.escolide.musicolide.audio.NativeToolchain;
+import io.github.escolide.musicolide.playback.DiscordPlaybackSnapshot;
+import io.github.escolide.musicolide.playback.PlaybackEngine;
+import moe.kyokobot.libdave.NativeDaveFactory;
+import moe.kyokobot.libdave.jda.LDJDADaveSessionFactory;
+import net.dv8tion.jda.api.JDABuilder;
+import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.audio.AudioModuleConfig;
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
+import net.dv8tion.jda.api.managers.AudioManager;
+import net.dv8tion.jda.api.Permission;
+import net.dv8tion.jda.api.requests.GatewayIntent;
+import net.dv8tion.jda.api.utils.Status;
+
+import java.nio.file.Path;
+import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+/**
+ * One-way Musicolide -> Discord broadcaster. This class deliberately registers
+ * no message, interaction, or command handlers, so Discord cannot control
+ * Minecraft playback.
+ */
+public final class DiscordBroadcastService implements AutoCloseable {
+    private static final long DRIFT_CHECK_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(2);
+    private static final long MAX_DRIFT_MS = 1_500L;
+
+    private final PlaybackEngine playback;
+    private final NativeToolchain toolchain;
+    private final Logger logger;
+    private final String token;
+    private final String channelId;
+    private final boolean reconnectAndResync;
+    private final DiscordAudioSendHandler sendHandler = new DiscordAudioSendHandler();
+    private final DiscordTrackStreamer streamer;
+    private final ScheduledExecutorService executor;
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    private volatile JDA jda;
+    private volatile long parsedChannelId = -1L;
+    private String lastTimelineKey;
+    private long lastDriftCheckNanos;
+    private boolean missingChannelLogged;
+    private boolean permissionWarningLogged;
+    private boolean voiceWasConnected;
+
+    public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
+                                   PlaybackEngine playback, NativeToolchain toolchain) {
+        this.playback = playback;
+        this.toolchain = toolchain;
+        this.logger = plugin.getLogger();
+        this.token = plugin.getConfig().getString("discord.bot-token", "").trim();
+        this.channelId = plugin.getConfig().getString("discord.voice-channel-id", "").trim();
+        this.reconnectAndResync = plugin.getConfig().getBoolean("discord.reconnect-and-resync", true);
+        Path dataDirectory = plugin.getDataFolder().toPath();
+        this.streamer = new DiscordTrackStreamer(toolchain, dataDirectory, sendHandler, logger);
+        this.executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "Musicolide-Discord-Supervisor");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    public void start() {
+        if (closed.get()) return;
+        if (token.isBlank() || channelId.isBlank()) {
+            logger.warning("Discord broadcasting is enabled, but discord.bot-token or "
+                    + "discord.voice-channel-id is empty. Discord output remains disabled.");
+            close();
+            return;
+        }
+        try {
+            parsedChannelId = Long.parseLong(channelId);
+            if (parsedChannelId <= 0) throw new NumberFormatException("non-positive channel ID");
+        } catch (NumberFormatException ex) {
+            logger.warning("Discord broadcasting is disabled because discord.voice-channel-id is invalid.");
+            close();
+            return;
+        }
+        if (!toolchain.isInitialized()) {
+            logger.warning("Discord broadcasting is waiting for the native audio toolchain to initialize.");
+        }
+
+        executor.execute(this::login);
+    }
+
+    private void login() {
+        if (closed.get()) return;
+        try {
+            NativeDaveFactory.ensureAvailable();
+            JDA client = JDABuilder.createLight(token,
+                            GatewayIntent.GUILDS, GatewayIntent.GUILD_VOICE_STATES)
+                    .setAutoReconnect(true)
+                    .setAudioModuleConfig(new AudioModuleConfig().withDaveSessionFactory(
+                            new LDJDADaveSessionFactory(new NativeDaveFactory())))
+                    .build();
+            jda = client;
+            executor.scheduleWithFixedDelay(this::tickSafely, 500, 500, TimeUnit.MILLISECONDS);
+            logger.info("Discord broadcaster initialized. Waiting for the configured voice channel.");
+        } catch (Throwable error) {
+            logger.log(Level.WARNING, "Discord broadcaster could not initialize ("
+                    + error.getClass().getSimpleName() + "). Minecraft playback is unaffected.");
+            close();
+        }
+    }
+
+    private void tickSafely() {
+        if (closed.get()) return;
+        try {
+            tick();
+        } catch (Throwable error) {
+            streamer.stop();
+            lastTimelineKey = null;
+            logger.log(Level.WARNING, "Discord broadcaster encountered an error ("
+                    + error.getClass().getSimpleName() + "). Minecraft playback is unaffected.");
+        }
+    }
+
+    private void tick() {
+        JDA client = jda;
+        if (client == null || client.getStatus() != Status.CONNECTED) {
+            streamer.stop();
+            lastTimelineKey = null;
+            voiceWasConnected = false;
+            return;
+        }
+
+        VoiceChannel channel = client.getVoiceChannelById(parsedChannelId);
+        if (channel == null) {
+            streamer.stop();
+            lastTimelineKey = null;
+            if (!missingChannelLogged) {
+                logger.warning("Discord voice channel " + channelId
+                        + " is not visible to the bot. Check the channel ID and bot access.");
+                missingChannelLogged = true;
+            }
+            return;
+        }
+        missingChannelLogged = false;
+
+        Guild guild = channel.getGuild();
+        Member self = guild.getSelfMember();
+        if (!self.hasPermission(channel, Permission.VIEW_CHANNEL,
+                Permission.VOICE_CONNECT, Permission.VOICE_SPEAK)) {
+            streamer.stop();
+            lastTimelineKey = null;
+            if (!permissionWarningLogged) {
+                logger.warning("Discord bot needs View Channel, Connect and Speak permissions in the configured voice channel.");
+                permissionWarningLogged = true;
+            }
+            return;
+        }
+        permissionWarningLogged = false;
+
+        AudioManager audio = guild.getAudioManager();
+        audio.setSendingHandler(sendHandler);
+        if (audio.isConnected() && !channel.equals(audio.getConnectedChannel())) {
+            audio.closeAudioConnection();
+        }
+        if (!audio.isConnected()) {
+            streamer.stop();
+            lastTimelineKey = null;
+            if (reconnectAndResync && !audio.isAttemptingToConnect()) {
+                audio.openAudioConnection(channel);
+            }
+            voiceWasConnected = false;
+            return;
+        }
+
+        if (!voiceWasConnected) {
+            // A new voice connection must never replay the old buffered PCM.
+            // The next snapshot starts the decoder from Minecraft's current clock.
+            streamer.stop();
+            lastTimelineKey = null;
+            voiceWasConnected = true;
+        }
+
+        Optional<DiscordPlaybackSnapshot> selected = playback.discordBroadcastSnapshot();
+        if (selected.isEmpty()) {
+            streamer.stop();
+            lastTimelineKey = null;
+            return;
+        }
+
+        DiscordPlaybackSnapshot snapshot = selected.get();
+        if (!snapshot.isAudible()) {
+            streamer.stop();
+            lastTimelineKey = timelineKey(snapshot) + ":inactive";
+            return;
+        }
+
+        String key = timelineKey(snapshot);
+        if (!key.equals(lastTimelineKey)) {
+            lastTimelineKey = key;
+            streamer.start(snapshot, playback::discordBroadcastSnapshot);
+            lastDriftCheckNanos = System.nanoTime();
+            return;
+        }
+
+        long now = System.nanoTime();
+        if (now - lastDriftCheckNanos >= DRIFT_CHECK_INTERVAL_NANOS) {
+            lastDriftCheckNanos = now;
+            if (streamer.isDecoding()
+                    && snapshot.elapsedMs() < snapshot.track().durationMs() - MAX_DRIFT_MS) {
+                long drift = Math.abs(snapshot.elapsedMs() - streamer.estimatedPositionMs());
+                if (drift > MAX_DRIFT_MS) {
+                    streamer.start(snapshot, playback::discordBroadcastSnapshot);
+                }
+            }
+        }
+    }
+
+    private String timelineKey(DiscordPlaybackSnapshot snapshot) {
+        return snapshot.sessionId() + ":" + snapshot.timelineGeneration() + ":"
+                + snapshot.track().id() + ":" + String.format(java.util.Locale.ROOT, "%.3f", snapshot.speed());
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        streamer.close();
+        sendHandler.close();
+        executor.shutdownNow();
+        JDA client = jda;
+        jda = null;
+        if (client != null) {
+            try {
+                client.getGuilds().forEach(guild -> {
+                    AudioManager manager = guild.getAudioManager();
+                    manager.closeAudioConnection();
+                    manager.setSendingHandler(null);
+                });
+                client.shutdown();
+            } catch (Exception error) {
+                logger.log(Level.FINE, "Discord shutdown completed with " + error.getClass().getSimpleName());
+            }
+        }
+    }
+}
