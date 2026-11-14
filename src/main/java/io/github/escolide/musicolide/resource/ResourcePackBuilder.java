@@ -1,5 +1,7 @@
 package io.github.escolide.musicolide.resource;
 
+import io.github.escolide.musicolide.model.MusicTrack;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
