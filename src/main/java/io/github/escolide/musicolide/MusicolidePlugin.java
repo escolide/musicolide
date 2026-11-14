@@ -15,6 +15,7 @@ import io.github.escolide.musicolide.resource.PublicAddressDiscovery;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
 import io.github.escolide.musicolide.resource.ResourcePackFormat;
 import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
+import io.github.escolide.musicolide.runtime.DiscordRuntimeBundle;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
@@ -188,24 +189,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
             if (getConfig().getBoolean("discord.enabled", false)) {
-                Object discordServiceInstance = null;
                 try {
-                    // Load this optional class only when enabled. The universal JAR
-                    // deliberately omits its JDA/DAVE runtime dependencies.
-                    Class<?> discordServiceType = Class.forName(
-                            "io.github.escolide.musicolide.discord.DiscordBroadcastService",
-                            true, getClass().getClassLoader());
-                    discordServiceInstance = discordServiceType.getConstructor(
-                            JavaPlugin.class, PlaybackEngine.class, NativeToolchain.class)
-                            .newInstance(this, playback, nativeToolchain);
-                    discordServiceType.getMethod("start").invoke(discordServiceInstance);
-                    if (!(discordServiceInstance instanceof AutoCloseable closeable)) {
-                        throw new IllegalStateException("Discord broadcaster does not support shutdown.");
-                    }
-                    discordBroadcastService = closeable;
+                    // Extract and verify the optional nested runtime, then load the
+                    // Discord implementation in an isolated child classloader.
+                    discordBroadcastService = DiscordRuntimeBundle.start(this, playback, nativeToolchain);
                 } catch (Throwable discordError) {
-                    // Discord is an optional output. Even a linkage/configuration error must
-                    // never abort the Minecraft plugin or stop a server playback session.
+                    // Discord is an optional output. A missing library, unsupported
+                    // native platform, or initialization failure must not abort the
+                    // Minecraft plugin or stop an existing playback session.
                     Throwable cause = discordError;
                     while (cause instanceof java.lang.reflect.InvocationTargetException
                             && cause.getCause() != null) {
@@ -213,19 +204,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                     }
                     String artifactGuidance = cause instanceof NoClassDefFoundError
                             || cause instanceof ClassNotFoundException
-                            ? " The selected universal JAR omits the optional Discord runtime; use the Linux x86_64 production JAR."
+                            ? " Check that the installed JAR contains the embedded Discord runtime and that this OS/architecture is supported."
                             : "";
-                    getLogger().warning("Discord broadcasting could not be started ("
-                            + cause.getClass().getSimpleName() + "). Minecraft playback is unaffected."
-                            + artifactGuidance);
-                    if (discordServiceInstance instanceof AutoCloseable closeable) {
-                        try {
-                            closeable.close();
-                        } catch (Exception closeError) {
-                            getLogger().warning("Discord cleanup also failed ("
-                                    + closeError.getClass().getSimpleName() + ").");
-                        }
-                    }
+                    getLogger().log(java.util.logging.Level.WARNING,
+                            "Discord broadcasting could not be started ("
+                                    + cause.getClass().getSimpleName() + "). Minecraft playback is unaffected."
+                                    + artifactGuidance, cause);
                     discordBroadcastService = null;
                 }
             }
