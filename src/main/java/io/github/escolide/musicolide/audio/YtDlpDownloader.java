@@ -151,6 +151,10 @@ public final class YtDlpDownloader {
         if (normalizedQuery.length() > 180) throw new IOException("Search queries must be 180 characters or fewer.");
 
         List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");
+        List<String> blockedHosts = plugin.getConfig().getStringList("audio.yt-dlp.blocked-hosts");
+        if (isBlockedHost("youtube.com", blockedHosts) || isBlockedHost("youtu.be", blockedHosts)) {
+            throw new IOException("YouTube is blocked in audio.yt-dlp.blocked-hosts.");
+        }
         if (!isHostAllowed("youtube.com", allowedHosts)
                 && !isHostAllowed("youtu.be", allowedHosts)) {
             throw new IOException("Add youtube.com or youtu.be to audio.yt-dlp.allowed-hosts before searching.");
@@ -162,13 +166,15 @@ public final class YtDlpDownloader {
         int fetchCount = prioritizeSongs ? Math.min(30, Math.max(resultCount, resultCount * 3)) : resultCount;
 
         Path temporaryDirectory = plugin.getDataFolder().toPath().resolve("temp");
-        Files.createDirectories(temporaryDirectory);
-        Path output = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".json");
-        Path errorLog = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".log");
         Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
+        Files.createDirectories(temporaryDirectory);
         Files.createDirectories(cacheDirectory);
+        Path output = null;
+        Path errorLog = null;
         Process process = null;
         try {
+            output = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".json");
+            errorLog = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".log");
             String jsRuntime = toolchain.executable(NativeToolchain.Tool.JS_RUNTIME);
             List<String> command = buildSearchCommand(
                     toolchain.executable(NativeToolchain.Tool.YT_DLP), jsRuntime, cacheDirectory,
@@ -204,8 +210,8 @@ public final class YtDlpDownloader {
             throw ex;
         } finally {
             if (process != null) toolchain.finished(process);
-            Files.deleteIfExists(output);
-            Files.deleteIfExists(errorLog);
+            if (output != null) Files.deleteIfExists(output);
+            if (errorLog != null) Files.deleteIfExists(errorLog);
         }
     }
 
@@ -245,8 +251,12 @@ public final class YtDlpDownloader {
             throw new IOException("yt-dlp returned invalid YouTube search JSON.", ex);
         }
         if (!root.isJsonObject()) throw new IOException("yt-dlp returned an unexpected YouTube search response.");
-        JsonArray entries = root.getAsJsonObject().getAsJsonArray("entries");
-        if (entries == null) return List.of();
+        JsonElement entriesElement = root.getAsJsonObject().get("entries");
+        if (entriesElement == null || entriesElement.isJsonNull()) return List.of();
+        if (!entriesElement.isJsonArray()) {
+            throw new IOException("yt-dlp returned an unexpected YouTube search result list.");
+        }
+        JsonArray entries = entriesElement.getAsJsonArray();
 
         List<RankedSearchResult> results = new ArrayList<>();
         Set<String> seenIds = new HashSet<>();
