@@ -916,7 +916,18 @@ public final class PlaybackEngine {
     private boolean isAlreadyPlayingTrack(Player player, PlaybackSession session, MusicTrack track) {
         if (player == null || session == null || track == null) return false;
         PlayerPlayback state = playerPlayback.get(player.getUniqueId());
-        if (state == null || state.sound == null || !session.id().equals(state.sessionId)) return false;
+        if (state == null || !session.id().equals(state.sessionId)) return false;
+
+        // A player in the middle of a private sync-tail preparation is still
+        // partway through this session's track lifecycle even though their old
+        // sound has been stopped. Do not let an unrelated newly imported library
+        // revision trigger a second resource-pack apply during that operation.
+        if (state.syncPreparing && state.syncSessionId != null
+                && session.id().equals(state.syncSessionId)
+                && session.current() != null
+                && session.current().id().equals(state.syncSourceTrackId)) return true;
+
+        if (state.sound == null) return false;
         if (track.id().equals(state.trackId)) return true;
         return state.syncSessionId != null && session.id().equals(state.syncSessionId)
                 && session.current() != null && session.current().id().equals(state.syncSourceTrackId);
