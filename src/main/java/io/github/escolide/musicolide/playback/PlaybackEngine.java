@@ -277,17 +277,86 @@ public final class PlaybackEngine {
         return true;
     }
 
-    public void setPlayerVolume(Player player, int volume) {
+    public enum VolumeChangeResult { SAVED, MUTED, RESYNCHRONIZING, NEXT_TRACK }
+
+    /**
+     * Saves the player's volume and refreshes their current Java audio from the
+     * shared timeline. Minecraft cannot change the volume of a sound that is
+     * already playing, so streamed tracks need a private timestamped tail.
+     */
+    public VolumeChangeResult setPlayerVolume(Player player, int volume, Consumer<String> completion) {
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
         pref.volume(volume);
         savePreferences(player.getUniqueId(), pref);
+        if (pref.muted()) return VolumeChangeResult.MUTED;
+        if (pref.volume() <= 0) {
+            excludeCurrentTrack(player, findCandidate(player));
+            stopPlayer(player);
+            return VolumeChangeResult.MUTED;
+        }
+        return refreshPlayerVolume(player, completion);
     }
 
-    public void setPlayerMuted(Player player, boolean muted) {
+    public VolumeChangeResult setPlayerMuted(Player player, boolean muted, Consumer<String> completion) {
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
+        Candidate beforeMute = muted ? findCandidate(player) : null;
         pref.muted(muted);
         savePreferences(player.getUniqueId(), pref);
-        if (muted) stopPlayer(player);
+        if (muted) {
+            excludeCurrentTrack(player, beforeMute);
+            stopPlayer(player);
+            return VolumeChangeResult.MUTED;
+        }
+        if (pref.volume() <= 0) return VolumeChangeResult.MUTED;
+        return refreshPlayerVolume(player, completion);
+    }
+
+    private VolumeChangeResult refreshPlayerVolume(Player player, Consumer<String> completion) {
+        Candidate candidate = findCandidate(player);
+        if (candidate == null || !candidate.session.clockStarted()) return VolumeChangeResult.SAVED;
+
+        String trackKey = barrierTrackKey(candidate.session, candidate.session.playbackTrack());
+        if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+            PlayerPlayback state = playerPlayback.get(player.getUniqueId());
+            if (state == null || state.sound == null) {
+                barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                stopPlayer(player);
+                warnBedrockUnavailable(player, "messages.bedrock-resume-unsupported");
+            }
+            // A Bedrock client cannot receive a private Java tail pack mid-track.
+            // An already-playing sound retains its previous volume until next track.
+            return VolumeChangeResult.NEXT_TRACK;
+        }
+
+        SyncStart result = synchronizePlayer(player, completion);
+        return switch (result) {
+            case PREPARING, ALREADY_PREPARING -> VolumeChangeResult.RESYNCHRONIZING;
+            case PACK_NOT_READY -> {
+                barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                stopPlayer(player);
+                player.sendActionBar(message("messages.playback-synchronizing"));
+                yield VolumeChangeResult.RESYNCHRONIZING;
+            }
+            case TRACK_NEAR_END -> {
+                PlayerPlayback state = playerPlayback.get(player.getUniqueId());
+                if (state == null || state.sound == null) {
+                    barrierExcludedTracks.put(player.getUniqueId(), trackKey);
+                    automaticSyncAttempts.put(player.getUniqueId(), trackKey);
+                    stopPlayer(player);
+                    player.sendActionBar(message("messages.playback-sync-too-late"));
+                }
+                yield VolumeChangeResult.NEXT_TRACK;
+            }
+            case BEDROCK_UNSUPPORTED -> VolumeChangeResult.NEXT_TRACK;
+            default -> VolumeChangeResult.SAVED;
+        };
+    }
+
+    private void excludeCurrentTrack(Player player, Candidate candidate) {
+        if (candidate == null || !candidate.session.clockStarted()
+                || candidate.session.playbackTrack() == null) return;
+        barrierExcludedTracks.put(player.getUniqueId(),
+                barrierTrackKey(candidate.session, candidate.session.playbackTrack()));
     }
 
     /** Explicitly retries the Java music-library request for this player. */
@@ -723,8 +792,13 @@ public final class PlaybackEngine {
 
         MusicTrack track = synchronizedTail ? state.syncTrack : session.playbackTrack();
         String excludedTrack = barrierExcludedTracks.get(playerId);
-        if (!bedrock && !synchronizedTail
+        if (!synchronizedTail
                 && barrierTrackKey(session, session.playbackTrack()).equals(excludedTrack)) {
+            if (bedrock) {
+                warnBedrockUnavailable(player, "messages.bedrock-resume-unsupported");
+            } else {
+                player.sendActionBar(message("messages.playback-synchronizing"));
+            }
             stopPlayer(player);
             return;
         }
@@ -929,9 +1003,9 @@ public final class PlaybackEngine {
             }
         });
         if (result == SyncStart.TRACK_NEAR_END) {
-            // There is too little remaining audio to build a meaningful tail.
-            // Let the ordinary playback path attempt the track instead.
-            barrierExcludedTracks.remove(playerId, trackKey);
+            // Do not restart a streamed track from 00:00 when its tail is too short.
+            // Keep this player out of the current track; the next track gets a fresh start.
+            player.sendActionBar(message("messages.playback-sync-too-late"));
         } else if (result != SyncStart.PREPARING && result != SyncStart.ALREADY_PREPARING) {
             player.sendActionBar(message("messages.playback-synchronizing"));
         }
