@@ -600,14 +600,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         boolean spatialOption = circle || square || region != null || fadeEnabled;
         if (selector == null) {
-            if (sender instanceof Player) {
-                // A range/region defines the audience when no explicit selector is
-                // supplied. Default to @a and let the zone decide who can hear it.
-                // Non-spatial /play keeps the historical self-only default.
-                selector = spatialOption ? "@a" : "@s";
-            } else {
-                throw new IllegalArgumentException("From console, specify a target such as @a or a player name.");
-            }
+            selector = PlayTargetDefaults.defaultSelector(sender instanceof Player, spatialOption);
         }
 
         boolean all = selector.equalsIgnoreCase("@a");
