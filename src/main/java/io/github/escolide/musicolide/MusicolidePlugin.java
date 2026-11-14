@@ -255,7 +255,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             Class<?> adapterClass = Class.forName(
                     "io.github.escolide.musicolide.geyser.GeyserPackIntegration",
                     true, getClass().getClassLoader());
-            Object adapter = adapterClass.getConstructor(JavaPlugin.class, Path.class).newInstance(this, bedrockPack);
+            Object adapter = adapterClass.getConstructor(JavaPlugin.class, Path.class, GeyserBridge.class).newInstance(this, bedrockPack, geyserBridge);
             adapterClass.getMethod("register").invoke(adapter);
             geyserPackIntegration = adapter;
         } catch (ReflectiveOperationException | LinkageError ex) {
@@ -281,7 +281,6 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
-        if (geyserBridge != null) geyserBridge.recordPlayerJoin(event.getPlayer().getUniqueId());
         if (packManager != null && getConfig().getString(
                 "resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
