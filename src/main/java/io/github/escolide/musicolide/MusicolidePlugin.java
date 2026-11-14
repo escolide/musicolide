@@ -80,7 +80,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             ResourcePackBuilder builder = new ResourcePackBuilder(data, packFormat);
             resourcePackBuilder = builder;
             SoundPackNamespaceMigration.migrate(data.resolve("packs"), repository, getLogger());
-            ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
+            ResourcePackBuilder.BasePackInfo basePack = builder.loadOrBuildBasePack();
             // A server restart ends every in-flight HTTP request, so old immutable
             // library revisions can now be safely removed.
             builder.cleanupLibraryArchives(java.util.Set.of(basePack.sha1()));
