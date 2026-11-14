@@ -52,6 +52,9 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testImplementation 'net.dv8tion:JDA:6.7.0'
+    testRuntimeOnly 'moe.kyokobot.libdave:adapter-jda:0.1.2'
+    testRuntimeOnly 'moe.kyokobot.libdave:impl-jni:0.1.2'
+    testRuntimeOnly 'moe.kyokobot.libdave:natives-linux-x86-64:0.1.2'
     testImplementation 'io.netty:netty-codec-http:4.1.115.Final'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
