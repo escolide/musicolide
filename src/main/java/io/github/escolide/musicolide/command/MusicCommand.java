@@ -137,7 +137,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
             return;
         }
-        if (!plugin.getConfig().getBoolean("discord.enabled", false) || accountLinks == null) {
+        if (!plugin.getConfig().getBoolean("discord.enabled", false)
+                || !plugin.getConfig().getBoolean("discord.commands.enabled", true)
+                || accountLinks == null) {
             sender.sendMessage(msg("&cDiscord account linking is disabled on this server."));
             return;
         }
