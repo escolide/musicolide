@@ -72,8 +72,8 @@ public final class PlaybackSession {
      * @return true when the speed can affect the current track immediately
      */
     public synchronized boolean setSpeed(double value) {
-        if (!Double.isFinite(value) || value < 0.25 || value > 2.0) {
-            throw new IllegalArgumentException("Playback speed must be between 0.25x and 2.0x.");
+        if (!Double.isFinite(value) || value < 0.5 || value > 2.0) {
+            throw new IllegalArgumentException("Playback speed must be between 0.5x and 2.0x.");
         }
         if (clockStarted && !paused && !resumePreparing) {
             pendingSpeed = value;
