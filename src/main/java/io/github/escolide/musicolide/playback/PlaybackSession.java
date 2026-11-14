@@ -29,6 +29,8 @@ public final class PlaybackSession {
     private boolean clockStarted;
     private boolean repeat;
     private int priority;
+    private double speed = 1.0;
+    private Double pendingSpeed;
 
     public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
                            Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority) {
@@ -59,6 +61,29 @@ public final class PlaybackSession {
     public synchronized long timelineGeneration() { return timelineGeneration; }
     public int priority() { return priority; }
     public void priority(int priority) { this.priority = priority; }
+    public synchronized double speed() { return speed; }
+    public synchronized Double pendingSpeed() { return pendingSpeed; }
+
+    /**
+     * Changes sound pitch (and therefore playback rate) without modifying audio.
+     * An already-playing Minecraft sound cannot have its pitch changed in place,
+     * so live changes are staged for the next track.
+     *
+     * @return true when the speed can affect the current track immediately
+     */
+    public synchronized boolean setSpeed(double value) {
+        if (!Double.isFinite(value) || value < 0.25 || value > 2.0) {
+            throw new IllegalArgumentException("Playback speed must be between 0.25x and 2.0x.");
+        }
+        if (clockStarted && !paused && !resumePreparing) {
+            pendingSpeed = value;
+            return false;
+        }
+        speed = value;
+        pendingSpeed = null;
+        return true;
+    }
+
     public void repeat(boolean repeat) { this.repeat = repeat; }
     public boolean isEmpty() { return current == null && queue.isEmpty(); }
     public int queueSize() { return queue.size(); }
@@ -88,6 +113,10 @@ public final class PlaybackSession {
 
     public synchronized boolean advance() {
         timelineGeneration++;
+        if (pendingSpeed != null) {
+            speed = pendingSpeed;
+            pendingSpeed = null;
+        }
         if (queue.isEmpty() && repeat && !repeatSource.isEmpty()) queue.addAll(repeatSource);
         resumeGeneration++;
         resumePreparing = false;
@@ -229,9 +258,15 @@ public final class PlaybackSession {
     }
 
     public synchronized long elapsedMs() {
+        return elapsedMsAt(System.currentTimeMillis());
+    }
+
+    /** Deterministic clock projection used by the unit tests and playback engine. */
+    synchronized long elapsedMsAt(long nowMillis) {
         if (paused) return pausedOffsetMs;
         if (!clockStarted) return elapsedBaseMs;
-        return Math.max(0, elapsedBaseMs + System.currentTimeMillis() - trackStartedAt);
+        long wallElapsed = Math.max(0L, nowMillis - trackStartedAt);
+        return Math.max(0L, elapsedBaseMs + Math.round(wallElapsed * speed));
     }
 
     public synchronized int segmentIndex() {
