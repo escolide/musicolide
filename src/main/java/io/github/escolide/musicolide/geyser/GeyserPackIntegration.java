@@ -6,6 +6,7 @@ import org.geysermc.geyser.api.event.EventRegistrar;
 import org.geysermc.geyser.api.event.bedrock.SessionDisconnectEvent;
 import org.geysermc.geyser.api.event.bedrock.SessionJoinEvent;
 import org.geysermc.geyser.api.event.bedrock.SessionLoadResourcePacksEvent;
+import org.geysermc.geyser.api.event.bedrock.SessionLoginEvent;
 import org.geysermc.geyser.api.pack.PackCodec;
 import org.geysermc.geyser.api.pack.ResourcePack;
 
@@ -36,6 +37,7 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
             throw new IllegalStateException("Geyser's public API is not available yet.");
         }
         api.eventBus().subscribe(this, SessionLoadResourcePacksEvent.class, this::onSessionLoad);
+        api.eventBus().subscribe(this, SessionLoginEvent.class, this::onSessionLogin);
         api.eventBus().subscribe(this, SessionJoinEvent.class, this::onSessionJoin);
         api.eventBus().subscribe(this, SessionDisconnectEvent.class, this::onSessionDisconnect);
         registered = true;
@@ -52,6 +54,11 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
             plugin.getLogger().warning("Could not register the Musicolide Bedrock resource pack for "
                     + event.connection().bedrockUsername() + ": " + ex.getMessage());
         }
+    }
+
+    private void onSessionLogin(SessionLoginEvent event) {
+        UUID playerId = event.connection().javaUuid();
+        if (playerId != null) bridge.associatePlayer(playerId, identity(event));
     }
 
     private void onSessionJoin(SessionJoinEvent event) {
