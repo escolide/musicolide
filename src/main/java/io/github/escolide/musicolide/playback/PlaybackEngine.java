@@ -3,6 +3,7 @@ package io.github.escolide.musicolide.playback;
 import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
+import io.github.escolide.musicolide.util.TextUtil;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
 import io.github.escolide.musicolide.resource.PackManager;
@@ -486,7 +487,10 @@ public final class PlaybackEngine {
         }
         if (plugin.getConfig().getBoolean("playback.synchronization.action-bar-now-playing", true)) {
             MusicTrack displayTrack = originalTrack == null ? track : originalTrack;
-            player.sendActionBar(Component.text("♫ " + displayTrack.title() + "  •  " + formatTime(session.elapsedMs())
+            String title = TextUtil.truncate(displayTrack.title(), 34);
+            String artist = TextUtil.truncate(displayTrack.artist(), 18);
+            String label = artist.isBlank() ? title : title + " by " + artist;
+            player.sendActionBar(Component.text("♫ " + label + "  •  " + formatTime(session.elapsedMs())
                     + " / " + formatTime(displayTrack.durationMs())));
         }
     }
