@@ -4,7 +4,6 @@ import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.audio.TemporaryStorageCleaner;
 import io.github.escolide.musicolide.command.MusicCommand;
-import io.github.escolide.musicolide.discord.DiscordBroadcastService;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
@@ -39,7 +38,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private NativeToolchain nativeToolchain;
     private PackManager packManager;
     private PlaybackEngine playback;
-    private DiscordBroadcastService discordBroadcastService;
+    private AutoCloseable discordBroadcastService;
     private GeyserBridge geyserBridge;
     private Object geyserPackIntegration;
     private AutoCloseable packServer;
@@ -189,19 +188,44 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             playback = new PlaybackEngine(this, repository, packManager, processor, worldGuard, geyserBridge);
             playback.start();
             if (getConfig().getBoolean("discord.enabled", false)) {
+                Object discordServiceInstance = null;
                 try {
-                    discordBroadcastService = new DiscordBroadcastService(this, playback, nativeToolchain);
-                    discordBroadcastService.start();
+                    // Load this optional class only when enabled. The universal JAR
+                    // deliberately omits its JDA/DAVE runtime dependencies.
+                    Class<?> discordServiceType = Class.forName(
+                            "io.github.escolide.musicolide.discord.DiscordBroadcastService",
+                            true, getClass().getClassLoader());
+                    discordServiceInstance = discordServiceType.getConstructor(
+                            JavaPlugin.class, PlaybackEngine.class, NativeToolchain.class)
+                            .newInstance(this, playback, nativeToolchain);
+                    discordServiceType.getMethod("start").invoke(discordServiceInstance);
+                    if (!(discordServiceInstance instanceof AutoCloseable closeable)) {
+                        throw new IllegalStateException("Discord broadcaster does not support shutdown.");
+                    }
+                    discordBroadcastService = closeable;
                 } catch (Throwable discordError) {
                     // Discord is an optional output. Even a linkage/configuration error must
                     // never abort the Minecraft plugin or stop a server playback session.
-                    String artifactGuidance = discordError instanceof NoClassDefFoundError
+                    Throwable cause = discordError;
+                    while (cause instanceof java.lang.reflect.InvocationTargetException
+                            && cause.getCause() != null) {
+                        cause = cause.getCause();
+                    }
+                    String artifactGuidance = cause instanceof NoClassDefFoundError
+                            || cause instanceof ClassNotFoundException
                             ? " The selected universal JAR omits the optional Discord runtime; use the Linux x86_64 production JAR."
                             : "";
                     getLogger().warning("Discord broadcasting could not be started ("
-                            + discordError.getClass().getSimpleName() + "). Minecraft playback is unaffected."
+                            + cause.getClass().getSimpleName() + "). Minecraft playback is unaffected."
                             + artifactGuidance);
-                    if (discordBroadcastService != null) discordBroadcastService.close();
+                    if (discordServiceInstance instanceof AutoCloseable closeable) {
+                        try {
+                            closeable.close();
+                        } catch (Exception closeError) {
+                            getLogger().warning("Discord cleanup also failed ("
+                                    + closeError.getClass().getSimpleName() + ").");
+                        }
+                    }
                     discordBroadcastService = null;
                 }
             }
@@ -346,7 +370,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (temporaryTrackCleanupTask != null) temporaryTrackCleanupTask.cancel();
         closeGeyserPackIntegration();
         if (discordBroadcastService != null) {
-            discordBroadcastService.close();
+            try {
+                discordBroadcastService.close();
+            } catch (Exception discordCloseError) {
+                getLogger().warning("Discord broadcaster shutdown encountered an error ("
+                        + discordCloseError.getClass().getSimpleName() + ").");
+            }
             discordBroadcastService = null;
         }
         if (playback != null) playback.stopAll();
