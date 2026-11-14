@@ -14,6 +14,7 @@ import java.util.zip.ZipOutputStream;
 public final class ResourcePackBuilder {
     private static final String LEGACY_LIBRARY_FILE = "musicolide-base.zip";
     private static final String LIBRARY_FILE_PREFIX = "musicolide-library-";
+    private static final String LIBRARY_MANIFEST_FILE = "musicolide-library-current.properties";
     private static final UUID LIBRARY_ID = UUID.nameUUIDFromBytes(
             "musicolide:java:base-pack".getBytes(StandardCharsets.UTF_8));
 
@@ -21,6 +22,7 @@ public final class ResourcePackBuilder {
     private final ResourcePackFormat format;
     private final BedrockResourcePackBuilder bedrockBuilder;
     private volatile BasePackInfo currentBasePackInfo;
+    private volatile Set<String> basePackTrackFiles = Set.of();
 
     public ResourcePackBuilder(Path dataFolder, ResourcePackFormat format) throws IOException {
         this.packsDirectory = dataFolder.resolve("packs");
@@ -35,11 +37,13 @@ public final class ResourcePackBuilder {
      * so a normal player receives one library pack instead of sequential pack
      * applications for the first track.
      *
-     * New imports rebuild this archive. Its stable UUID and content SHA-1 allow
-     * clients to reuse an unchanged cached copy after reconnecting.
+     * The startup snapshot is immutable while the server is running. Tracks
+     * imported later are delivered as individual incremental packs, so clients
+     * do not have to download the entire catalogue again for each new song.
      */
     public synchronized BasePackInfo buildBasePack() throws IOException {
         Path temporary = Files.createTempFile(packsDirectory, ".musicolide-library-", ".zip");
+        Set<String> includedPacks = new LinkedHashSet<>();
         try {
             Set<String> writtenEntries = new HashSet<>();
             try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(temporary))) {
@@ -58,6 +62,7 @@ public final class ResourcePackBuilder {
                 }
 
                 for (Path archive : archives) {
+                    includedPacks.add(archive.getFileName().toString());
                     try (ZipFile source = new ZipFile(archive.toFile())) {
                         Enumeration<? extends ZipEntry> entries = source.entries();
                         while (entries.hasMoreElements()) {
@@ -98,11 +103,72 @@ public final class ResourcePackBuilder {
                 }
             }
             BasePackInfo info = new BasePackInfo(fileName, LIBRARY_ID, hash);
+            writeLibraryManifest(fileName, hash, includedPacks);
+            basePackTrackFiles = Set.copyOf(includedPacks);
             currentBasePackInfo = info;
             return info;
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    /**
+     * Reuses the exact startup library snapshot across server restarts. If no
+     * valid manifest exists (including upgrades from older plugin versions),
+     * build one once from the currently installed track archives.
+     */
+    public synchronized BasePackInfo loadOrBuildBasePack() throws IOException {
+        Path manifest = packsDirectory.resolve(LIBRARY_MANIFEST_FILE);
+        if (Files.isRegularFile(manifest)) {
+            Properties properties = new Properties();
+            try (InputStream input = Files.newInputStream(manifest)) {
+                properties.load(input);
+            }
+            String fileName = properties.getProperty("file", "").trim();
+            String hash = properties.getProperty("sha1", "").trim().toLowerCase(Locale.ROOT);
+            Path archive = packsDirectory.resolve(fileName).normalize();
+            if (!fileName.isBlank() && archive.getParent().equals(packsDirectory)
+                    && fileName.equals(LIBRARY_FILE_PREFIX + hash + ".zip")
+                    && hash.matches("[0-9a-f]{40}") && Files.isRegularFile(archive)
+                    && hash.equals(sha1(archive))) {
+                Set<String> included = new LinkedHashSet<>();
+                String tracks = properties.getProperty("tracks", "");
+                for (String name : tracks.split(",")) {
+                    String safe = name.trim();
+                    if (!safe.isBlank() && Path.of(safe).getFileName().toString().equals(safe)) included.add(safe);
+                }
+                BasePackInfo info = new BasePackInfo(fileName, LIBRARY_ID, hash);
+                basePackTrackFiles = Set.copyOf(included);
+                currentBasePackInfo = info;
+                return info;
+            }
+        }
+        return buildBasePack();
+    }
+
+    private void writeLibraryManifest(String fileName, String hash, Set<String> includedPacks) throws IOException {
+        Properties properties = new Properties();
+        properties.setProperty("file", fileName);
+        properties.setProperty("sha1", hash);
+        properties.setProperty("tracks", String.join(",", includedPacks));
+        Path temporary = Files.createTempFile(packsDirectory, ".musicolide-manifest-", ".tmp");
+        try {
+            try (var output = Files.newOutputStream(temporary)) {
+                properties.store(output, "Musicolide immutable Java library snapshot");
+            }
+            Path target = packsDirectory.resolve(LIBRARY_MANIFEST_FILE);
+            try {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ex) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    public boolean containsInBasePack(MusicTrack track) {
+        return track != null && basePackTrackFiles.contains(track.packFileName());
     }
 
     /**
