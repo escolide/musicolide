@@ -82,20 +82,34 @@ tasks.named('test') {
 def discordManifestFile = layout.buildDirectory.file('generated/discord-runtime/SHA256SUMS')
 def discordNativeManifestFile = layout.buildDirectory.file('generated/discord-runtime/NATIVE_ARTIFACTS')
 
+// Flatten the transitive JDA/DAVE Java dependency graph into one efficient
+// runtime JAR. Nested dependency JARs are already compressed individually,
+// which made an outer ZIP much larger than a single shaded runtime archive.
+def discordRuntimeFatJar = tasks.register('discordRuntimeFatJar', ShadowJar) {
+    archiveFileName = 'discord-runtime.jar'
+    destinationDirectory = layout.buildDirectory.dir('generated/discord-runtime')
+    configurations = [project.configurations.discordRuntime]
+    mergeServiceFiles()
+    duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
 tasks.register('generateDiscordRuntimeManifest') {
-    inputs.files(configurations.discordRuntime, configurations.discordNativeBundle)
+    dependsOn discordRuntimeFatJar
+    inputs.file(discordRuntimeFatJar.flatMap { it.archiveFile })
+    inputs.files(configurations.discordNativeBundle)
     outputs.files(discordManifestFile, discordNativeManifestFile)
     doLast {
-        def runtimeArtifacts = configurations.discordRuntime.files.sort { it.name }
+        def runtimeArtifact = discordRuntimeFatJar.get().archiveFile.get().asFile
         def nativeArtifacts = configurations.discordNativeBundle.files.sort { it.name }
-        def allArtifacts = runtimeArtifacts + nativeArtifacts
-        if (runtimeArtifacts.size() < 4 || nativeArtifacts.size() != 4
-                || allArtifacts.any { !it.isFile() || !it.name.endsWith('.jar') }) {
+        if (!runtimeArtifact.isFile() || !runtimeArtifact.name.endsWith('.jar')
+                || nativeArtifacts.size() != 4 || nativeArtifacts.any { !it.isFile() || !it.name.endsWith('.jar') }) {
             throw new GradleException('Discord runtime resolution is incomplete or contains a non-JAR artifact.')
         }
-        def duplicateNames = allArtifacts.groupBy { it.name }
+        def duplicateNames = nativeArtifacts.groupBy { it.name }
                 .findAll { name, files -> files.size() > 1 }.keySet()
-        if (!duplicateNames.isEmpty()) {
+        if (!duplicateNames.isEmpty() || nativeArtifacts.any { it.name == runtimeArtifact.name }) {
             throw new GradleException('Discord runtime has colliding JAR names: ' + duplicateNames.sort().join(', '))
         }
 
@@ -109,12 +123,9 @@ tasks.register('generateDiscordRuntimeManifest') {
             digest.digest().encodeHex().toString()
         }
 
-        def runtimeLines = runtimeArtifacts.collect { file ->
-            sha256(file) + '  lib/' + file.name
-        }
         def runtimeManifest = discordManifestFile.get().asFile
         runtimeManifest.parentFile.mkdirs()
-        runtimeManifest.setText(runtimeLines.join('\n') + '\n', 'UTF-8')
+        runtimeManifest.setText(sha256(runtimeArtifact) + '  lib/' + runtimeArtifact.name + '\n', 'UTF-8')
 
         def platformByNativeFile = [
                 'natives-linux-x86-64-0.1.2.jar': 'linux-x86-64',
@@ -139,7 +150,7 @@ tasks.register('generateDiscordRuntimeManifest') {
 
 def discordBundleTask = tasks.register('discordRuntimeBundle', Zip) {
     dependsOn tasks.named('generateDiscordRuntimeManifest')
-    from(configurations.discordRuntime) { into 'lib' }
+    from(discordRuntimeFatJar.flatMap { it.archiveFile }) { into 'lib' }
     from(discordManifestFile)
     from(discordNativeManifestFile)
     archiveFileName = 'discord-runtime.zip'
@@ -236,7 +247,7 @@ tasks.register('verifyUniversalPluginJarSize') {
             } finally {
                 runtimeZip.close()
             }
-            if (manifestText == null || nativeManifestText == null || runtimeJars.size() < 4) {
+            if (manifestText == null || nativeManifestText == null || runtimeJars.size() < 1) {
                 throw new GradleException('Embedded Discord runtime is incomplete.')
             }
             Map<String, String> manifestHashes = [:]
@@ -269,9 +280,7 @@ tasks.register('verifyUniversalPluginJarSize') {
             }
 
             def requiredDiscordArtifacts = [
-                    'lib/JDA-6.7.0.jar',
-                    'lib/adapter-jda-0.1.2.jar',
-                    'lib/impl-jni-0.1.2.jar'
+                    'lib/discord-runtime.jar'
             ] as Set
             def missingDiscordArtifacts = requiredDiscordArtifacts - runtimeJars
             if (!missingDiscordArtifacts.isEmpty()) {
