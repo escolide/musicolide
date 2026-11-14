@@ -34,8 +34,7 @@ class ResourcePackBuilderBasePackTest {
         assertEquals(first.id(), second.id());
         assertEquals(first.sha1(), second.sha1());
         assertSame(second, builder.currentBasePackInfo());
-        assertTrue(Files.size(temporary.resolve("packs").resolve(first.fileName())) > 4096
-                || Files.size(temporary.resolve("packs").resolve(first.fileName())) > 0);
+        assertTrue(Files.size(temporary.resolve("packs").resolve(first.fileName())) > 0);
 
         try (ZipFile zip = new ZipFile(temporary.resolve("packs").resolve(first.fileName()).toFile())) {
             assertNotNull(zip.getEntry("pack.mcmeta"));
@@ -60,6 +59,13 @@ class ResourcePackBuilderBasePackTest {
 
         assertEquals(empty.id(), populated.id());
         assertNotEquals(empty.sha1(), populated.sha1());
+        assertNotEquals(empty.fileName(), populated.fileName());
+        assertTrue(Files.exists(temporary.resolve("packs").resolve(empty.fileName())),
+                "The previous immutable revision must remain available for in-flight downloads.");
         assertEquals(populated, builder.currentBasePackInfo());
+
+        builder.cleanupLibraryArchives(java.util.Set.of(populated.sha1()));
+        assertFalse(Files.exists(temporary.resolve("packs").resolve(empty.fileName())));
+        assertTrue(Files.exists(temporary.resolve("packs").resolve(populated.fileName())));
     }
 }
