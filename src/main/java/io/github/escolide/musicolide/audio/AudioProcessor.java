@@ -124,6 +124,13 @@ public final class AudioProcessor implements AutoCloseable {
                     // and Shorts URLs to the same youtube:<video-id> key.
                     try {
                         repository.addAlias(sourceKey, imported.id());
+                        String extractor = download.extractor() == null ? "" : download.extractor().toLowerCase(Locale.ROOT);
+                        String sourceId = download.sourceId() == null ? "" : download.sourceId().trim();
+                        if (!sourceId.isBlank() && extractor.contains("youtube")) {
+                            // The extractor-provided ID is authoritative if a future
+                            // YouTube URL form is not recognized by LinkNormalizer.
+                            repository.addAlias("youtube:" + sourceId, imported.id());
+                        }
                     } catch (SQLException aliasError) {
                         plugin.getLogger().warning("Imported " + imported.title()
                                 + " but could not save its source-ID alias: " + aliasError.getMessage());
