@@ -11,10 +11,12 @@ server:
   bind-address: "0.0.0.0"
   port: 8765
 
-  # Automatically discover the public IP when no manual URL is provided.
+  # Automatically discover the server's outbound public IP over HTTPS when no URL is provided.
+  # This cannot identify a hosting provider's inbound proxy hostname or translated public port.
   auto-detect-public-address: true
 
-  # Optional manual override. Leave empty for automatic discovery.
+  # Optional manual override. For NAT/proxy hosts, use the hostname players use to join.
+  # Leave empty to use the automatically discovered public IP.
   public-base-url: ""
 
   # Detect the Minecraft listener port automatically.

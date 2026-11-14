@@ -11,6 +11,7 @@ import io.github.escolide.musicolide.region.WorldGuardBridge;
 import io.github.escolide.musicolide.resource.PackHttpServer;
 import io.github.escolide.musicolide.resource.SharedPortPackServer;
 import io.github.escolide.musicolide.resource.PackManager;
+import io.github.escolide.musicolide.resource.PublicAddressDiscovery;
 import io.github.escolide.musicolide.resource.ResourcePackBuilder;
 import io.github.escolide.musicolide.resource.ResourcePackFormat;
 import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
@@ -29,6 +30,7 @@ import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private TrackRepository repository;
@@ -114,7 +116,32 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 throw new IllegalArgumentException("Unknown server.hosting-mode '" + hostingMode
                         + "'. Use 'shared-port' or 'dedicated-port'.");
             }
-            packManager = new PackManager(this, basePack, publicPort);
+            String configuredPublicBase = getConfig().getString("server.public-base-url", "").trim();
+            CompletableFuture<String> publicBaseUrl;
+            if (!configuredPublicBase.isEmpty()) {
+                // An explicit address always wins. This is required on hosts that
+                // route incoming Minecraft traffic through a proxy or NAT hostname.
+                publicBaseUrl = CompletableFuture.completedFuture(configuredPublicBase);
+                getLogger().info("Using the configured public resource-pack base URL.");
+            } else if (getConfig().getBoolean("server.auto-detect-public-address", true)) {
+                getLogger().info("No server.public-base-url is configured; discovering the public IP over HTTPS in the background.");
+                publicBaseUrl = PublicAddressDiscovery.discoverBaseUrlAsync();
+                publicBaseUrl.whenComplete((address, error) -> {
+                    if (error == null) {
+                        getLogger().info("Automatically detected public resource-pack address " + address
+                                + ". If this host uses an inbound proxy/NAT, set server.public-base-url "
+                                + "to the hostname players use to join.");
+                    } else {
+                        Throwable cause = error.getCause() == null ? error : error.getCause();
+                        getLogger().warning("Automatic public-address detection failed: " + cause.getMessage()
+                                + " Set server.public-base-url to the public hostname players use to join.");
+                    }
+                });
+            } else {
+                publicBaseUrl = CompletableFuture.failedFuture(new IllegalStateException(
+                        "server.public-base-url is empty and server.auto-detect-public-address is disabled."));
+            }
+            packManager = new PackManager(this, basePack, publicPort, publicBaseUrl);
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {

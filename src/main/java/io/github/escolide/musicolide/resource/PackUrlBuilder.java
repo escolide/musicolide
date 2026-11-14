@@ -40,6 +40,11 @@ public final class PackUrlBuilder {
             throw new IllegalArgumentException("Shared-port hosting currently serves plain HTTP; use an http:// public-base-url.");
         }
         String host = configured.getHost();
+        if (host != null && host.startsWith("[") && host.endsWith("]")) {
+            // URI#getHost may retain brackets for an IPv6 literal; the multi-arg
+            // URI constructor expects the unbracketed address.
+            host = host.substring(1, host.length() - 1);
+        }
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("server.public-base-url must include a public IP address or hostname.");
         }
