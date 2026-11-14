@@ -188,7 +188,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {
-                    worldGuard = new WorldGuardBridge();
+                    worldGuard = new WorldGuardBridge(this);
                     getLogger().info("WorldGuard region integration enabled.");
                 } catch (ReflectiveOperationException ex) {
                     getLogger().warning("WorldGuard was found but its API could not be initialized: " + ex.getMessage());
