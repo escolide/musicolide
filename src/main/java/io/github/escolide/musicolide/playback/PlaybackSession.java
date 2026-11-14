@@ -73,6 +73,7 @@ public final class PlaybackSession {
     public synchronized void enqueue(MusicTrack track) { queue.addLast(track); }
 
     public synchronized boolean advance() {
+        if (queue.isEmpty() && repeat && !repeatSource.isEmpty()) queue.addAll(repeatSource);
         resumeGeneration++;
         resumePreparing = false;
         current = queue.pollFirst();
