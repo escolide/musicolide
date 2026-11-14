@@ -7,21 +7,23 @@ general:
   shutdown-stop-playback: true
 
 server:
-  # Default: serve packs through the existing Minecraft TCP listener.
-  # This avoids needing another public port on managed Minecraft hosts.
-  # Use "dedicated-port" only when your host provides another public TCP port.
   hosting-mode: "shared-port"
   bind-address: "0.0.0.0"
   port: 8765
-  # Set this to the public IP address or hostname players use to join.
-  # The port is detected from the Minecraft listener unless public-port overrides it.
-  public-base-url: "http://127.0.0.1"
+
+  # Automatically discover the public IP when no manual URL is provided.
+  auto-detect-public-address: true
+
+  # Optional manual override. Leave empty for automatic discovery.
+  public-base-url: ""
+
+  # Detect the Minecraft listener port automatically.
   auto-detect-port: true
-  # Set to a positive value only if your host maps the external port differently.
   public-port: -1
+
   path-prefix: "/packs"
   max-download-mb: 100
-
+  
 audio:
   tools:
     # Download pinned yt-dlp, FFmpeg and QuickJS builds over HTTPS on first startup.
