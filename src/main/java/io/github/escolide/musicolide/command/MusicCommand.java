@@ -479,6 +479,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         double seconds = Double.parseDouble(args[1]);
         if (!Double.isFinite(seconds) || seconds < 0) throw new IllegalArgumentException("Seek position must be finite and non-negative.");
         PlaybackSession session = playback.findOwned(player.getUniqueId()).orElseThrow(() -> new IllegalArgumentException("No session found."));
+        if (session.current() != null && session.current().isStreamed()) {
+            throw new IllegalArgumentException(
+                    "This track uses continuous streaming. Minecraft does not support seeking inside a streamed sound.");
+        }
         session.seek((long) (seconds * 1000));
         sender.sendMessage(msg("&aSeeked to " + format((long) (seconds * 1000)) + "."));
     }
