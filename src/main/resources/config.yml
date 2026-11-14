@@ -7,6 +7,9 @@ discord:
   # Optional one-way broadcast from the active Musicolide session to one Discord voice channel.
   # Discord users have no playback commands and cannot control the Minecraft server.
   enabled: false
+  # global-only: broadcast only sessions addressed to @a with no spatial zone.
+  # zone-aware: also allow the previous behaviour of mirroring an eligible spatial session.
+  broadcast-scope: "global-only"
   # Put the bot token in this server's local plugins/Musicolide/config.yml only.
   # Never commit, share, or post a real token.
   bot-token: ""
