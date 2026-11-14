@@ -203,16 +203,6 @@ public final class PlaybackEngine {
         return session.zone().shape() == MusicZone.Shape.GLOBAL ? 1 : 0;
     }
 
-    /**
-     * Used by retention cleanup to avoid deleting a temporary pack while a
-     * session still references it as the current, queued, or repeating track.
-     */
-    private int discordStateRank(PlaybackSession session) {
-        if (session.clockStarted() && !session.paused() && !session.resumePreparing()) return 0;
-        if (session.paused() || session.resumePreparing()) return 1;
-        return 2;
-    }
-
     public synchronized boolean isTrackInUse(String trackId) {
         return sessions.stream().anyMatch(session -> session.referencesTrack(trackId));
     }
