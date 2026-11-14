@@ -33,7 +33,7 @@ class PackUrlBuilderTest {
     @Test
     void formatsIpv6PublicAddressesWithBrackets() {
         assertEquals(
-                "http://[2001:4860:4860:0:0:0:0:8888]:25565/packs/track.zip",
+                "http://[2001:4860:4860::8888]:25565/packs/track.zip",
                 PackUrlBuilder.build("http://[2001:4860:4860::8888]", "/packs",
                         "track.zip", 25565, -1));
     }
