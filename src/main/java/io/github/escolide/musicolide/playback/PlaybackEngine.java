@@ -326,6 +326,22 @@ public final class PlaybackEngine {
             if (winner != null) winners.put(player.getUniqueId(), winner);
         }
 
+        // Request packs for every current recipient before starting the shared
+        // session clock. Otherwise the first client whose pack downloads fastest
+        // starts the clock while slower clients later play the stream from 00:00.
+        for (Player player : online) {
+            Candidate candidate = winners.get(player.getUniqueId());
+            if (candidate != null && !isPlayerMuted(player)
+                    && (geyser == null || !geyser.isBedrockPlayer(player.getUniqueId()))) {
+                int prefetch = Math.max(0, plugin.getConfig().getInt(
+                        "resource-packs.prefetch.tracks-ahead", 4));
+                packs.prefetch(player, candidate.session.playbackTrack(),
+                        candidate.session.upcoming(prefetch),
+                        plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
+            }
+        }
+        startReadySessionClocks(online, winners);
+
         if (plugin.getConfig().getBoolean("playback.overlap.warn-session-owner", true)) {
             long cooldown = plugin.getConfig().getLong("playback.overlap.warning-cooldown-seconds", 60) * 1000L;
             for (Map.Entry<PlaybackSession, Set<UUID>> entry : suppressed.entrySet()) {
@@ -348,6 +364,54 @@ public final class PlaybackEngine {
                 continue;
             }
             playFor(player, winner);
+        }
+    }
+
+    /**
+     * Starts each session once all its currently selected, audible recipients
+     * have settled their resource-pack state. A declined/unavailable listener
+     * does not hold everyone else indefinitely; at least one recipient must be
+     * ready before the common clock can begin.
+     */
+    private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
+        if (!plugin.getConfig().getBoolean("playback.synchronization.start-barrier", true)) {
+            for (Candidate candidate : winners.values()) candidate.session.startClockIfNeeded();
+            return;
+        }
+
+        Set<PlaybackSession> candidates = new HashSet<>();
+        winners.values().forEach(candidate -> candidates.add(candidate.session));
+        for (PlaybackSession session : candidates) {
+            if (session.clockStarted() || session.paused() || session.resumePreparing()) continue;
+
+            boolean hasReadyRecipient = false;
+            boolean allRecipientsSettled = true;
+            MusicTrack track = session.playbackTrack();
+
+            for (Player player : online) {
+                Candidate candidate = winners.get(player.getUniqueId());
+                if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
+                if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
+
+                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                    // Geyser packs are delivered by the Bedrock pack lifecycle, not
+                    // by Paper's Java resource-pack status events.
+                    if (track != null && (track.namespace() == null || !track.namespace().startsWith("mr_"))
+                            && geyser.isBedrockPackAvailable()
+                            && geyser.hasCurrentPackFor(player.getUniqueId())) {
+                        hasReadyRecipient = true;
+                    }
+                    continue;
+                }
+
+                if (packs.isReady(player, track)) {
+                    hasReadyRecipient = true;
+                } else if (!packs.isDeclined(player, track)) {
+                    allRecipientsSettled = false;
+                }
+            }
+
+            if (hasReadyRecipient && allRecipientsSettled) session.startClockIfNeeded();
         }
     }
 
@@ -444,9 +508,6 @@ public final class PlaybackEngine {
                 return;
             }
         } else {
-            int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
-            packs.prefetch(player, track, session.upcoming(prefetch),
-                    plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
             if (packs.isBaseDeclined(player) || packs.isDeclined(player, track)) {
                 // One rejection notice per catalogue song, even if the playback
                 // tick repeats hundreds of times. A different song gets its own notice.
@@ -464,7 +525,13 @@ public final class PlaybackEngine {
                 return;
             }
         }
-        session.startClockIfNeeded();
+        if (!plugin.getConfig().getBoolean("playback.synchronization.start-barrier", true)) {
+            session.startClockIfNeeded();
+        }
+        if (!session.clockStarted()) {
+            stopPlayer(player);
+            return;
+        }
         int segment = session.segmentIndex();
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment);
