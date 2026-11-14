@@ -258,7 +258,7 @@ tasks.register('verifyUniversalPluginJarSize') {
             Set<String> runtimeNames = new TreeSet<>()
             runtimeManifestText.readLines().findAll { !it.isBlank() }.each { line ->
                 def fields = line.split('\\|', -1)
-                if (fields.length != 3 || !(fields[0] ==~ /[A-Za-z0-9._+-]+\\.jar/)
+                if (fields.length != 3 || !(fields[0] ==~ /[A-Za-z0-9._+-]+\.jar/)
                         || !(fields[1] ==~ /[0-9a-f]{64}/)
                         || !fields[2].startsWith('https://repo.maven.apache.org/maven2/')) {
                     throw new GradleException('Invalid Discord Java runtime manifest entry.')
