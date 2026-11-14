@@ -421,8 +421,20 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
         if (actor == null) { sender.sendMessage(msg("&cConsole control is not supported; use an in-game DJ.")); return; }
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
-        if (!playback.control(actor, admin, action)) sender.sendMessage(msg("&cNo controllable session was found."));
-        else sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+        PlaybackSession controlled = playback.findOwned(actor).orElse(null);
+        if (controlled == null && admin) {
+            List<PlaybackSession> sessions = playback.sessions();
+            if (!sessions.isEmpty()) controlled = sessions.get(sessions.size() - 1);
+        }
+        boolean streamedResumeRestarts = action.equals("resume") && controlled != null
+                && controlled.current() != null && controlled.current().isStreamed();
+        if (!playback.control(actor, admin, action)) {
+            sender.sendMessage(msg("&cNo controllable session was found."));
+        } else if (streamedResumeRestarts) {
+            sender.sendMessage(msg("&eStreamed audio resumed from the beginning. Minecraft does not expose mid-stream seeking."));
+        } else {
+            sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+        }
     }
 
     private void queue(CommandSender sender, String[] args) throws SQLException {
