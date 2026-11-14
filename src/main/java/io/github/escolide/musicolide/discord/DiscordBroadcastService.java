@@ -170,6 +170,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
         if (channel == null) {
             streamer.stop();
             lastTimelineKey = null;
+            client.getGuilds().forEach(knownGuild -> knownGuild.getAudioManager().closeAudioConnection());
             if (!missingChannelLogged) {
                 logger.warning("Discord voice channel " + channelId
                         + " is not visible to the bot. Check the channel ID and bot access.");
@@ -185,6 +186,8 @@ public final class DiscordBroadcastService implements AutoCloseable {
                 Permission.VOICE_CONNECT, Permission.VOICE_SPEAK)) {
             streamer.stop();
             lastTimelineKey = null;
+            guild.getAudioManager().closeAudioConnection();
+            voiceWasConnected = false;
             if (!permissionWarningLogged) {
                 logger.warning("Discord bot needs View Channel, Connect and Speak permissions in the configured voice channel.");
                 permissionWarningLogged = true;
@@ -196,6 +199,18 @@ public final class DiscordBroadcastService implements AutoCloseable {
         AudioManager audio = guild.getAudioManager();
         audio.setSendingHandler(sendHandler);
         audio.setAutoReconnect(reconnectAndResync);
+
+        // A previously selected track can briefly have an unstarted clock
+        // after a timestamp-tail resume has loaded and is waiting at the
+        // Minecraft start barrier. Keep an existing voice connection alive,
+        // but never create a new one before the resumed clock actually starts.
+        DiscordPlaybackSnapshot snapshot = selected.orElse(null);
+        if (snapshot != null && !snapshot.clockStarted()) {
+            streamer.stop();
+            lastTimelineKey = timelineKey(snapshot) + ":waiting-for-clock";
+            if (!audio.isConnected()) voiceWasConnected = false;
+            return;
+        }
 
         // Keep the gateway online for slash commands and /info, but only hold a
         // voice connection while a selected Musicolide session has actually
@@ -243,7 +258,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
             hasEverConnected = true;
         }
 
-        DiscordPlaybackSnapshot snapshot = selected.get();
+        snapshot = selected.get();
         if (!snapshot.isAudible()) {
             // Paused and resume-preparing sessions keep the bot in voice but
             // stop sending PCM. A later resume starts a fresh decoder at the
