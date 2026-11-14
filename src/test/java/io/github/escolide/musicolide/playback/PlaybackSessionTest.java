@@ -247,6 +247,51 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void liveSpeedChangeIsStagedUntilTheNextTrackAndScalesItsClock() {
+        MusicTrack first = sampleTrack("speed-first");
+        MusicTrack second = sampleTrack("speed-second");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first, second), 0);
+
+        assertTrue(session.setSpeed(0.75), "Speed can be set before playback starts.");
+        assertEquals(0.75, session.speed(), 0.0001);
+
+        session.startClockIfNeeded();
+        long now = System.currentTimeMillis();
+        assertFalse(session.setSpeed(2.0), "An already-playing sound cannot change pitch in place.");
+        assertEquals(0.75, session.speed(), 0.0001);
+        assertEquals(2.0, session.pendingSpeed(), 0.0001);
+        assertEquals(750L, session.elapsedMsAt(now + 1000) - session.elapsedMsAt(now),
+                "The current track keeps its original playback rate.");
+
+        assertTrue(session.advance());
+        assertEquals("speed-second", session.current().id());
+        assertEquals(2.0, session.speed(), 0.0001);
+        assertNull(session.pendingSpeed());
+
+        session.startClockIfNeeded();
+        long nextStart = System.currentTimeMillis();
+        assertEquals(2000L,
+                session.elapsedMsAt(nextStart + 1000) - session.elapsedMsAt(nextStart),
+                "The next track's session clock must match the client sound pitch.");
+    }
+
+    @Test
+    void speedCanBeChangedWhilePausedAndRejectsOutOfRangeValues() {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(sampleTrack("speed-paused")), 0);
+        assertTrue(session.setSpeed(0.25));
+        session.startClockIfNeeded();
+        session.pause();
+
+        assertTrue(session.setSpeed(1.5));
+        assertEquals(1.5, session.speed(), 0.0001);
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(0.24));
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(2.01));
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(Double.NaN));
+    }
+
+    @Test
     void repeatPlaylistRefillsTheQueue() {
         MusicTrack track = new MusicTrack("demo", "Demo", "", "mc_demo", "demo.zip",
                 "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
