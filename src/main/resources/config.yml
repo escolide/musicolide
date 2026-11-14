@@ -81,8 +81,12 @@ audio:
 
 resource-packs:
   required-on-first-use: false
-  prompt: "Musicolide needs a small music resource pack to play this track."
-  strategy: "per-track"
+  prompt: "Musicolide needs its music library to play tracks."
+  # on-play: send the complete Java music library when a player first starts/needs music.
+  # on-join: send it as the player joins, even when no music is currently playing.
+  # The Java library is one pack containing all imported tracks; new imports publish a new revision.
+  download-mode: "on-play"
+  strategy: "library"
   prefetch:
     enabled: true
     tracks-ahead: 4
@@ -92,6 +96,8 @@ resource-packs:
     enabled: true
     max-size-gb: 5
     retain-unused-files-days: 30
+    # false keeps the music library active for the entire connection and lets
+    # Minecraft reuse its local SHA-1 cache after reconnecting.
     remove-pack-after-session: false
 
 playback:
