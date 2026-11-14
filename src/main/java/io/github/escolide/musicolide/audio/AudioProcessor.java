@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.SQLException;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -367,8 +368,15 @@ public final class AudioProcessor implements AutoCloseable {
                 List<String> entries = new ArrayList<>();
                 long maximumBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
                 long extractedBytes = 0L;
+                if (sourceTrack.segmentCount() <= 0) {
+                    throw new IOException("The segmented resource pack contains no audio segments.");
+                }
+                int segmentDurationMs = Math.max(1, sourceTrack.segmentMs());
+                int firstSegment = (int) Math.min(sourceTrack.segmentCount() - 1L,
+                        startMs / segmentDurationMs);
+                long offsetWithinFirstSegmentMs = startMs - (long) firstSegment * segmentDurationMs;
                 try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
-                    for (int i = 0; i < sourceTrack.segmentCount(); i++) {
+                    for (int i = firstSegment; i < sourceTrack.segmentCount(); i++) {
                         String segmentId = String.format(Locale.ROOT, "%05d", i);
                         String entryName = "assets/" + sourceTrack.namespace() + "/sounds/"
                                 + sourceTrack.namespace() + "/stereo/" + segmentId + ".ogg";
@@ -393,7 +401,7 @@ public final class AudioProcessor implements AutoCloseable {
                 }
                 if (entries.isEmpty()) throw new IOException("The segmented resource pack contains no audio segments.");
                 Files.writeString(concatList, String.join("\n", entries) + "\n", StandardCharsets.UTF_8);
-                runFfmpegSegmentedRemainder(ffmpeg, concatList, remainder, startMs, quality);
+                runFfmpegSegmentedRemainder(ffmpeg, concatList, remainder, offsetWithinFirstSegmentMs, quality);
             }
             long durationMs = probeDuration(ffmpeg, remainder, data);
             if (durationMs <= 0) throw new IOException("FFmpeg produced an empty audio remainder.");
