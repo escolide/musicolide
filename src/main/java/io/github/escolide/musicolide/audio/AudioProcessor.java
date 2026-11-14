@@ -147,7 +147,11 @@ public final class AudioProcessor implements AutoCloseable {
             Path streamedAudio = trackDirectory.resolve("music.ogg");
 
             int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
-            runFfmpeg(ffmpeg, source, streamedAudio, 0.0, durationMs / 1000.0, quality);
+            runFfmpegStreamed(ffmpeg, source, streamedAudio, quality);
+            // Base the playback clock on the encoded OGG's actual duration, not
+            // a rounded duration string from the source container.
+            durationMs = probeDuration(ffmpeg, streamedAudio, data);
+            if (durationMs <= 0) throw new IOException("The streamed OGG has an invalid duration.");
             generatedPack = packBuilder.buildStreamed(namespace, streamedAudio);
 
             // The streamed OGG is a build intermediate; the finished ZIP is retained.
@@ -216,6 +220,29 @@ public final class AudioProcessor implements AutoCloseable {
             return FfmpegDurationParser.parseMillis(Files.readString(output, StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(output);
+        }
+    }
+
+    private void runFfmpegStreamed(String executable, Path source, Path output, int quality)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
+                "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
+                output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg streamed-track encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing the streamed OGG file.");
         }
     }
 
