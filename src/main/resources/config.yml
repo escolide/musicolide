@@ -92,6 +92,10 @@ resource-packs:
 
 playback:
   default-volume: 100
+  # next-track: no new file; the current sound retains its old volume until the next track.
+  # precise: Java players receive a timestamp-aligned temporary OGG tail to change volume mid-track.
+  # restart-segment: restart the current segment in legacy segmented mode; streamed tracks use next-track.
+  volume-change-mode: "next-track"
   overlap:
     manual-priority-enabled: true
     warn-session-owner: true
@@ -119,9 +123,8 @@ playback:
     # If nobody is ready yet, the session clock waits rather than consuming the track.
     start-barrier-timeout-seconds: 7
     late-join:
-      # Shared lead used by /music sync and Java live-volume refreshes.
-      # Minecraft cannot change an existing sound's volume; Java clients receive a private
-      # timestamp-aligned OGG tail. Bedrock volume changes apply from the next track.
+      # Lead time used by /music sync and precise Java volume changes.
+      # The default next-track volume mode does not generate a replacement audio file.
       delay-seconds: 4.0
 
 playlists:
