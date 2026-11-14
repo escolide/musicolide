@@ -51,7 +51,9 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private long lastDriftCheckNanos;
     private boolean missingChannelLogged;
     private boolean permissionWarningLogged;
+    private boolean ffmpegUnavailableLogged;
     private boolean voiceWasConnected;
+    private long lastRestartAttemptNanos;
 
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
                                    PlaybackEngine playback, NativeToolchain toolchain) {
@@ -184,6 +186,23 @@ public final class DiscordBroadcastService implements AutoCloseable {
             voiceWasConnected = true;
         }
 
+        if (!toolchain.isInitialized()) {
+            streamer.stop();
+            lastTimelineKey = null;
+            return;
+        }
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            streamer.stop();
+            lastTimelineKey = null;
+            if (!ffmpegUnavailableLogged) {
+                logger.warning("Discord broadcasting requires the configured FFmpeg executable. "
+                        + "Minecraft playback remains available.");
+                ffmpegUnavailableLogged = true;
+            }
+            return;
+        }
+        ffmpegUnavailableLogged = false;
+
         Optional<DiscordPlaybackSnapshot> selected = playback.discordBroadcastSnapshot();
         if (selected.isEmpty()) {
             streamer.stop();
@@ -203,17 +222,25 @@ public final class DiscordBroadcastService implements AutoCloseable {
             lastTimelineKey = key;
             streamer.start(snapshot, playback::discordBroadcastSnapshot);
             lastDriftCheckNanos = System.nanoTime();
+            lastRestartAttemptNanos = lastDriftCheckNanos;
             return;
         }
 
         long now = System.nanoTime();
         if (now - lastDriftCheckNanos >= DRIFT_CHECK_INTERVAL_NANOS) {
             lastDriftCheckNanos = now;
-            if (streamer.isDecoding()
-                    && snapshot.elapsedMs() < snapshot.track().durationMs() - MAX_DRIFT_MS) {
-                long drift = Math.abs(snapshot.elapsedMs() - streamer.estimatedPositionMs());
-                if (drift > MAX_DRIFT_MS) {
+            if (snapshot.elapsedMs() < snapshot.track().durationMs() - MAX_DRIFT_MS) {
+                if (!streamer.isActive()
+                        && now - lastRestartAttemptNanos >= TimeUnit.SECONDS.toNanos(5)) {
+                    // Recover a decoder that exited unexpectedly, but avoid tight retry loops.
                     streamer.start(snapshot, playback::discordBroadcastSnapshot);
+                    lastRestartAttemptNanos = now;
+                } else if (streamer.isActive()) {
+                    long drift = Math.abs(snapshot.elapsedMs() - streamer.estimatedPositionMs());
+                    if (drift > MAX_DRIFT_MS) {
+                        streamer.start(snapshot, playback::discordBroadcastSnapshot);
+                        lastRestartAttemptNanos = now;
+                    }
                 }
             }
         }
