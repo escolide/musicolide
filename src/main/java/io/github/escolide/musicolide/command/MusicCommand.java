@@ -701,6 +701,22 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
             return partial(List.of("create", "add", "list", "play"), args[1]);
+        if (args.length == 3 && args[0].equalsIgnoreCase("play")) {
+            List<String> targets = new ArrayList<>();
+            targets.add("@a");
+            if (sender instanceof Player) {
+                targets.add("@p");
+                targets.add("@s");
+            }
+            Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER)
+                    .forEach(targets::add);
+            targets.addAll(List.of("--circle", "--square", "--region", "--fade"));
+            return partial(targets, args[2]);
+        }
+        if (args.length >= 4 && args[0].equalsIgnoreCase("play")
+                && args[args.length - 1].startsWith("--")) {
+            return partial(List.of("--circle", "--square", "--region", "--fade"), args[args.length - 1]);
+        }
         return List.of();
     }
 
