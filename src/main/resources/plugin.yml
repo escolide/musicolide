@@ -9,12 +9,12 @@ softdepend:
   - Geyser-Spigot
 commands:
   music:
-    description: Control Musicolide playback, playlists and the local music catalogue.
+    description: Control Musicolide playback, YouTube search and the local music catalogue.
     usage: /music help
     aliases: [musicolide, m]
   play:
     description: Play a track or import an administrator-allowlisted URL.
-    usage: /play <track-or-url>
+    usage: /play <track-title, search query or YouTube URL>
     permission: musicolide.dj
 permissions:
   musicolide.use:
