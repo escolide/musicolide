@@ -162,6 +162,7 @@ public final class PlaybackEngine {
         }
         if (!original.isStreamed()) {
             session.seek(targetMs);
+            stopPlayersInSession(session);
             return SeekStart.SEEKED;
         }
         boolean resumableMode = "resumable".equalsIgnoreCase(
@@ -530,6 +531,7 @@ public final class PlaybackEngine {
         }
         if (!session.clockStarted()) {
             stopPlayer(player);
+            player.sendActionBar(message("messages.playback-synchronizing"));
             return;
         }
         int segment = session.segmentIndex();
