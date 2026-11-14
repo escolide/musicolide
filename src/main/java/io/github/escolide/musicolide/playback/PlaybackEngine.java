@@ -84,6 +84,7 @@ public final class PlaybackEngine {
         if (owner != null) {
             PlaybackSession existing = sessions.stream()
                     .filter(session -> session.isOwner(owner))
+                    .filter(session -> !session.paused() && !session.resumePreparing())
                     .filter(session -> session.matchesPlaybackRequest(allPlayers, listeners, zone))
                     .max(Comparator.comparingLong(PlaybackSession::startedAt))
                     .orElse(null);
@@ -456,7 +457,18 @@ public final class PlaybackEngine {
             Candidate winner = null;
             for (PlaybackSession session : active) {
                 if (!session.targets(player.getUniqueId()) || session.current() == null
-                        || session.paused() || session.resumePreparing()) continue;
+                        || session.paused() || session.resumePreparing() || isPlayerMuted(player)) continue;
+
+                // A recipient that cannot use this pack must not reserve the
+                // player and make a different, playable session look like an overlap.
+                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                    if (!geyser.isBedrockPackAvailable()
+                            || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
+                } else if (packs.isBaseDeclined(player)
+                        || packs.isDeclined(player, session.playbackTrack())) {
+                    continue;
+                }
+
                 MusicZone zone = session.zone();
                 if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
                 MusicZone.AudioMode mode;
