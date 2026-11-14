@@ -444,7 +444,7 @@ public final class PackManager {
     }
 
     private void cleanupLibraryArchivesAsync() {
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::cleanupLibraryArchives);
+        CompletableFuture.runAsync(this::cleanupLibraryArchives);
     }
 
     private void cleanupLibraryArchives() {
