@@ -62,6 +62,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        // Excluded Bedrock players receive no Musicolide command feedback and
+        // cannot initiate plugin actions through Geyser's command bridge.
+        if (sender instanceof Player player
+                && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return true;
         if (args.length == 0 || args[0].equalsIgnoreCase("help")) { help(sender); return true; }
         String sub = args[0].toLowerCase(Locale.ROOT);
         try {
@@ -973,6 +977,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (sender instanceof Player player
+                && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return List.of();
         if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "search", "select", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
