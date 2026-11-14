@@ -81,6 +81,9 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             resourcePackBuilder = builder;
             SoundPackNamespaceMigration.migrate(data.resolve("packs"), repository, getLogger());
             ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
+            // A server restart ends every in-flight HTTP request, so old immutable
+            // library revisions can now be safely removed.
+            builder.cleanupLibraryArchives(java.util.Set.of(basePack.sha1()));
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
                 if (bedrockPack != null) getLogger().info("Rebuilt the Bedrock music library from imported tracks.");
@@ -150,7 +153,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 publicBaseUrl = CompletableFuture.failedFuture(new IllegalStateException(
                         "server.public-base-url is empty and server.auto-detect-public-address is disabled."));
             }
-            packManager = new PackManager(this, builder::currentBasePackInfo, publicPort, publicBaseUrl);
+            packManager = new PackManager(this, builder, publicPort, publicBaseUrl);
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {
