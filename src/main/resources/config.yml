@@ -131,6 +131,9 @@ playback:
     warn-session-owner: true
     warning-cooldown-seconds: 60
   range:
+    # /play or /music search with a spatial option and no explicit target defaults
+    # to @a; only players inside the selected zone become recipients.
+    # Without a spatial option, a player command still defaults to @s.
     circle:
       radius: 60
     square:
@@ -141,6 +144,8 @@ playback:
       mode: "unlimited"
       max-distance: 32
   fade:
+    # Keep distance attenuation available for stereo now and future mono/mix modes.
+    # In the current stereo output this scales each player's volume in the outer band.
     enabled-by-default: false
     distance: 10
   synchronization:
