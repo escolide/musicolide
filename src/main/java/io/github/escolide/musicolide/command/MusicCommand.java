@@ -73,6 +73,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "queue" -> queue(sender, args);
                 case "nowplaying", "progress" -> nowPlaying(sender);
                 case "volume" -> volume(sender, args);
+                case "speed" -> speed(sender, args);
                 case "mute" -> mute(sender, true);
                 case "unmute" -> mute(sender, false);
                 case "seek" -> seek(sender, args);
@@ -561,6 +562,38 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&eYour current track is being reloaded at the new volume."));
         } else if (result == PlaybackEngine.VolumeChangeResult.NEXT_TRACK) {
             sender.sendMessage(msg("&eThis change will take effect with the next track."));
+        } else if (result == PlaybackEngine.VolumeChangeResult.RESTARTED) {
+            sender.sendMessage(msg("&eThe current segment restarted at your new volume."));
+        }
+    }
+
+    private void speed(CommandSender sender, String[] args) {
+        if (!dj(sender)) return;
+        UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
+        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
+        if (args.length < 2) {
+            PlaybackSession session = playback.findControllableSession(actor, admin)
+                    .orElseThrow(() -> new IllegalArgumentException("No controllable playback session was found."));
+            Double pending = session.pendingSpeed();
+            String status = "&bCurrent playback speed: &f"
+                    + String.format(Locale.ROOT, "%.2f", session.speed()) + "x";
+            if (pending != null) status += " &7| Next track: &f" + String.format(Locale.ROOT, "%.2f", pending) + "x";
+            sender.sendMessage(msg(status));
+            return;
+        }
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music speed <0.25-2.0>");
+        double value = Double.parseDouble(args[1]);
+        if (!Double.isFinite(value) || value < 0.25 || value > 2.0) {
+            throw new IllegalArgumentException("Playback speed must be between 0.25x and 2.0x.");
+        }
+        PlaybackEngine.SpeedChangeResult result = playback.setPlaybackSpeed(actor, admin, value);
+        switch (result) {
+            case NO_SESSION -> throw new IllegalArgumentException("No controllable playback session was found.");
+            case APPLIED_NOW -> sender.sendMessage(msg("&aPlayback speed set to &f"
+                    + String.format(Locale.ROOT, "%.2f", value) + "x&a."));
+            case NEXT_TRACK -> sender.sendMessage(msg("&aPlayback speed set to &f"
+                    + String.format(Locale.ROOT, "%.2f", value)
+                    + "x&a. It will take effect on the next track."));
         }
     }
 
@@ -751,7 +784,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music play <track-or-url> [@a|@p|@s|playername] [--circle r|--square WxL|--region id] [--fade n]"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
-        sender.sendMessage(msg("&f/music volume <0-100>|mute|unmute|seek <seconds>|nowplaying"));
+        sender.sendMessage(msg("&f/music volume <0-100>|speed <0.25-2.0>|mute|unmute|seek <seconds>|nowplaying"));
         sender.sendMessage(msg("&f/music sync &7- re-synchronize your own audio with the active session"));
         sender.sendMessage(msg("&f/music sync <seconds> &7- set the shared sync offset (admin)"));
         sender.sendMessage(msg("&f/music alias add <url> <track-id> &7- map a URL to local audio"));
@@ -778,7 +811,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
-                "playlist", "alias", "priority", "sync", "reload"), args[0]);
+                "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
