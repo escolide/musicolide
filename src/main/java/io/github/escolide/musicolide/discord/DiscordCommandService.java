@@ -31,6 +31,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -46,6 +48,7 @@ public final class DiscordCommandService extends ListenerAdapter {
     private final PlaybackEngine playback;
     private final MusicCommand musicCommand;
     private final DiscordAccountLinkManager accountLinks;
+    private final Map<String, AttemptWindow> otpAttempts = new HashMap<>();
 
     public DiscordCommandService(JavaPlugin plugin, PlaybackEngine playback,
                                  MusicCommand musicCommand,
@@ -139,15 +142,25 @@ public final class DiscordCommandService extends ListenerAdapter {
         String code = event.getMessage().getContentRaw().trim();
         if (!code.matches("[0-9]{8}")) return;
 
+        String discordUserId = event.getAuthor().getId();
+        if (!allowOtpAttempt(discordUserId)) {
+            sendDmNotice(event, "Too many code attempts. Wait one minute before trying again.");
+            return;
+        }
         try {
             DiscordAccountLinkManager.Completion completion =
-                    accountLinks.completeLink(event.getAuthor().getId(), code);
+                    accountLinks.completeLink(discordUserId, code);
             switch (completion.status()) {
-                case LINKED -> event.getChannel().sendMessageEmbeds(embed()
-                        .setTitle("Minecraft account linked")
-                        .setDescription("Your Discord account is now linked to **"
-                                + safe(completion.minecraftName()) + "**.")
-                        .build()).queue();
+                case LINKED -> {
+                    synchronized (otpAttempts) {
+                        otpAttempts.remove(discordUserId);
+                    }
+                    event.getChannel().sendMessageEmbeds(embed()
+                            .setTitle("Minecraft account linked")
+                            .setDescription("Your Discord account is now linked to **"
+                                    + safe(completion.minecraftName()) + "**.")
+                            .build()).queue();
+                }
                 case DISCORD_ALREADY_LINKED -> sendDmNotice(event,
                         "This Discord account is already linked to a Minecraft account. Unlink it in Minecraft before linking another.");
                 case MINECRAFT_ALREADY_LINKED -> sendDmNotice(event,
@@ -158,6 +171,24 @@ public final class DiscordCommandService extends ListenerAdapter {
         } catch (SQLException error) {
             plugin.getLogger().log(Level.WARNING, "Could not complete a Discord account link.", error);
             sendDmNotice(event, "The account link could not be saved. Please ask the server administrator to check the plugin logs.");
+        }
+    }
+
+    private boolean allowOtpAttempt(String discordUserId) {
+        long now = System.nanoTime();
+        synchronized (otpAttempts) {
+            AttemptWindow window = otpAttempts.get(discordUserId);
+            if (window == null || now - window.startedAtNanos >= TimeUnit.MINUTES.toNanos(1)) {
+                otpAttempts.put(discordUserId, new AttemptWindow(now, 1));
+                if (otpAttempts.size() > 10_000) {
+                    otpAttempts.entrySet().removeIf(entry ->
+                            now - entry.getValue().startedAtNanos >= TimeUnit.MINUTES.toNanos(1));
+                }
+                return true;
+            }
+            if (window.attempts >= 5) return false;
+            otpAttempts.put(discordUserId, new AttemptWindow(window.startedAtNanos, window.attempts + 1));
+            return true;
         }
     }
 
@@ -202,6 +233,10 @@ public final class DiscordCommandService extends ListenerAdapter {
                 }
             };
             Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) {
+                    output.accept("Your linked Minecraft account went offline before the command could run.");
+                    return;
+                }
                 try {
                     musicCommand.executeDiscordCommand(player, commandLine, elevateAdmin, output);
                     if (lines.isEmpty()) output.accept("Command processed.");
@@ -248,16 +283,17 @@ public final class DiscordCommandService extends ListenerAdapter {
                         + " — Musicolide status");
         Optional<DiscordPlaybackSnapshot> selected = playback.discordBroadcastSnapshot();
         if (selected.isEmpty() || selected.get().track() == null) {
-            builder.setDescription("Nothing is currently playing on the server.");
+            builder.setDescription("No eligible Musicolide session is currently selected for this Discord channel. "
+                    + "The server may still have local or spatial playback outside the configured broadcast scope.");
         } else {
             DiscordPlaybackSnapshot snapshot = selected.get();
             String state = snapshot.paused() ? "Paused"
                     : snapshot.preparing() ? "Preparing to resume"
                     : snapshot.isAudible() ? "Playing" : "Waiting to start";
             builder.setDescription("**" + state + "**");
-            builder.addField("Track", safe(snapshot.track().title()), false);
+            builder.addField("Track", truncate(safe(snapshot.track().title()), 1024), false);
             if (snapshot.track().artist() != null && !snapshot.track().artist().isBlank()) {
-                builder.addField("Artist", safe(snapshot.track().artist()), true);
+                builder.addField("Artist", truncate(safe(snapshot.track().artist()), 1024), true);
             }
             builder.addField("Position", formatTime(snapshot.elapsedMs()) + " / "
                     + formatTime(snapshot.track().durationMs()), true);
@@ -267,7 +303,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             String host = plugin.getConfig().getString("discord.info.server-ip", "").trim();
             int port = plugin.getConfig().getInt("discord.info.server-port", 25565);
             if (!host.isBlank() && port > 0 && port <= 65535) {
-                builder.addField("Minecraft server", host + ":" + port, false);
+                builder.addField("Minecraft server", truncate(safe(host) + ":" + port, 1024), false);
             } else {
                 builder.addField("Minecraft server", "Server address is not configured.", false);
             }
@@ -309,6 +345,8 @@ public final class DiscordCommandService extends ListenerAdapter {
         if (value == null) return "";
         return value.length() <= maximum ? value : value.substring(0, Math.max(0, maximum - 1)) + "…";
     }
+
+    private record AttemptWindow(long startedAtNanos, int attempts) {}
 
     private static String formatTime(long millis) {
         long seconds = Math.max(0L, millis / 1000L);
