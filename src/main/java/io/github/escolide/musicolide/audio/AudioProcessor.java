@@ -188,6 +188,11 @@ public final class AudioProcessor implements AutoCloseable {
                 throw new IOException("The configured Musicolide audio-library size limit would be exceeded.");
             }
 
+            // Publish a fresh immutable Java library snapshot before this track
+            // becomes visible in the catalogue. Existing clients receive the new
+            // snapshot only when they next need a track from the updated library.
+            packBuilder.buildBasePack();
+
             String sha1 = sha1(generatedPack);
             MusicTrack track = new MusicTrack(id, rawTitle, "", namespace, generatedPack.getFileName().toString(),
                     sha1, durationMs, segmentMs, segmentCount, Files.size(generatedPack));
