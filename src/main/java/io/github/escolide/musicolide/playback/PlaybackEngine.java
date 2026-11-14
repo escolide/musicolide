@@ -39,6 +39,7 @@ public final class PlaybackEngine {
     // Per-session barrier deadline and players excluded after missing that deadline.
     private final Map<UUID, BarrierWait> barrierWaits = new HashMap<>();
     private final Map<UUID, String> barrierExcludedTracks = new HashMap<>();
+    private final Map<UUID, Long> syncGenerations = new HashMap<>();
     private BukkitTask task;
     private BukkitTask segmentTask;
 
@@ -265,6 +266,109 @@ public final class PlaybackEngine {
         return packs.requestLibrary(player, true);
     }
 
+    public enum SyncStart {
+        PREPARING, NO_SESSION, NOT_PLAYING, PAUSED, PACK_NOT_READY, PACK_DECLINED,
+        BEDROCK_UNSUPPORTED, TRACK_NEAR_END, ALREADY_PREPARING
+    }
+
+    /**
+     * Re-synchronizes only this Java player with the currently audible session.
+     * It generates a private OGG tail from the shared session timeline plus the
+     * configured preparation offset; other listeners and the session clock are
+     * never paused or changed.
+     */
+    public SyncStart synchronizePlayer(Player player, Consumer<String> completion) {
+        if (player == null || !player.isOnline()) return SyncStart.NO_SESSION;
+        Candidate candidate = findCandidate(player);
+        if (candidate == null) return SyncStart.NO_SESSION;
+
+        PlaybackSession session = candidate.session;
+        MusicTrack sourceTrack = session.current();
+        if (sourceTrack == null) return SyncStart.NO_SESSION;
+        if (session.paused() || session.resumePreparing()) return SyncStart.PAUSED;
+        if (!session.clockStarted()) return SyncStart.NOT_PLAYING;
+        if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+            return SyncStart.BEDROCK_UNSUPPORTED;
+        }
+        if (packs.isBaseDeclined(player) || packs.isDeclined(player, sourceTrack)) {
+            return SyncStart.PACK_DECLINED;
+        }
+        if (!packs.isReady(player, sourceTrack)) return SyncStart.PACK_NOT_READY;
+
+        UUID playerId = player.getUniqueId();
+        PlayerPlayback existing = playerPlayback.get(playerId);
+        if (existing != null && existing.syncPreparing) return SyncStart.ALREADY_PREPARING;
+
+        double delaySeconds = plugin.getConfig().getDouble(
+                "playback.synchronization.late-join.delay-seconds", 4.0);
+        if (!Double.isFinite(delaySeconds) || delaySeconds < 0) delaySeconds = 4.0;
+        long targetMs = session.elapsedMs() + Math.round(delaySeconds * 1000.0);
+        if (targetMs >= sourceTrack.durationMs()) return SyncStart.TRACK_NEAR_END;
+
+        // Keep this player excluded from the ordinary timeline while their
+        // private synchronized tail is being generated and downloaded.
+        barrierExcludedTracks.put(playerId, barrierTrackKey(session, session.playbackTrack()));
+        stopPlayer(player);
+
+        long generation = syncGenerations.merge(playerId, 1L, Long::sum);
+        PlayerPlayback pending = new PlayerPlayback();
+        pending.sessionId = session.id();
+        pending.syncSessionId = session.id();
+        pending.syncSourceTrackId = sourceTrack.id();
+        pending.syncPreparing = true;
+        pending.fading = candidate.mode == MusicZone.AudioMode.FADE;
+        playerPlayback.put(playerId, pending);
+
+        audioProcessor.createResumeTrack(sourceTrack, targetMs).whenComplete((remainder, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    boolean currentRequest = syncGenerations.getOrDefault(playerId, 0L) == generation
+                            && playerPlayback.get(playerId) == pending;
+                    if (!currentRequest) {
+                        if (remainder != null) releaseGeneratedTrack(remainder);
+                        return;
+                    }
+                    if (error != null) {
+                        playerPlayback.remove(playerId, pending);
+                        if (completion != null && player.isOnline()) {
+                            completion.accept("&cCould not prepare synchronized audio: " + rootMessage(error));
+                        }
+                        return;
+                    }
+
+                    Candidate currentCandidate = player.isOnline() ? findCandidate(player) : null;
+                    boolean stillActive;
+                    synchronized (PlaybackEngine.this) {
+                        stillActive = sessions.contains(session);
+                    }
+                    if (!stillActive || currentCandidate == null || currentCandidate.session != session
+                            || session.current() == null || !sourceTrack.id().equals(session.current().id())) {
+                        playerPlayback.remove(playerId, pending);
+                        releaseGeneratedTrack(remainder);
+                        if (completion != null && player.isOnline()) {
+                            completion.accept("&eThe playback session changed before synchronization finished. Run /music sync again.");
+                        }
+                        return;
+                    }
+
+                    pending.syncPreparing = false;
+                    pending.syncTrack = remainder;
+                    pending.trackId = remainder.id();
+                    if (!packs.requestTemporaryTrack(player, remainder)) {
+                        playerPlayback.remove(playerId, pending);
+                        releaseGeneratedTrack(remainder);
+                        if (completion != null && player.isOnline()) {
+                            completion.accept("&cThe synchronized audio pack could not be requested. Your playback remains stopped until you sync again.");
+                        }
+                        return;
+                    }
+                    if (completion != null && player.isOnline()) {
+                        completion.accept("&aSynchronized audio prepared from "
+                                + formatTime(targetMs) + ". It will start when its temporary pack finishes loading.");
+                    }
+                }));
+        return SyncStart.PREPARING;
+    }
+
     public int getPlayerVolume(Player player) {
         return preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences).volume();
     }
@@ -473,7 +577,8 @@ public final class PlaybackEngine {
             if (player == null || !player.isOnline()) continue;
 
             PlaybackSession session = activeById.get(state.sessionId);
-            if (session == null || session.paused() || !session.targets(playerId)) continue;
+            if (session == null || session.paused() || !session.targets(playerId)
+                    || state.syncPreparing || state.syncTrack != null) continue;
             MusicTrack track = session.playbackTrack();
             if (track == null || !track.id().equals(state.trackId)) continue;
 
@@ -513,18 +618,39 @@ public final class PlaybackEngine {
 
     private void playFor(Player player, Candidate candidate) {
         PlaybackSession session = candidate.session;
-        MusicTrack track = session.playbackTrack();
         MusicTrack originalTrack = session.current();
-        PlayerPlayback state = playerPlayback.computeIfAbsent(player.getUniqueId(), ignored -> new PlayerPlayback());
+        UUID playerId = player.getUniqueId();
+        PlayerPlayback state = playerPlayback.get(playerId);
+        if (state != null && state.syncSessionId != null
+                && (!state.syncSessionId.equals(session.id()) || originalTrack == null
+                || !Objects.equals(state.syncSourceTrackId, originalTrack.id()))) {
+            stopPlayer(player);
+            state = null;
+        }
+        if (state == null) state = new PlayerPlayback();
         if (session.paused() || session.resumePreparing()) {
             stopPlayer(player);
             return;
         }
-        boolean bedrock = geyser != null && geyser.isBedrockPlayer(player.getUniqueId());
-        if (!bedrock && barrierTrackKey(session, track).equals(
-                barrierExcludedTracks.get(player.getUniqueId()))) {
+        boolean bedrock = geyser != null && geyser.isBedrockPlayer(playerId);
+        boolean synchronizedTail = !bedrock && state.syncTrack != null
+                && session.id().equals(state.syncSessionId) && originalTrack != null
+                && originalTrack.id().equals(state.syncSourceTrackId);
+        if (!bedrock && state.syncPreparing) {
+            stopCurrentSound(player, state);
+            player.sendActionBar(message("messages.playback-synchronizing"));
+            return;
+        }
+
+        MusicTrack track = synchronizedTail ? state.syncTrack : session.playbackTrack();
+        String excludedTrack = barrierExcludedTracks.get(playerId);
+        if (!bedrock && !synchronizedTail
+                && barrierTrackKey(session, session.playbackTrack()).equals(excludedTrack)) {
             stopPlayer(player);
             return;
+        }
+        if (synchronizedTail && packs.isReady(player, track)) {
+            barrierExcludedTracks.remove(playerId, barrierTrackKey(session, session.playbackTrack()));
         }
         if (bedrock) {
             // Bedrock receives the aggregate mcpack at Geyser connection time.
@@ -566,7 +692,11 @@ public final class PlaybackEngine {
                 return;
             }
             if (!packs.isReady(player, track)) {
-                stopPlayer(player);
+                if (synchronizedTail) {
+                    stopCurrentSound(player, state);
+                } else {
+                    stopPlayer(player);
+                }
                 player.sendActionBar(message("messages.pack-not-ready"));
                 return;
             }
@@ -579,7 +709,11 @@ public final class PlaybackEngine {
             player.sendActionBar(message("messages.playback-synchronizing"));
             return;
         }
-        int segment = session.segmentIndex();
+        int segment = synchronizedTail ? 0 : session.segmentIndex();
+        if (segment < 0 || segment >= track.segmentCount()) {
+            stopPlayer(player);
+            return;
+        }
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment);
         float volume = playbackVolume(player, session, fading);
@@ -590,7 +724,7 @@ public final class PlaybackEngine {
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
                 || state.segment != segment || state.fading != fading;
         if (changed) {
-            stopPlayer(player);
+            stopCurrentSound(player, state);
             player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, 1.0f);
             state.sessionId = session.id();
             state.trackId = track.id();
@@ -629,9 +763,21 @@ public final class PlaybackEngine {
         return LegacyComponentSerializer.legacyAmpersand().deserialize(prefix + text);
     }
 
+    private void stopCurrentSound(Player player, PlayerPlayback state) {
+        if (state != null && state.sound != null) {
+            player.stopSound(state.sound, SOUND_CATEGORY);
+            state.sound = null;
+        }
+    }
+
     private void stopPlayer(Player player) {
-        PlayerPlayback state = playerPlayback.remove(player.getUniqueId());
-        if (state != null && state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
+        UUID playerId = player.getUniqueId();
+        PlayerPlayback state = playerPlayback.remove(playerId);
+        if (state != null) {
+            syncGenerations.merge(playerId, 1L, Long::sum);
+            stopCurrentSound(player, state);
+            if (state.syncTrack != null) releaseGeneratedTrack(state.syncTrack);
+        }
     }
 
     private void stopPlayersInSession(PlaybackSession session) {
@@ -648,6 +794,7 @@ public final class PlaybackEngine {
         preferences.remove(player.getUniqueId());
         declinedWarnings.remove(player.getUniqueId());
         bedrockWarnings.remove(player.getUniqueId());
+        syncGenerations.remove(player.getUniqueId());
         if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }
 
@@ -665,6 +812,27 @@ public final class PlaybackEngine {
         bedrockWarnings.clear();
         barrierWaits.clear();
         barrierExcludedTracks.clear();
+        syncGenerations.clear();
+    }
+
+    private Candidate findCandidate(Player player) {
+        Candidate winner = null;
+        for (PlaybackSession session : sessions()) {
+            if (!session.targets(player.getUniqueId()) || session.current() == null) continue;
+            MusicZone zone = session.zone();
+            if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
+            MusicZone.AudioMode mode;
+            if (zone.shape() == MusicZone.Shape.REGION) {
+                boolean inside = worldGuard != null && worldGuard.isInside(player.getLocation(), zone.regionId());
+                mode = inside ? MusicZone.AudioMode.STEREO : MusicZone.AudioMode.NONE;
+            } else {
+                mode = zone.audioMode(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ());
+            }
+            if (mode == MusicZone.AudioMode.NONE) continue;
+            Candidate current = new Candidate(session, mode);
+            if (winner == null || compare(current, winner) < 0) winner = current;
+        }
+        return winner;
     }
 
     private record BarrierWait(String trackId, long startedAtMillis) {}
@@ -675,5 +843,9 @@ public final class PlaybackEngine {
         int segment = -1;
         boolean fading;
         String sound;
+        UUID syncSessionId;
+        String syncSourceTrackId;
+        MusicTrack syncTrack;
+        boolean syncPreparing;
     }
 }
