@@ -66,6 +66,11 @@ public final class PlaybackEngine {
         return geyser != null && geyser.isIgnoredBedrockPlayer(playerId);
     }
 
+    /** True only when the optional WorldGuard adapter initialized successfully. */
+    public boolean canUseWorldGuardRegions() {
+        return worldGuard != null;
+    }
+
     private boolean isIgnoredBedrockPlayer(Player player) {
         return player != null && isIgnoredBedrockPlayer(player.getUniqueId());
     }
