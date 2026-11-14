@@ -283,9 +283,10 @@ public final class PlaybackEngine {
     public enum VolumeChangeResult { SAVED, MUTED, RESYNCHRONIZING, NEXT_TRACK, RESTARTED }
 
     /**
-     * Saves the player's volume and refreshes their current Java audio from the
-     * shared timeline. Minecraft cannot change the volume of a sound that is
-     * already playing, so streamed tracks need a private timestamped tail.
+     * Saves the player's volume and applies the configured change policy.
+     * The default waits until the next track; precise mode can rebuild only
+     * this Java listener's current audio tail, while legacy segmented tracks
+     * can optionally restart their current segment.
      */
     public VolumeChangeResult setPlayerVolume(Player player, int volume, Consumer<String> completion) {
         PlayerPreferences pref = preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences);
