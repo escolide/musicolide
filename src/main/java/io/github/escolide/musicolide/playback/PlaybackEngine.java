@@ -84,7 +84,9 @@ public final class PlaybackEngine {
                                                       MusicTrack track, int priority) {
         if (owner != null) {
             PlaybackSession existing = sessions.stream()
-                    .filter(session -> session.isOwner(owner))
+                    .filter(session -> owner == null
+                            ? session.owner() == null && session.ownerName().equals(ownerName)
+                            : session.isOwner(owner))
                     .filter(session -> !session.paused() && !session.resumePreparing())
                     .filter(session -> session.matchesPlaybackRequest(allPlayers, listeners, zone))
                     .max(Comparator.comparingLong(PlaybackSession::startedAt))
