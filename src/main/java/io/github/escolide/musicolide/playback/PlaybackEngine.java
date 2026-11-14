@@ -553,8 +553,10 @@ public final class PlaybackEngine {
 
     /**
      * Java-only bounded start barrier. Bedrock clients never participate in
-     * this wait. Java clients that are still pending at the deadline are
-     * excluded from this track so they cannot begin it out of sync later.
+     * this wait. Once at least one Java recipient is ready, pending clients may
+     * be excluded at the deadline and automatically catch up when their pack
+     * finishes loading. If nobody is ready yet, the shared clock stays stopped
+     * so a slow solo player does not lose the track before their pack arrives.
      * A declined Java pack is already settled and never holds the barrier.
      */
     private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
