@@ -129,6 +129,10 @@ playback:
     # Wait for all current, audible recipients to have a ready pack before starting a new track.
     # This prevents faster clients starting the shared clock while others are still downloading.
     start-barrier: true
+    bedrock:
+      # Include Bedrock players in the shared start barrier once Geyser reports
+      # their initial music-pack exchange as play-ready.
+      enabled: true
     progress-update-ticks: 20
 
 playlists:
