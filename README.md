@@ -81,6 +81,8 @@ discord:
   reconnect-and-resync: true
 ```
 
+Restart the Minecraft server after changing these settings; the Discord connection is initialized once during plugin startup.
+
 Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs **View Channel**, **Connect**, and **Speak** in the configured voice channel. It uses the same imported track archive already stored by Musicolide and FFmpeg to decode it for Discord; it does not re-download the source audio.
 
 The Minecraft session clock is authoritative. Pause, resume, seek, skip, track changes, playback speed and reconnect recovery are derived from read-only snapshots of that clock. If the bot disconnects, Minecraft continues uninterrupted. With `reconnect-and-resync: true`, the bot rejoins and starts from the current server timer instead of replaying stale buffered audio. Discord members joining or leaving the voice channel do not change the session.
