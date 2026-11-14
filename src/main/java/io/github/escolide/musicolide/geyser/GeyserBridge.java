@@ -66,6 +66,22 @@ public final class GeyserBridge {
         return present;
     }
 
+    /**
+     * Whether Bedrock clients should be excluded from all Musicolide client
+     * features. Read the live config so /music reload takes effect immediately.
+     */
+    public boolean shouldIgnoreBedrockPlayers() {
+        return plugin.getConfig().getBoolean("geyser.ignore-bedrock-players", false);
+    }
+
+    /**
+     * True only for a Geyser-identified Bedrock connection when the exclusion
+     * option is enabled. Java clients are never filtered by this setting.
+     */
+    public boolean isIgnoredBedrockPlayer(UUID uuid) {
+        return uuid != null && shouldIgnoreBedrockPlayers() && isBedrockPlayer(uuid);
+    }
+
     public boolean isBedrockPackAvailable() {
         return bedrockPack != null && Files.isRegularFile(bedrockPack);
     }
