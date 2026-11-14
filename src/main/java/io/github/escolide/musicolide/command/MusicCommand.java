@@ -64,6 +64,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "import" -> importTrack(sender, args);
                 case "import-url" -> importUrl(sender, args);
                 case "diagnostics" -> diagnostics(sender);
+                case "download" -> downloadLibrary(sender);
                 case "list" -> listTracks(sender, args);
                 case "play" -> play(sender, args);
                 case "confirm" -> confirm(sender);
@@ -123,6 +124,23 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
                     else sender.sendMessage(msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)"));
                 }));
+    }
+
+    private void downloadLibrary(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cOnly players can request their own music library."));
+            return;
+        }
+        if (!player.hasPermission(plugin.getConfig().getString("permissions.use", "musicolide.use"))) {
+            sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
+            return;
+        }
+        if (playback.requestLibrary(player)) {
+            sender.sendMessage(msg("&aYour Musicolide library is already loaded."));
+        } else {
+            sender.sendMessage(msg("&eRequested the Musicolide library. If the download fails, use &f/music download &eagain."));
+            sender.sendMessage(msg("&7Playback will continue when the library is ready."));
+        }
     }
 
     private void diagnostics(CommandSender sender) {
@@ -594,6 +612,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music import all &7- import every supported file in incoming/"));
         sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] &7- import an allowlisted source"));
         sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
+        sender.sendMessage(msg("&f/music download &7- retry or request your music library"));
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
         sender.sendMessage(msg("&f/play <track-or-url> [zone options] &7- short playback command"));
         sender.sendMessage(msg("&f/music play <track-or-url> [--all|--player name|--circle r|--square WxL] [--fade n]"));
@@ -622,7 +641,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "list", "play", "confirm", "pause", "resume",
+        if (args.length == 1) return partial(List.of("help", "import", "import-url", "diagnostics", "download", "list", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "reload"), args[0]);
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
