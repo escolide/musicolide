@@ -35,6 +35,8 @@ public final class PackManager {
     private final Map<UUID, LinkedHashMap<UUID, MusicTrack>> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> active = new ConcurrentHashMap<>();
     private final Map<UUID, Set<UUID>> removeWhenReady = new ConcurrentHashMap<>();
+    // Keeps explicitly requested per-player synchronization tails in the prefetch queue.
+    private final Map<UUID, Set<UUID>> pinnedTemporaryPacks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
     private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
     private final Path acceptedPlayersFile;
@@ -111,7 +113,7 @@ public final class PackManager {
         // generated resume/synchronization tails need their own temporary pack.
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 player.getUniqueId(), ignored -> new LinkedHashMap<>());
-        Set<UUID> desired = new HashSet<>();
+        Set<UUID> desired = new HashSet<>(pinnedTemporaryPacks.getOrDefault(player.getUniqueId(), Set.of()));
         if (isTemporary(current)) {
             desired.add(current.packId());
             enqueueIfNeeded(player.getUniqueId(), queue, current);
@@ -130,6 +132,25 @@ public final class PackManager {
             return pending.isEmpty() ? null : pending;
         });
         pump(player);
+    }
+
+    /**
+     * Explicitly requests a generated per-player sync/resume tail. Unlike ordinary
+     * prefetch entries, this pack remains pinned until releaseGeneratedTrack is
+     * called, so a later normal prefetch pass cannot accidentally discard it.
+     */
+    public boolean requestTemporaryTrack(Player player, MusicTrack track) {
+        if (player == null || !player.isOnline() || !isTemporary(track)) return false;
+        if (!ensureLibrary(player)) return false;
+
+        UUID playerId = player.getUniqueId();
+        pinnedTemporaryPacks.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet())
+                .add(track.packId());
+        LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
+                playerId, ignored -> new LinkedHashMap<>());
+        enqueueIfNeeded(playerId, queue, track);
+        pump(player);
+        return true;
     }
 
     private boolean ensureLibrary(Player player) {
@@ -260,6 +281,8 @@ public final class PackManager {
         if (!file.startsWith(directory) || !track.packFileName().matches("[A-Za-z0-9_-]+\\.zip")) return;
 
         for (LinkedHashMap<UUID, MusicTrack> queue : waiting.values()) queue.remove(packId);
+        for (Set<UUID> pinned : pinnedTemporaryPacks.values()) pinned.remove(packId);
+        pinnedTemporaryPacks.entrySet().removeIf(entry -> entry.getValue().isEmpty());
         for (Map.Entry<UUID, Set<UUID>> entry : active.entrySet()) {
             UUID playerId = entry.getKey();
             if (!entry.getValue().contains(packId)) continue;
@@ -438,6 +461,7 @@ public final class PackManager {
         waiting.remove(playerId);
         active.remove(playerId);
         removeWhenReady.remove(playerId);
+        pinnedTemporaryPacks.remove(playerId);
         inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
         cleanupLibraryArchivesAsync();
