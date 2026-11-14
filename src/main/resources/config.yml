@@ -126,6 +126,9 @@ playback:
     transition: true
   synchronization:
     action-bar-now-playing: true
+    # Wait for all current, audible recipients to have a ready pack before starting a new track.
+    # This prevents faster clients starting the shared clock while others are still downloading.
+    start-barrier: true
     progress-update-ticks: 20
 
 playlists:
@@ -173,6 +176,7 @@ messages:
   playback-started: "&aNow playing: &f{title}"
   playback-paused: "&ePlayback paused."
   playback-resumed: "&aPlayback resumed."
+  playback-synchronizing: "&eSynchronizing listeners before playback starts..."
   playback-stopped: "&cPlayback stopped."
   queue-empty: "&eThe queue is empty."
   reload-complete: "&aConfiguration reloaded."
