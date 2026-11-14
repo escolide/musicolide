@@ -49,10 +49,16 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         saveDefaultConfig();
         // Older config.yml files are not overwritten on upgrades; add this new
         // selector once so administrators can choose a playback format explicitly.
+        boolean migratedConfig = false;
         if (!getConfig().contains("audio.playback-mode")) {
             getConfig().set("audio.playback-mode", "resumable");
-            saveConfig();
+            migratedConfig = true;
         }
+        if (!getConfig().contains("resource-packs.download-mode")) {
+            getConfig().set("resource-packs.download-mode", "on-play");
+            migratedConfig = true;
+        }
+        if (migratedConfig) saveConfig();
         try {
             Path data = getDataFolder().toPath();
             Files.createDirectories(data.resolve("incoming"));
@@ -75,6 +81,9 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             resourcePackBuilder = builder;
             SoundPackNamespaceMigration.migrate(data.resolve("packs"), repository, getLogger());
             ResourcePackBuilder.BasePackInfo basePack = builder.buildBasePack();
+            // A server restart ends every in-flight HTTP request, so old immutable
+            // library revisions can now be safely removed.
+            builder.cleanupLibraryArchives(java.util.Set.of(basePack.sha1()));
             try {
                 Path bedrockPack = builder.rebuildBedrockLibrary();
                 if (bedrockPack != null) getLogger().info("Rebuilt the Bedrock music library from imported tracks.");
@@ -136,12 +145,15 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                         getLogger().warning("Automatic public-address detection failed: " + cause.getMessage()
                                 + " Set server.public-base-url to the public hostname players use to join.");
                     }
+                    Bukkit.getScheduler().runTask(this, () -> {
+                        if (packManager != null) packManager.publicAddressAvailable();
+                    });
                 });
             } else {
                 publicBaseUrl = CompletableFuture.failedFuture(new IllegalStateException(
                         "server.public-base-url is empty and server.auto-detect-public-address is disabled."));
             }
-            packManager = new PackManager(this, basePack, publicPort, publicBaseUrl);
+            packManager = new PackManager(this, builder, publicPort, publicBaseUrl);
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {
@@ -270,6 +282,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         if (geyserBridge != null) geyserBridge.recordPlayerJoin(event.getPlayer().getUniqueId());
+        if (packManager != null && getConfig().getString(
+                "resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (event.getPlayer().isOnline() && packManager != null) {
+                    packManager.requestLibrary(event.getPlayer(), false);
+                }
+            }, 1L);
+        }
     }
 
     @EventHandler

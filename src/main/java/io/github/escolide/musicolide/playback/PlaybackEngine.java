@@ -31,7 +31,7 @@ public final class PlaybackEngine {
     private final Map<UUID, PlayerPreferences> preferences = new ConcurrentHashMap<>();
     private final Map<UUID, PlayerPlayback> playerPlayback = new HashMap<>();
     private final Map<UUID, Long> warningTimes = new HashMap<>();
-    private final Map<UUID, Long> declinedWarnings = new HashMap<>();
+    private final Map<UUID, String> declinedWarnings = new HashMap<>();
     private final WorldGuardBridge worldGuard;
     private final GeyserBridge geyser;
     private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
@@ -255,6 +255,11 @@ public final class PlaybackEngine {
         if (muted) stopPlayer(player);
     }
 
+    /** Explicitly retries the Java music-library request for this player. */
+    public boolean requestLibrary(Player player) {
+        return packs.requestLibrary(player, true);
+    }
+
     public int getPlayerVolume(Player player) {
         return preferences.computeIfAbsent(player.getUniqueId(), this::loadPreferences).volume();
     }
@@ -441,20 +446,13 @@ public final class PlaybackEngine {
             int prefetch = Math.max(0, plugin.getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4));
             packs.prefetch(player, track, session.upcoming(prefetch),
                     plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0);
-            if (packs.isBaseDeclined(player)) {
-                long now = System.currentTimeMillis();
-                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
+            if (packs.isBaseDeclined(player) || packs.isDeclined(player, track)) {
+                // One rejection notice per catalogue song, even if the playback
+                // tick repeats hundreds of times. A different song gets its own notice.
+                String songId = originalTrack == null ? track.id() : originalTrack.id();
+                if (!songId.equals(declinedWarnings.get(player.getUniqueId()))) {
                     player.sendMessage(message("messages.pack-declined"));
-                    declinedWarnings.put(player.getUniqueId(), now);
-                }
-                stopPlayer(player);
-                return;
-            }
-            if (packs.isDeclined(player, track)) {
-                long now = System.currentTimeMillis();
-                if (now - declinedWarnings.getOrDefault(player.getUniqueId(), 0L) > 30000) {
-                    player.sendMessage(message("messages.pack-declined"));
-                    declinedWarnings.put(player.getUniqueId(), now);
+                    declinedWarnings.put(player.getUniqueId(), songId);
                 }
                 stopPlayer(player);
                 return;
@@ -529,6 +527,7 @@ public final class PlaybackEngine {
         stopPlayer(player);
         packs.removePlayer(player.getUniqueId());
         preferences.remove(player.getUniqueId());
+        declinedWarnings.remove(player.getUniqueId());
         bedrockWarnings.remove(player.getUniqueId());
         if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }

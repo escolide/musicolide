@@ -1,21 +1,26 @@
 package io.github.escolide.musicolide.resource;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-import java.util.UUID;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 public final class ResourcePackBuilder {
+    private static final String LEGACY_LIBRARY_FILE = "musicolide-base.zip";
+    private static final String LIBRARY_FILE_PREFIX = "musicolide-library-";
+    private static final UUID LIBRARY_ID = UUID.nameUUIDFromBytes(
+            "musicolide:java:base-pack".getBytes(StandardCharsets.UTF_8));
+
     private final Path packsDirectory;
     private final ResourcePackFormat format;
     private final BedrockResourcePackBuilder bedrockBuilder;
+    private volatile BasePackInfo currentBasePackInfo;
 
     public ResourcePackBuilder(Path dataFolder, ResourcePackFormat format) throws IOException {
         this.packsDirectory = dataFolder.resolve("packs");
@@ -24,30 +29,110 @@ public final class ResourcePackBuilder {
         Files.createDirectories(packsDirectory);
     }
 
-    public BasePackInfo buildBasePack() throws IOException {
-        String fileName = "musicolide-base.zip";
-        Path output = packsDirectory.resolve(fileName);
-        String metadata = format.toPackMcmeta();
-        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
-            ZipEntry entry = new ZipEntry("pack.mcmeta");
-            entry.setTime(0L);
-            zip.putNextEntry(entry);
-            zip.write(metadata.getBytes(StandardCharsets.UTF_8));
-            zip.closeEntry();
-        }
+    /**
+     * Builds one Java resource pack containing the complete immutable track
+     * library. This replaces the old empty consent pack plus one pack per song,
+     * so a normal player receives one library pack instead of sequential pack
+     * applications for the first track.
+     *
+     * New imports rebuild this archive. Its stable UUID and content SHA-1 allow
+     * clients to reuse an unchanged cached copy after reconnecting.
+     */
+    public synchronized BasePackInfo buildBasePack() throws IOException {
+        Path temporary = Files.createTempFile(packsDirectory, ".musicolide-library-", ".zip");
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            try (var input = Files.newInputStream(output)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+            Set<String> writtenEntries = new HashSet<>();
+            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(temporary))) {
+                add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
+                List<Path> archives;
+                try (var stream = Files.list(packsDirectory)) {
+                    archives = stream.filter(Files::isRegularFile)
+                            .filter(path -> path.getFileName().toString().endsWith(".zip"))
+                            .filter(path -> !path.getFileName().toString().equals(LEGACY_LIBRARY_FILE))
+                            .filter(path -> !path.getFileName().toString().startsWith(LIBRARY_FILE_PREFIX))
+                            // Exclude the archive currently being written and per-session resume tails.
+                            .filter(path -> !path.getFileName().toString().startsWith(".musicolide-library-"))
+                            .filter(path -> !path.getFileName().toString().startsWith("mr_"))
+                            .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                            .toList();
+                }
+
+                for (Path archive : archives) {
+                    try (ZipFile source = new ZipFile(archive.toFile())) {
+                        Enumeration<? extends ZipEntry> entries = source.entries();
+                        while (entries.hasMoreElements()) {
+                            ZipEntry entry = entries.nextElement();
+                            if (entry.isDirectory() || !entry.getName().startsWith("assets/")) continue;
+                            String name = entry.getName();
+                            if (name.startsWith("/") || name.contains("../") || name.contains("\\")
+                                    || name.contains("/..")) {
+                                throw new IOException("Unsafe asset path in " + archive.getFileName() + ": " + name);
+                            }
+                            if (!writtenEntries.add(name)) {
+                                throw new IOException("Duplicate resource-pack asset while building the Java library: " + name);
+                            }
+                            ZipEntry copy = new ZipEntry(name);
+                            copy.setTime(0L);
+                            zip.putNextEntry(copy);
+                            try (InputStream input = source.getInputStream(entry)) {
+                                input.transferTo(zip);
+                            }
+                            zip.closeEntry();
+                        }
+                    } catch (java.util.zip.ZipException ex) {
+                        throw new IOException("Invalid track resource pack: " + archive.getFileName(), ex);
+                    }
+                }
             }
-            UUID id = UUID.nameUUIDFromBytes("musicolide:java:base-pack".getBytes(StandardCharsets.UTF_8));
-            return new BasePackInfo(fileName, id, HexFormat.of().formatHex(digest.digest()));
-        } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("The Java runtime does not provide SHA-1.", ex);
+
+            String hash = sha1(temporary);
+            String fileName = LIBRARY_FILE_PREFIX + hash + ".zip";
+            Path output = packsDirectory.resolve(fileName);
+            if (Files.exists(output)) {
+                Files.deleteIfExists(temporary);
+            } else {
+                try {
+                    Files.move(temporary, output, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException ex) {
+                    Files.move(temporary, output);
+                }
+            }
+            BasePackInfo info = new BasePackInfo(fileName, LIBRARY_ID, hash);
+            currentBasePackInfo = info;
+            return info;
+        } finally {
+            Files.deleteIfExists(temporary);
         }
+    }
+
+    /**
+     * Deletes immutable library revisions that are neither current nor still
+     * referenced by a client download. Download URLs always point at a
+     * content-specific filename, so publishing a new library cannot overwrite
+     * bytes being fetched for the previous revision.
+     */
+    public synchronized void cleanupLibraryArchives(Set<String> retainedHashes) throws IOException {
+        Set<String> keep = new HashSet<>(retainedHashes == null ? Set.of() : retainedHashes);
+        BasePackInfo current = currentBasePackInfo;
+        if (current != null) keep.add(current.sha1());
+        try (var files = Files.list(packsDirectory)) {
+            for (Path path : files.filter(Files::isRegularFile).toList()) {
+                String name = path.getFileName().toString();
+                if (name.equals(LEGACY_LIBRARY_FILE)) {
+                    Files.deleteIfExists(path);
+                    continue;
+                }
+                if (!name.startsWith(LIBRARY_FILE_PREFIX) || !name.endsWith(".zip")) continue;
+                String hash = name.substring(LIBRARY_FILE_PREFIX.length(), name.length() - 4);
+                if (!keep.contains(hash)) Files.deleteIfExists(path);
+            }
+        }
+    }
+
+    public BasePackInfo currentBasePackInfo() {
+        BasePackInfo info = currentBasePackInfo;
+        if (info == null) throw new IllegalStateException("The Java music library pack has not been built yet.");
+        return info;
     }
 
     public record BasePackInfo(String fileName, UUID id, String sha1) {}
@@ -83,11 +168,6 @@ public final class ResourcePackBuilder {
         return output;
     }
 
-    /**
-     * Builds a Java Edition pack containing one streamed OGG for an entire track.
-     * Minecraft decodes the long sound incrementally, avoiding per-segment sound
-     * packets and the small silence introduced at each server-side hand-off.
-     */
     public Path buildStreamed(String namespace, Path audioFile) throws IOException {
         if (!Files.isRegularFile(audioFile) || Files.size(audioFile) == 0) {
             throw new IOException("The streamed OGG file is missing or empty.");
@@ -112,6 +192,20 @@ public final class ResourcePackBuilder {
 
     public Path bedrockPackPath() {
         return bedrockBuilder.outputFile();
+    }
+
+    private String sha1(Path file) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-1");
+            try (var input = Files.newInputStream(file)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("The Java runtime does not provide SHA-1.", ex);
+        }
     }
 
     private void addFile(ZipOutputStream zip, String name, Path file) throws IOException {
