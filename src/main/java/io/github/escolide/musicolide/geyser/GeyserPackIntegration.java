@@ -78,6 +78,10 @@ public final class GeyserPackIntegration implements EventRegistrar, AutoCloseabl
         return identity(event.connection().xuid(), event.connection().bedrockUsername());
     }
 
+    private String identity(SessionLoginEvent event) {
+        return identity(event.connection().xuid(), event.connection().bedrockUsername());
+    }
+
     private String identity(SessionJoinEvent event) {
         return identity(event.connection().xuid(), event.connection().bedrockUsername());
     }
