@@ -17,7 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class PackManager {
     private final JavaPlugin plugin;
     private final ResourcePackBuilder packBuilder;
-    private final Map<UUID, String> libraryRequestedFile = new ConcurrentHashMap<>();
     private final int detectedPublicPort;
     private final CompletableFuture<String> publicBaseUrl;
 
@@ -164,15 +163,13 @@ public final class PackManager {
             String prompt = acceptedLibraryPlayers.contains(playerId) ? null
                     : plugin.getConfig().getString("resource-packs.prompt", "Musicolide music library");
             libraryRequestedHash.put(playerId, hash);
-            libraryRequestedFile.put(playerId, pack.fileName());
             waitingForPublicAddress.remove(playerId);
             player.addResourcePack(pack.id(), url, sha1, prompt,
                     plugin.getConfig().getBoolean("resource-packs.required-on-first-use", false));
         } catch (Exception ex) {
             libraryRequestedHash.remove(playerId);
-            libraryRequestedFile.remove(playerId);
             libraryDeclinedHash.put(playerId, hash);
-            cleanupLibraryArchives();
+            cleanupLibraryArchivesAsync();
             plugin.getLogger().warning("Could not send the Musicolide Java library to "
                     + player.getName() + ": " + ex.getMessage());
         }
@@ -346,7 +343,6 @@ public final class PackManager {
         ResourcePackBuilder.BasePackInfo library = packBuilder.currentBasePackInfo();
         if (library.id().equals(packId)) {
             String requestedHash = libraryRequestedHash.remove(playerId);
-            libraryRequestedFile.remove(playerId);
             if (requestedHash == null) return;
             if ("SUCCESSFULLY_LOADED".equals(statusName)) {
                 libraryReadyHash.put(playerId, requestedHash);
@@ -370,7 +366,7 @@ public final class PackManager {
                 libraryDeclinedHash.put(playerId, requestedHash);
                 if (removeLibraryWhenReady.remove(playerId)) removeLibraryWhenReady.remove(playerId);
             }
-            cleanupLibraryArchives();
+            cleanupLibraryArchivesAsync();
             return;
         }
 
@@ -433,7 +429,6 @@ public final class PackManager {
     public void removePlayer(UUID playerId) {
         libraryReadyHash.remove(playerId);
         libraryRequestedHash.remove(playerId);
-        libraryRequestedFile.remove(playerId);
         libraryDeclinedHash.remove(playerId);
         waitingForPublicAddress.remove(playerId);
         removeLibraryWhenReady.remove(playerId);
@@ -445,7 +440,11 @@ public final class PackManager {
         removeWhenReady.remove(playerId);
         inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
-        cleanupLibraryArchives();
+        cleanupLibraryArchivesAsync();
+    }
+
+    private void cleanupLibraryArchivesAsync() {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::cleanupLibraryArchives);
     }
 
     private void cleanupLibraryArchives() {
