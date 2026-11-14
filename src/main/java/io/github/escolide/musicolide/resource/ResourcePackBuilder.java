@@ -49,7 +49,8 @@ public final class ResourcePackBuilder {
                     archives = stream.filter(Files::isRegularFile)
                             .filter(path -> path.getFileName().toString().endsWith(".zip"))
                             .filter(path -> !path.getFileName().toString().equals(LIBRARY_FILE))
-                            // Resume-tail packs are transient per-session assets, not library content.
+                            // Exclude the archive currently being written and per-session resume tails.
+                            .filter(path -> !path.getFileName().toString().startsWith(".musicolide-library-"))
                             .filter(path -> !path.getFileName().toString().startsWith("mr_"))
                             .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                             .toList();
