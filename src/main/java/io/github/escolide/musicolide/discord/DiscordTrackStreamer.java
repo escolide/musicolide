@@ -59,7 +59,7 @@ final class DiscordTrackStreamer implements AutoCloseable {
                             Supplier<Optional<DiscordPlaybackSnapshot>> latestSnapshot) {
         stopCurrent();
         if (closed || initial == null || !initial.isAudible()) return;
-        long token = generation.incrementAndGet();
+        long token = generation.get();
         Thread thread = new Thread(() -> decode(token, initial, latestSnapshot),
                 "Musicolide-Discord-Decoder");
         thread.setDaemon(true);
@@ -69,11 +69,11 @@ final class DiscordTrackStreamer implements AutoCloseable {
 
     synchronized void stop() {
         stopCurrent();
-        generation.incrementAndGet();
     }
 
     private void stopCurrent() {
-        sendHandler.reset();
+        long invalidatedGeneration = generation.incrementAndGet();
+        sendHandler.reset(invalidatedGeneration);
         Process active = process;
         process = null;
         if (active != null) {
@@ -111,7 +111,7 @@ final class DiscordTrackStreamer implements AutoCloseable {
             double speed = clampSpeed(current.speed());
             startPositionMs = offsetMs;
             playbackSpeed = speed;
-            sendHandler.reset();
+            sendHandler.reset(token);
 
             List<String> command = new ArrayList<>();
             command.add(toolchain.executable(NativeToolchain.Tool.FFMPEG));
@@ -142,7 +142,7 @@ final class DiscordTrackStreamer implements AutoCloseable {
                     int count = readFrame(audio, frame);
                     if (count == 0) break;
                     if (count != frame.length) break;
-                    if (!sendHandler.offer(frame.clone(), token, generation::get)) break;
+                    if (!sendHandler.offer(frame.clone(), token)) break;
                 }
             }
 
@@ -306,6 +306,5 @@ final class DiscordTrackStreamer implements AutoCloseable {
     public synchronized void close() {
         closed = true;
         stopCurrent();
-        generation.incrementAndGet();
     }
 }
