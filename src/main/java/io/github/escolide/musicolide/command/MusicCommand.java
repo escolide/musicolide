@@ -955,8 +955,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
         sender.sendMessage(msg("&f/music search <query> &7- search YouTube without downloading audio"));
         sender.sendMessage(msg("&f/music select <number> &7- import and play a selected YouTube result"));
-        sender.sendMessage(msg("&f/play <track, query or URL> [target] [zone options] &7- search YouTube when no local track matches"));
-        sender.sendMessage(msg("&f/music play <track-or-url> [@a|@p|@s|playername] [--circle r|--square WxL|--region id] [--fade n]"));
+        sender.sendMessage(msg("&f/play <track, query or URL> [@a|@p|@s|player] [--circle r|--square WxL|--region id] [--fade n]"));
+        sender.sendMessage(msg("&7Spatial play/search defaults to @a inside the zone; without a zone it defaults to @s."));
+        sender.sendMessage(msg("&f/music search <query> [target] [zone options] &7- search with the same zone/target options"));
         sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
         sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
         sender.sendMessage(msg("&f/music volume <0-100>|speed <0.5-2.0>|mute|unmute|seek <seconds>|nowplaying"));
