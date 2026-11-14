@@ -160,6 +160,7 @@ public final class DiscordRuntimeBundle {
                     String name = entry.getName();
                     if (entry.isDirectory()) continue;
                     if (name.equals("SHA256SUMS")) {
+                        if (manifestText != null) throw new IOException("Duplicate Discord runtime checksum manifest.");
                         ByteArrayOutputStream manifest = new ByteArrayOutputStream();
                         int count;
                         while ((count = zip.read(buffer)) != -1) {
@@ -195,6 +196,8 @@ public final class DiscordRuntimeBundle {
                 }
             }
             if (manifestText == null) throw new IOException("Discord runtime checksum manifest is missing.");
+            Files.writeString(staging.resolve("SHA256SUMS"), manifestText, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
             Map<String, String> checksums = parseManifest(manifestText);
             verifyExtractedJars(staging, checksums);
             moveReplacing(staging, destination);
