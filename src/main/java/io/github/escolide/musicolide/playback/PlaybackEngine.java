@@ -647,9 +647,17 @@ public final class PlaybackEngine {
                 int prefetch = Math.max(0, plugin.getConfig().getInt(
                         "resource-packs.prefetch.tracks-ahead", 4));
                 MusicTrack playingTrack = candidate.session.playbackTrack();
-                packs.prefetch(player, playingTrack, candidate.session.upcoming(prefetch),
+                boolean alreadyPlaying = isAlreadyPlayingTrack(player, candidate.session, playingTrack);
+                // A resumed tail is a private, disposable pack. It may have been
+                // deleted server-side after current listeners loaded it, so a
+                // reconnecting player must regenerate their own tail from the
+                // original catalogue track rather than request that old ZIP.
+                MusicTrack packTrack = playingTrack != null && playingTrack.namespace() != null
+                        && playingTrack.namespace().startsWith("mr_") && !alreadyPlaying
+                        ? candidate.session.current() : playingTrack;
+                packs.prefetch(player, packTrack, candidate.session.upcoming(prefetch),
                         plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0,
-                        isAlreadyPlayingTrack(player, candidate.session, playingTrack));
+                        alreadyPlaying);
             }
         }
         startReadySessionClocks(online, winners);
@@ -1148,14 +1156,19 @@ public final class PlaybackEngine {
         if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) return;
         UUID playerId = player.getUniqueId();
         MusicTrack sessionTrack = candidate.session.playbackTrack();
-        if (sessionTrack == null) return;
+        MusicTrack catalogueTrack = candidate.session.current();
+        if (sessionTrack == null || catalogueTrack == null) return;
         String trackKey = barrierTrackKey(candidate.session, sessionTrack);
         if (!trackKey.equals(barrierExcludedTracks.get(playerId))) return;
         if (trackKey.equals(automaticSyncAttempts.get(playerId))) return;
 
         PlayerPlayback state = playerPlayback.get(playerId);
         if (state != null && (state.syncPreparing || state.syncTrack != null)) return;
-        if (!packs.isReady(player, sessionTrack) || packs.isDeclined(player, sessionTrack)) return;
+        // A resumable session may currently be playing an mr_ tail that was
+        // intentionally deleted from the server after the original listeners
+        // downloaded it. Reconnect recovery always derives a fresh tail from
+        // the original catalogue track, whose aggregate library must be ready.
+        if (!packs.isReady(player, catalogueTrack) || packs.isDeclined(player, catalogueTrack)) return;
 
         // Attempt once per session-track. A failed temporary-pack delivery must
         // not start a new FFmpeg job every playback tick; the player can still
