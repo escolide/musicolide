@@ -704,14 +704,24 @@ public final class PlaybackEngine {
 
             boolean allJavaRecipientsSettled = true;
             boolean hasReadyJavaRecipient = false;
+            boolean hasReadyBedrockRecipient = false;
             boolean hasPendingJavaRecipient = false;
             for (Player player : online) {
                 Candidate candidate = winners.get(player.getUniqueId());
                 if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
                 if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
 
-                // Bedrock readiness is deliberately independent of the Java barrier.
-                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
+                // Bedrock readiness is deliberately independent of Java pack waits.
+                // A Bedrock listener already in the winners map has the exact current
+                // aggregate pack, so it can release the session while Java downloads
+                // continue and are caught up individually when ready.
+                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                    if (geyser.isBedrockPackAvailable()
+                            && geyser.hasCurrentPackFor(player.getUniqueId())) {
+                        hasReadyBedrockRecipient = true;
+                    }
+                    continue;
+                }
 
                 if (packs.isReady(player, track)) {
                     hasReadyJavaRecipient = true;
@@ -721,7 +731,7 @@ public final class PlaybackEngine {
                 }
             }
 
-            if (allJavaRecipientsSettled) {
+            if (allJavaRecipientsSettled || hasReadyBedrockRecipient) {
                 session.startClockIfNeeded();
                 barrierWaits.remove(session.id());
                 continue;
