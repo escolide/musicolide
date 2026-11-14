@@ -124,11 +124,11 @@ public final class YtDlpDownloader {
     }
 
 
-    private record Metadata(String title, String artist, String sourceId, String extractor) {
+    record Metadata(String title, String artist, String sourceId, String extractor) {
         private static final Metadata EMPTY = new Metadata("", "", "", "");
     }
 
-    private static Metadata readMetadata(Path infoJson) {
+    static Metadata readMetadata(Path infoJson) {
         try {
             if (!Files.isRegularFile(infoJson) || Files.size(infoJson) <= 0
                     || Files.size(infoJson) > MAX_INFO_JSON_BYTES) {
