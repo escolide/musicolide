@@ -629,14 +629,6 @@ public final class PlaybackEngine {
     }
 
     /**
-     * Java-only bounded start barrier. Bedrock clients never participate in
-     * this wait. Once at least one Java recipient is ready, pending clients may
-     * be excluded at the deadline and automatically catch up when their pack
-     * finishes loading. If nobody is ready yet, the shared clock stays stopped
-     * so a slow solo player does not lose the track before their pack arrives.
-     * A declined Java pack is already settled and never holds the barrier.
-     */
-    /**
      * Remembers who joined each track's initial playback cohort. Later entrants,
      * and listeners who leave and re-enter, use timeline-aligned catch-up instead
      * of starting a streamed OGG at 00:00 against an advanced session clock.
@@ -685,6 +677,14 @@ public final class PlaybackEngine {
         }
     }
 
+    /**
+     * Java-only bounded start barrier. Bedrock clients never participate in
+     * this wait. Once at least one Java recipient is ready, pending clients may
+     * be excluded at the deadline and automatically catch up when their pack
+     * finishes loading. If nobody is ready yet, the shared clock stays stopped
+     * so a slow solo player does not lose the track before their pack arrives.
+     * A declined Java pack is already settled and never holds the barrier.
+     */
     private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
         if (!plugin.getConfig().getBoolean("playback.synchronization.start-barrier", true)) {
             for (Candidate candidate : winners.values()) candidate.session.startClockIfNeeded();
@@ -1016,6 +1016,7 @@ public final class PlaybackEngine {
         bedrockWarnings.remove(player.getUniqueId());
         syncGenerations.remove(player.getUniqueId());
         automaticSyncAttempts.remove(player.getUniqueId());
+        for (Set<UUID> cohort : sessionStartCohorts.values()) cohort.remove(player.getUniqueId());
         if (geyser != null) geyser.removePlayer(player.getUniqueId());
     }
 
@@ -1035,6 +1036,7 @@ public final class PlaybackEngine {
         barrierExcludedTracks.clear();
         syncGenerations.clear();
         automaticSyncAttempts.clear();
+        sessionStartCohorts.clear();
     }
 
     /**
