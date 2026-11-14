@@ -240,6 +240,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 }
             }
             try {
+                resourcePackBuilder.buildBasePack();
+                packManager.cleanupObsoleteLibraryArchives();
+            } catch (Exception ex) {
+                getLogger().warning("Could not refresh the Java music library after temporary-track cleanup: "
+                        + ex.getMessage());
+            }
+            try {
                 resourcePackBuilder.rebuildBedrockLibrary();
             } catch (Exception ex) {
                 getLogger().warning("Could not refresh the Bedrock library after temporary-track cleanup: "
