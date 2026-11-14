@@ -395,12 +395,21 @@ public final class PlaybackEngine {
                 if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
 
                 if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-                    // Geyser packs are delivered by the Bedrock pack lifecycle, not
-                    // by Paper's Java resource-pack status events.
-                    if (track != null && (track.namespace() == null || !track.namespace().startsWith("mr_"))
-                            && geyser.isBedrockPackAvailable()
-                            && geyser.hasCurrentPackFor(player.getUniqueId())) {
-                        hasReadyRecipient = true;
+                    // Geyser's play-ready event is the Bedrock equivalent of the
+                    // Java resource-pack SUCCESSFULLY_LOADED status. Only tracks
+                    // contained in the current aggregate pack can join this barrier.
+                    boolean bedrockTrackAvailable = track != null && track.namespace() != null
+                            && !track.namespace().startsWith("mr_")
+                            && geyser.isBedrockPackAvailable();
+                    if (plugin.getConfig().getBoolean(
+                            "playback.synchronization.bedrock.enabled", true) && bedrockTrackAvailable) {
+                        if (geyser.hasCurrentPackFor(player.getUniqueId())) {
+                            hasReadyRecipient = true;
+                        } else if (geyser.isAwaitingPackReady(player.getUniqueId())) {
+                            // Do not start Java or Bedrock listeners while a current
+                            // Bedrock recipient is still completing its initial pack load.
+                            allRecipientsSettled = false;
+                        }
                     }
                     continue;
                 }
@@ -504,8 +513,14 @@ public final class PlaybackEngine {
                 return;
             }
             if (!geyser.hasCurrentPackFor(player.getUniqueId())) {
-                warnBedrockUnavailable(player, "messages.bedrock-pack-reconnect");
                 stopPlayer(player);
+                if (geyser.isAwaitingPackReady(player.getUniqueId())) {
+                    player.sendActionBar(message("messages.playback-synchronizing"));
+                } else {
+                    // The player is already in-game with an older pack revision.
+                    // Bedrock cannot add the changed library to this live connection.
+                    warnBedrockUnavailable(player, "messages.bedrock-pack-reconnect");
+                }
                 return;
             }
         } else {
