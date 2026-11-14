@@ -1,5 +1,9 @@
 package io.github.escolide.musicolide.audio;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
@@ -19,6 +23,13 @@ import java.util.concurrent.TimeUnit;
  */
 public final class YtDlpDownloader {
     private static final List<String> ALWAYS_BLOCKED_HOSTS = List.of("spotify.com", "soundcloud.com");
+    private static final Set<String> AUDIO_EXTENSIONS = Set.of(
+            "aac", "aiff", "aif", "flac", "m4a", "mka", "mkv", "mp3", "mp4",
+            "mpga", "ogg", "opus", "wav", "webm", "wma");
+    private static final long MAX_INFO_JSON_BYTES = 10L * 1024L * 1024L;
+
+    public record DownloadResult(Path audioFile, String title, String artist,
+                                 String sourceId, String extractor) {}
     private final JavaPlugin plugin;
     private final NativeToolchain toolchain;
 
@@ -27,7 +38,7 @@ public final class YtDlpDownloader {
         this.toolchain = Objects.requireNonNull(toolchain, "toolchain");
     }
 
-    public Path download(String sourceUrl, Path destinationDirectory) throws IOException, InterruptedException {
+    public DownloadResult download(String sourceUrl, Path destinationDirectory) throws IOException, InterruptedException {
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             throw new IOException("Remote importing is disabled in config.yml.");
         }
@@ -87,14 +98,20 @@ public final class YtDlpDownloader {
                 Optional<Path> downloaded = files
                         .filter(Files::isRegularFile)
                         .filter(path -> path.getFileName().toString().startsWith("source."))
+                        .filter(path -> !path.getFileName().toString().endsWith(".info.json"))
                         .filter(path -> !isTemporary(path.getFileName().toString()))
+                        .filter(path -> AUDIO_EXTENSIONS.contains(extension(path.getFileName().toString())))
                         .filter(path -> {
                             try { return Files.size(path) > 0 && Files.size(path) <= maxInputMb * 1024L * 1024L; }
                             catch (IOException ex) { return false; }
                         })
                         .findFirst();
-                return downloaded.orElseThrow(() -> new IOException(
+                Path audio = downloaded.orElseThrow(() -> new IOException(
                         "yt-dlp finished but did not produce one valid audio file."));
+                Path infoJson = destinationDirectory.resolve("source.info.json");
+                Metadata metadata = readMetadata(infoJson);
+                return new DownloadResult(audio, metadata.title(), metadata.artist(),
+                        metadata.sourceId(), metadata.extractor());
             }
         } catch (InterruptedException ex) {
             if (process != null) toolchain.terminate(process);
@@ -104,6 +121,68 @@ public final class YtDlpDownloader {
             if (process != null) toolchain.finished(process);
             Files.deleteIfExists(errorLog);
         }
+    }
+
+
+    private record Metadata(String title, String artist, String sourceId, String extractor) {
+        private static final Metadata EMPTY = new Metadata("", "", "", "");
+    }
+
+    private static Metadata readMetadata(Path infoJson) {
+        try {
+            if (!Files.isRegularFile(infoJson) || Files.size(infoJson) <= 0
+                    || Files.size(infoJson) > MAX_INFO_JSON_BYTES) {
+                return Metadata.EMPTY;
+            }
+            try (var reader = Files.newBufferedReader(infoJson, StandardCharsets.UTF_8)) {
+                JsonElement parsed = JsonParser.parseReader(reader);
+                if (!parsed.isJsonObject()) return Metadata.EMPTY;
+                JsonObject object = parsed.getAsJsonObject();
+                String title = firstNonBlank(object, "title", "fulltitle", "track");
+                String artist = firstNonBlank(object, "artist", "artists", "creator",
+                        "creators", "uploader", "channel");
+                String id = firstNonBlank(object, "id");
+                String extractor = firstNonBlank(object, "extractor_key", "extractor");
+                return new Metadata(title, artist, id, extractor);
+            }
+        } catch (Exception ignored) {
+            // Metadata is an enhancement; a valid audio download must still import.
+            return Metadata.EMPTY;
+        }
+    }
+
+    private static String firstNonBlank(JsonObject object, String... keys) {
+        for (String key : keys) {
+            JsonElement value = object.get(key);
+            String text = jsonValueText(value);
+            if (!text.isBlank()) return text;
+        }
+        return "";
+    }
+
+    private static String jsonValueText(JsonElement value) {
+        if (value == null || value.isJsonNull()) return "";
+        if (value.isJsonArray()) {
+            JsonArray array = value.getAsJsonArray();
+            List<String> values = new ArrayList<>();
+            for (JsonElement item : array) {
+                if (item != null && !item.isJsonNull()) {
+                    String text = item.getAsString().trim();
+                    if (!text.isBlank()) values.add(text);
+                }
+            }
+            return String.join(", ", values);
+        }
+        if (value.isJsonPrimitive()) {
+            String text = value.getAsString();
+            return text == null ? "" : text.trim();
+        }
+        return "";
+    }
+
+    private static String extension(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot < 0 ? "" : fileName.substring(dot + 1).toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -140,6 +219,7 @@ public final class YtDlpDownloader {
                 "--concurrent-fragments", "1",
                 "--no-part",
                 "--max-filesize", maxInputMb + "M",
+                "--write-info-json",
                 "--format", "bestaudio/best",
                 "--match-filter", "duration <= " + maxTrackDurationSeconds,
                 "--output", outputTemplate.toString(),
