@@ -44,6 +44,7 @@ public final class PlaybackEngine {
     // or entering after start must use a timeline-aligned private audio tail.
     private final Map<String, Set<UUID>> sessionStartCohorts = new HashMap<>();
     private final Map<UUID, Long> syncGenerations = new HashMap<>();
+    private volatile Optional<DiscordPlaybackSnapshot> discordSnapshot = Optional.empty();
     private BukkitTask task;
     private BukkitTask segmentTask;
 
@@ -122,33 +123,84 @@ public final class PlaybackEngine {
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
 
     /**
-     * Returns a read-only server-clock snapshot for the single configured Discord
-     * voice channel. Since Discord has no Minecraft position/zone, simultaneous
-     * sessions are resolved globally using Musicolide's priority/oldest-session
-     * ordering. This method never changes, advances, pauses, or controls a session.
+     * Discord's supervisor runs asynchronously. It reads this immutable snapshot
+     * computed during the Bukkit tick, so no Bukkit player/world API is accessed
+     * from the Discord thread.
      */
-    public synchronized Optional<DiscordPlaybackSnapshot> discordBroadcastSnapshot() {
+    public Optional<DiscordPlaybackSnapshot> discordBroadcastSnapshot() {
+        return discordSnapshot;
+    }
+
+    /**
+     * Selects a session only when at least one Java player can currently hear it:
+     * the player must be a target, inside the zone, unmuted, and have the required
+     * playback pack ready. Bedrock and pack-rejected clients never make a session
+     * eligible for Discord. When global and spatial sessions compete, a spatial
+     * session wins at equal manual priority so zone-dedicated music is represented.
+     */
+    private void updateDiscordBroadcastSnapshot(List<Player> online,
+                                                Map<UUID, Candidate> winners,
+                                                List<PlaybackSession> active) {
         boolean manualPriority = plugin.getConfig().getBoolean(
                 "playback.overlap.manual-priority-enabled", true);
-        PlaybackSession selected = sessions.stream()
-                .filter(session -> session.current() != null && !session.isEmpty() && !session.finished())
-                .min((first, second) -> {
-                    // Prefer a currently audible session over a paused or
-                    // not-yet-started session, then use the configured overlap policy.
-                    int stateRank = Integer.compare(discordStateRank(first), discordStateRank(second));
-                    if (stateRank != 0) return stateRank;
-                    if (manualPriority && first.priority() != second.priority()) {
-                        return Integer.compare(second.priority(), first.priority());
-                    }
-                    int started = Long.compare(first.startedAt(), second.startedAt());
-                    return started != 0 ? started : first.id().compareTo(second.id());
-                })
-                .orElse(null);
-        if (selected == null) return Optional.empty();
-        return Optional.of(new DiscordPlaybackSnapshot(
-                selected.id(), selected.timelineGeneration(), selected.current(),
-                selected.elapsedMs(), selected.paused(), selected.resumePreparing(),
-                selected.clockStarted(), selected.speed()));
+        PlaybackSession selected = null;
+
+        for (PlaybackSession session : active) {
+            if (session.current() == null || session.isEmpty() || session.finished()
+                    || !session.clockStarted() || session.paused() || session.resumePreparing()) {
+                continue;
+            }
+
+            MusicTrack playbackTrack = session.playbackTrack();
+            if (playbackTrack == null) continue;
+            boolean hasEligibleJavaListener = false;
+            for (Player player : online) {
+                Candidate candidate = winners.get(player.getUniqueId());
+                if (candidate == null || candidate.session != session || isIgnoredBedrockPlayer(player)
+                        || (geyser != null && geyser.isBedrockPlayer(player.getUniqueId()))
+                        || isPlayerMuted(player)) {
+                    continue;
+                }
+                if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
+                if (packs.isBaseDeclined(player) || packs.isDeclined(player, playbackTrack)) continue;
+                if (!packs.isReady(player, playbackTrack,
+                        isAlreadyPlayingTrack(player, session, playbackTrack))) continue;
+                hasEligibleJavaListener = true;
+                break;
+            }
+            if (!hasEligibleJavaListener) continue;
+            if (selected == null) {
+                selected = session;
+                continue;
+            }
+
+            if (manualPriority && session.priority() != selected.priority()) {
+                if (session.priority() > selected.priority()) selected = session;
+                continue;
+            }
+            int scope = Integer.compare(discordScopeRank(session), discordScopeRank(selected));
+            if (scope < 0) {
+                selected = session;
+                continue;
+            }
+            if (scope == 0 && session.startedAt() < selected.startedAt()) {
+                selected = session;
+            }
+        }
+
+        if (selected == null) {
+            discordSnapshot = Optional.empty();
+        } else {
+            discordSnapshot = Optional.of(new DiscordPlaybackSnapshot(
+                    selected.id(), selected.timelineGeneration(), selected.current(),
+                    selected.elapsedMs(), selected.paused(), selected.resumePreparing(),
+                    selected.clockStarted(), selected.speed()));
+        }
+    }
+
+    /** Prefer an explicitly scoped circle/square/region over the global audience. */
+    private int discordScopeRank(PlaybackSession session) {
+        return session.zone().shape() == MusicZone.Shape.GLOBAL ? 1 : 0;
     }
 
     /**
@@ -712,6 +764,16 @@ public final class PlaybackEngine {
             if (winner != null) winners.put(player.getUniqueId(), winner);
         }
 
+        // A previous catch-up attempt is valid only while this player remains a
+        // winner for that same timeline. Clear it on zone exit or when overlap
+        // arbitration moves the player elsewhere, so re-entry can sync again.
+        automaticSyncAttempts.entrySet().removeIf(entry -> {
+            Candidate candidate = winners.get(entry.getKey());
+            return candidate == null
+                    || !entry.getValue().equals(barrierTrackKey(candidate.session,
+                            candidate.session.playbackTrack()));
+        });
+
         // Request packs for every current recipient before starting the shared
         // session clock. Otherwise the first client whose pack downloads fastest
         // starts the clock while slower clients later play the stream from 00:00.
@@ -786,6 +848,10 @@ public final class PlaybackEngine {
             startAutomaticCatchUpIfNeeded(player, winner);
             playFor(player, winner);
         }
+
+        // Refresh the Discord view on the server thread after zone arbitration,
+        // pack readiness, catch-up state and the shared start barrier are updated.
+        updateDiscordBroadcastSnapshot(online, winners, active);
     }
 
     /**
@@ -1245,6 +1311,7 @@ public final class PlaybackEngine {
         syncGenerations.clear();
         automaticSyncAttempts.clear();
         sessionStartCohorts.clear();
+        discordSnapshot = Optional.empty();
     }
 
     /**
