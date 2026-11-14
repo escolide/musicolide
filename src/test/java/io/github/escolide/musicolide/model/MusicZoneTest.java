@@ -29,6 +29,14 @@ class MusicZoneTest {
     }
 
     @Test
+    void circleCanRestrictVerticalDistanceWhenConfigured() {
+        MusicZone zone = MusicZone.circle(world, 0, 64, 0, 10, true, 4, false, 0);
+        assertTrue(zone.containsBase(world, 5, 68, 0));
+        assertFalse(zone.containsBase(world, 5, 68.01, 0));
+        assertFalse(zone.containsBase(world, 5, 59.99, 0));
+    }
+
+    @Test
     void squareUsesConfiguredDimensions() {
         MusicZone zone = MusicZone.square(world, 0, 64, 0, 20, 10, 0, false, 0, false, 0);
         assertTrue(zone.containsBase(world, 10, 64, 5));
