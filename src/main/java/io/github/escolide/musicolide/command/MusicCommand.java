@@ -601,9 +601,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     "audio.processing.import-cooldown-seconds", 10,
                     "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
 
-            int maximumItems = Math.max(1, Math.min(20,
+            int configuredPlaylistItems = Math.max(1, Math.min(20,
                     plugin.getConfig().getInt("audio.yt-dlp.max-playlist-items", 10)));
-            maximumItems = Math.min(maximumItems, Math.max(1, Math.min(500,
+            final int maximumItems = Math.min(configuredPlaylistItems, Math.max(1, Math.min(500,
                     plugin.getConfig().getInt("limits.max-playlist-tracks", 500))));
             sender.sendMessage(msg("&eImporting up to &f" + maximumItems
                     + " &eauthorized YouTube playlist tracks. Downloads and audio processing run one at a time."));
