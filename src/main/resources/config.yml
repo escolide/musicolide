@@ -50,9 +50,9 @@ discord:
     # discord-administrator checks Discord Administrator permission or a configured role ID.
     admin-authorization: "minecraft-op"
     admin-role-ids: []
-    # Allowed guild IDs. Empty means only discord.commands.guild-id, or the guild
-    # containing discord.voice-channel-id when commands are globally registered.
-    # This prevents a bot invited to another server from accepting control commands there.
+    # Explicit trusted guild allowlist. When non-empty, commands register only in these guilds.
+    # When empty, discord.commands.guild-id is trusted, or the guild containing voice-channel-id.
+    # A non-empty invalid list fails closed; commands are never globally registered.
     allowed-guild-ids: []
     # Per-user Discord slash-command cooldown and a small global request spacing.
     user-cooldown-ms: 1000
