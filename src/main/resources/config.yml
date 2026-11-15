@@ -59,6 +59,9 @@ discord:
     # Remote autocomplete is metadata-only but uses yt-dlp; local results remain available during cooldown.
     autocomplete-cooldown-seconds: 5
     autocomplete-global-cooldown-seconds: 1
+    # Also bound cheap local autocomplete work and reply volume.
+    autocomplete-response-cooldown-ms: 250
+    autocomplete-global-response-cooldown-ms: 50
     # Pairing-code guesses are limited both per Discord user and globally.
     otp-user-attempts-per-minute: 5
     otp-global-attempts-per-minute: 30
