@@ -216,13 +216,43 @@ public final class TrackRepository implements AutoCloseable {
     }
 
     public synchronized boolean deleteTrack(String trackId) throws SQLException {
-        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("""
-                DELETE FROM tracks
-                WHERE id=? OR id=(SELECT track_id FROM track_codes WHERE lower(short_id)=lower(?))
-                """)) {
-            ps.setString(1, trackId);
-            ps.setString(2, trackId);
-            return ps.executeUpdate() > 0;
+        try (Connection c = open()) {
+            c.setAutoCommit(false);
+            try {
+                String resolvedId = null;
+                try (PreparedStatement lookup = c.prepareStatement("""
+                        SELECT id FROM tracks WHERE lower(id)=lower(?)
+                        UNION ALL
+                        SELECT track_id FROM track_codes WHERE lower(short_id)=lower(?)
+                        LIMIT 1
+                        """)) {
+                    lookup.setString(1, trackId);
+                    lookup.setString(2, trackId);
+                    try (ResultSet rs = lookup.executeQuery()) {
+                        if (rs.next()) resolvedId = rs.getString(1);
+                    }
+                }
+                if (resolvedId == null) {
+                    c.rollback();
+                    return false;
+                }
+                try (PreparedStatement deleteTrack = c.prepareStatement("DELETE FROM tracks WHERE id=?");
+                     PreparedStatement deleteCode = c.prepareStatement("DELETE FROM track_codes WHERE track_id=?")) {
+                    deleteTrack.setString(1, resolvedId);
+                    deleteTrack.executeUpdate();
+                    deleteCode.setString(1, resolvedId);
+                    deleteCode.executeUpdate();
+                }
+                c.commit();
+                return true;
+            } catch (SQLException error) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollbackError) {
+                    error.addSuppressed(rollbackError);
+                }
+                throw error;
+            }
         }
     }
 

@@ -1773,7 +1773,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
         sender.sendMessage(msg("&f/music sync <seconds> &8• &f/music priority <number> &8• &f/music alias add <URL> <TrackID>"));
         sender.sendMessage(msg("&f/link &8• &f/unlink &8- &7connect or disconnect your Discord account"));
-        sender.sendMessage(msg("&8TrackIDs use the short format a00-f99. Existing long internal IDs remain accepted."));
+        sender.sendMessage(msg("&8TrackIDs use a00-f99 (600 active slots); delete/expiry frees a code. Existing long internal IDs remain accepted."));
         sender.sendMessage(msg("&8Legacy --option syntax is still accepted for backward compatibility."));
     }
 

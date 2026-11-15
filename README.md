@@ -193,7 +193,7 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 - /music diagnostics, /music download, /music reload, /music alias add <url> <TrackID>, /music priority <number>
 - /link and /unlink manage Discord account pairing.
 
-Compact play options also include target:<player>, id:custom_name, circle:<radius>, square:<width>x<length>, region:<WorldGuard-ID>, fade10 or fade:10, and mode:mono/mode:stereo. Legacy --option forms remain accepted for backwards compatibility. Public TrackIDs use the unique a00-f99 format; existing internal IDs remain accepted as aliases.
+Compact play options also include target:<player>, id:custom_name, circle:<radius>, square:<width>x<length>, region:<WorldGuard-ID>, fade10 or fade:10, and mode:mono/mode:stereo. Legacy --option forms remain accepted for backwards compatibility. Public TrackIDs use the unique a00-f99 format (up to 600 active tracks). A code is freed and may be reused after a track is deleted or expires; existing internal IDs remain accepted as aliases.
 
 For /play and /music search, zone/range modifiers are retained when the YouTube result is selected. When a player supplies a spatial option without an explicit target, the default audience is @a, filtered by the zone; without a spatial option, the historical default remains @s. An explicit @s, @p, @a or player-name target always overrides that default. The zone center is the command sender's location and world. Console playback cannot create a player-centered spatial zone and must specify a target for non-spatial playback.
 

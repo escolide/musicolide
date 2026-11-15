@@ -41,7 +41,7 @@ class TrackRepositoryTrackCodeTest {
     }
 
     @Test
-    void migratesExistingRowsAndKeepsDeletedTrackIDsReserved() throws Exception {
+    void migratesExistingRowsAndRecyclesDeletedTrackIDs() throws Exception {
         Path database = temporaryDirectory.resolve("legacy.db");
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              Statement statement = connection.createStatement()) {
@@ -77,12 +77,12 @@ class TrackRepositoryTrackCodeTest {
             assertEquals("a00", repository.getTrackCode(migrated.id()).orElseThrow());
             assertEquals(migrated, repository.getTrack("a00").orElseThrow());
             assertTrue(repository.deleteTrack("a00"));
-            assertEquals("a00", repository.getTrackCode(migrated.id()).orElseThrow(),
-                    "A deleted TrackID remains reserved so it cannot identify another song later.");
+            assertTrue(repository.getTrackCode(migrated.id()).isEmpty());
             assertTrue(repository.getTrack("a00").isEmpty());
             MusicTrack next = track("new-track");
             repository.saveTrack(next);
-            assertEquals("a01", repository.getTrackCode(next.id()).orElseThrow());
+            assertEquals("a00", repository.getTrackCode(next.id()).orElseThrow(),
+                    "A freed code can be reused after the previous track is deleted.");
         }
     }
 
