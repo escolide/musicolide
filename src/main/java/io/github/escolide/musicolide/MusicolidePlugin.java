@@ -198,6 +198,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("audio.yt-dlp.search.max-pages", 4);
             migratedConfig = true;
         }
+        if (!getConfig().contains("audio.yt-dlp.allow-playlists")) {
+            getConfig().set("audio.yt-dlp.allow-playlists", false);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.yt-dlp.max-playlist-items")) {
+            getConfig().set("audio.yt-dlp.max-playlist-items", 10);
+            migratedConfig = true;
+        }
 
         // Add bounded-request controls to existing installations without
         // disturbing unrelated playback and hosting settings.
