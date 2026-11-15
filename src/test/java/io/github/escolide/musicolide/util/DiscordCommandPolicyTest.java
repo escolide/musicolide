@@ -11,6 +11,7 @@ class DiscordCommandPolicyTest {
         assertTrue(DiscordCommandPolicy.requiresPlaylistPlayCooldown("playlist play mix"));
         assertTrue(DiscordCommandPolicy.requiresPlaylistPlayCooldown("/music playlist play mix"));
         assertTrue(DiscordCommandPolicy.requiresPlaylistPlayCooldown("music playlist play mix"));
+        assertTrue(DiscordCommandPolicy.requiresPlaylistPlayCooldown("\"playlist\" \"play\" mix"));
 
         assertFalse(DiscordCommandPolicy.requiresPlaylistPlayCooldown("play song-id"));
         assertFalse(DiscordCommandPolicy.requiresPlaylistPlayCooldown("playlist list"));
