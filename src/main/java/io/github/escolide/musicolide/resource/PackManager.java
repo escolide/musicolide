@@ -279,7 +279,7 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         String deferredTrackId = deferredLibraryReload.get(playerId);
         if (deferredTrackId != null) {
-            if (deferredTrackId.isBlank() || current == null || deferredTrackId.equals(current.id())) return;
+            if (current == null || (!deferredTrackId.isBlank() && deferredTrackId.equals(current.id()))) return;
             deferredLibraryReload.remove(playerId, deferredTrackId);
         }
         // Existing listeners keep their current immutable library revision until
