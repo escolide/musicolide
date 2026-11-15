@@ -44,6 +44,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final Map<UUID, PendingPlay> pending = new ConcurrentHashMap<>();
     private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
     private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
+    private static final Set<String> DISCORD_COMMAND_ALLOWLIST = Set.of(
+            "help", "import", "import-url", "diagnostics", "download", "list", "search",
+            "select", "page", "play", "confirm", "pause", "resume", "skip", "stop",
+            "queue", "nowplaying", "progress", "volume", "speed", "mute", "unmute",
+            "seek", "sync", "playlist", "alias", "priority", "reload");
     private final RequestCooldowns requestCooldowns = new RequestCooldowns();
 
 
@@ -201,12 +206,24 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         } else if (args[0].startsWith("/")) {
             args[0] = args[0].substring(1);
         }
+        // Discord can invoke Musicolide's own command surface only. Never route
+        // arbitrary text into Bukkit's general command dispatcher; account-link
+        // management also remains Minecraft-only.
+        if (!DISCORD_COMMAND_ALLOWLIST.contains(args[0].toLowerCase(Locale.ROOT))) {
+            output.accept("That command is not available through the Musicolide Discord bot.");
+            return;
+        }
         Player linkedSender = createDiscordPlayerProxy(actualPlayer, elevateAdmin, output);
         onCommand(linkedSender, null, "music", args);
     }
 
     /** YouTube metadata-only suggestions for Discord's 3-second autocomplete response. */
     public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query) {
+        return discordPlaySuggestions(query, true);
+    }
+
+    /** Allows the Discord adapter to serve local results when remote lookup is rate-limited. */
+    public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query, boolean allowRemoteLookup) {
         String cleaned = normalizeSearchQuery(query);
         if (cleaned.length() < 2 || cleaned.length() > 100) {
             return CompletableFuture.completedFuture(List.of());
@@ -229,7 +246,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         // administrator explicitly enabled automatic importing of allowlisted
         // YouTube URLs. Otherwise, expose only tracks already in the local
         // authorized catalogue, matching /play's existing safety policy.
-        boolean allowRemote = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
+        boolean allowRemote = allowRemoteLookup
+                && plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
                 && plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
         if (!allowRemote) return CompletableFuture.completedFuture(local);
         if (local.size() >= 25) return CompletableFuture.completedFuture(local);
