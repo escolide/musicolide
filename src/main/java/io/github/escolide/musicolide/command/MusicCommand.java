@@ -11,6 +11,7 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import io.github.escolide.musicolide.util.CatalogMatcher;
 import io.github.escolide.musicolide.util.ExternalMetadataResolver;
 import io.github.escolide.musicolide.util.LinkNormalizer;
+import io.github.escolide.musicolide.util.RequestCooldowns;
 import io.github.escolide.musicolide.util.TextUtil;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -43,6 +44,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final Map<UUID, PendingPlay> pending = new ConcurrentHashMap<>();
     private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
     private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
+    private final RequestCooldowns requestCooldowns = new RequestCooldowns();
 
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
@@ -335,6 +337,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             importAllTracks(sender);
             return;
         }
+        if (!admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         String customId = optionValue(args, 2, "--id");
         String title = joinWithoutOption(args, 2, "--id");
         sender.sendMessage(msg("&aPreparing audio. Place the file in plugins/Musicolide/incoming/."));
@@ -352,6 +357,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
             return;
         }
+        if (!admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         String customId = optionValue(args, 3, "--id");
         String title = joinWithoutOption(args, 3, "--id");
         sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFmpeg starts."));
@@ -457,6 +465,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
+        if (!admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         sender.sendMessage(msg("&aBulk import started for &f" + files.size()
                 + " &aaudio file(s). Files are processed one at a time."));
         AtomicInteger imported = new AtomicInteger();
@@ -537,6 +548,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
                 return;
             }
+            if (!admitHeavyRequest(sender, "import",
+                    "audio.processing.import-cooldown-seconds", 10,
+                    "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
             sender.sendMessage(msg("&eImporting this allowlisted URL. Confirm that your server may distribute this audio."));
             processor.importUrl(rawInput, null, request.customId).whenComplete((imported, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
@@ -680,6 +694,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             renderSearchPage(player, search, page, null);
             return;
         }
+        if (!admitHeavyRequest(player, "search",
+                "audio.processing.search-cooldown-seconds", 3,
+                "audio.processing.global-search-cooldown-seconds", 1, "another remote search")) return;
         search.loading = true;
         processor.searchYouTube(search.query, remoteRequired).whenComplete((results, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
@@ -792,6 +809,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 return;
             }
         }
+        if (!admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         search.selecting = true;
         sender.sendMessage(msg("&eImporting selected result: &f" + safeChat(remote.title())));
         processor.importUrl(remote.url(), null, search.request.customId).whenComplete((imported, error) ->
@@ -1208,6 +1228,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 return;
             }
 
+            if (!admitHeavyRequest(sender, "transform",
+                    "audio.processing.transform-cooldown-seconds", 3,
+                    "audio.processing.global-transform-cooldown-seconds", 1, "another audio preparation")) return;
             PlaybackEngine.SyncStart result = playback.synchronizePlayer(player, notification -> {
                 if (player.isOnline()) sender.sendMessage(msg(notification));
             });
@@ -1258,6 +1281,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!Double.isFinite(seconds) || seconds < 0 || seconds > Long.MAX_VALUE / 1000.0)
             throw new IllegalArgumentException("Seek position must be finite and non-negative.");
         long targetMs = (long) (seconds * 1000.0);
+        if (!admitHeavyRequest(sender, "transform",
+                "audio.processing.transform-cooldown-seconds", 3,
+                "audio.processing.global-transform-cooldown-seconds", 1, "another audio preparation")) return;
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
         PlaybackEngine.SeekStart result = playback.seek(player.getUniqueId(), admin, targetMs, notification -> {
             if (player.isOnline()) sender.sendMessage(msg(notification));
@@ -1289,7 +1315,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 if (!dj(sender)) return;
                 if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist add <name> <track-id>");
                 MusicTrack track = resolveTrack(args[3]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
-                repository.addPlaylistTrack(args[2], track.id());
+                int maximumTracks = Math.max(1, plugin.getConfig().getInt("limits.max-playlist-tracks", 500));
+                repository.addPlaylistTrack(args[2], track.id(), maximumTracks);
                 sender.sendMessage(msg("&aAdded " + track.title() + " to " + args[2]));
             }
             case "list" -> sender.sendMessage(msg("&5Playlists: &f" + String.join(", ", repository.listPlaylists())));
@@ -1398,6 +1425,23 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music sync <seconds> &7- set the shared sync offset (admin)"));
         sender.sendMessage(msg("&f/music alias add <url> <track-id> &7- map a URL to local audio"));
         sender.sendMessage(msg("&f/music priority <number> &7- admin session priority"));
+    }
+
+    private boolean admitHeavyRequest(CommandSender sender, String action,
+                                      String actorCooldownPath, long defaultActorCooldown,
+                                      String globalCooldownPath, long defaultGlobalCooldown,
+                                      String description) {
+        String actor = sender instanceof Player player
+                ? player.getUniqueId().toString() : "console:" + sender.getName();
+        long actorCooldown = Math.max(0L, plugin.getConfig().getLong(actorCooldownPath, defaultActorCooldown));
+        long globalCooldown = Math.max(0L, plugin.getConfig().getLong(globalCooldownPath, defaultGlobalCooldown));
+        long remaining = requestCooldowns.tryAcquire(action, actor, actorCooldown, globalCooldown);
+        if (remaining > 0) {
+            sender.sendMessage(msg("&cPlease wait &f" + remaining
+                    + " second(s) &cbefore requesting " + description + " again."));
+            return false;
+        }
+        return true;
     }
 
     private Component msg(String text) {
