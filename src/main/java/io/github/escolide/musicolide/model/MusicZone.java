@@ -25,11 +25,12 @@ public final class MusicZone {
     private final boolean fadeEnabled;
     private final double fadeDistance;
     private final String regionId;
+    private final boolean centeredAudioOrigin;
 
     private MusicZone(Shape shape, UUID worldId, double centerX, double centerY, double centerZ,
                       double radius, double width, double length, double rotationRadians,
                       boolean verticalLimited, double verticalLimit, boolean fadeEnabled,
-                      double fadeDistance, String regionId) {
+                      double fadeDistance, String regionId, boolean centeredAudioOrigin) {
         this.shape = shape;
         this.worldId = worldId;
         this.centerX = centerX;
@@ -44,35 +45,54 @@ public final class MusicZone {
         this.fadeEnabled = fadeEnabled && fadeDistance > 0;
         this.fadeDistance = Math.max(0, fadeDistance);
         this.regionId = regionId;
+        this.centeredAudioOrigin = centeredAudioOrigin;
     }
 
     public static MusicZone global() {
         return new MusicZone(Shape.GLOBAL, null, 0, 0, 0, 0, 0, 0, 0,
-                false, 0, false, 0, null);
+                false, 0, false, 0, null, false);
     }
 
     public static MusicZone circle(UUID worldId, double x, double y, double z, double radius,
                                    boolean verticalLimited, double verticalLimit,
                                    boolean fadeEnabled, double fadeDistance) {
         return new MusicZone(Shape.CIRCLE, worldId, x, y, z, radius, 0, 0, 0,
-                verticalLimited, verticalLimit, fadeEnabled, fadeDistance, null);
+                verticalLimited, verticalLimit, fadeEnabled, fadeDistance, null, false);
     }
 
     public static MusicZone square(UUID worldId, double x, double y, double z, double width, double length,
                                    double rotationRadians, boolean verticalLimited, double verticalLimit,
                                    boolean fadeEnabled, double fadeDistance) {
         return new MusicZone(Shape.SQUARE, worldId, x, y, z, 0, width, length, rotationRadians,
-                verticalLimited, verticalLimit, fadeEnabled, fadeDistance, null);
+                verticalLimited, verticalLimit, fadeEnabled, fadeDistance, null, false);
+    }
+
+    public static MusicZone centeredCircle(UUID worldId, double x, double y, double z, double radius,
+                                            boolean verticalLimited, double verticalLimit,
+                                            boolean fadeEnabled, double fadeDistance) {
+        return new MusicZone(Shape.CIRCLE, worldId, x, y, z, radius, 0, 0, 0,
+                verticalLimited, verticalLimit, fadeEnabled, fadeDistance, null, true);
+    }
+
+    public static MusicZone centeredSquare(UUID worldId, double x, double y, double z, double width, double length,
+                                            double rotationRadians, boolean verticalLimited, double verticalLimit,
+                                            boolean fadeEnabled, double fadeDistance) {
+        return new MusicZone(Shape.SQUARE, worldId, x, y, z, 0, width, length, rotationRadians,
+                verticalLimited, verticalLimit, fadeEnabled, fadeDistance, null, true);
     }
 
     public static MusicZone region(UUID worldId, String regionId) {
         return new MusicZone(Shape.REGION, worldId, 0, 0, 0, 0, 0, 0, 0,
-                false, 0, false, 0, regionId);
+                false, 0, false, 0, regionId, false);
     }
 
     public Shape shape() { return shape; }
     public UUID worldId() { return worldId; }
     public String regionId() { return regionId; }
+    public boolean centeredAudioOrigin() { return centeredAudioOrigin; }
+    public double centerX() { return centerX; }
+    public double centerY() { return centerY; }
+    public double centerZ() { return centerZ; }
 
     /** True when two requests describe exactly the same listening zone. */
     public boolean sameAs(MusicZone other) {
@@ -90,7 +110,8 @@ public final class MusicZone {
                 && Double.compare(verticalLimit, other.verticalLimit) == 0
                 && fadeEnabled == other.fadeEnabled
                 && Double.compare(fadeDistance, other.fadeDistance) == 0
-                && Objects.equals(regionId, other.regionId);
+                && Objects.equals(regionId, other.regionId)
+                && centeredAudioOrigin == other.centeredAudioOrigin;
     }
     public boolean fadeEnabled() { return fadeEnabled; }
     public double fadeDistance() { return fadeDistance; }
