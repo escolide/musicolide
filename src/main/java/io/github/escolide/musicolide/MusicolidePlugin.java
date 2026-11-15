@@ -253,6 +253,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("audio.processing.global-search-cooldown-seconds", 1);
             migratedConfig = true;
         }
+        if (!getConfig().contains("audio.processing.metadata-cooldown-seconds")) {
+            getConfig().set("audio.processing.metadata-cooldown-seconds", 5);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.global-metadata-cooldown-seconds")) {
+            getConfig().set("audio.processing.global-metadata-cooldown-seconds", 1);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("audio.processing.transform-cooldown-seconds")) {
             getConfig().set("audio.processing.transform-cooldown-seconds", 3);
             migratedConfig = true;
