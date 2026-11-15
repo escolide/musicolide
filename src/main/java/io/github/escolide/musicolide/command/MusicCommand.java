@@ -21,6 +21,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.*;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
@@ -46,6 +47,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
     private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
     private final RequestCooldowns requestCooldowns = new RequestCooldowns();
+    private final Set<PlaylistRunner> playlistRunners = ConcurrentHashMap.newKeySet();
 
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
@@ -634,26 +636,26 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     plugin.getConfig().getInt("audio.yt-dlp.max-playlist-items", 10)));
             final int maximumItems = Math.min(configuredPlaylistItems, Math.max(1, Math.min(500,
                     plugin.getConfig().getInt("limits.max-playlist-tracks", 500))));
-            sender.sendMessage(msg("&eImporting up to &f" + maximumItems
-                    + " &eauthorized YouTube playlist tracks. Downloads and audio processing run one at a time."));
-            processor.importPlaylistUrl(rawInput).whenComplete((result, error) ->
+            sender.sendMessage(msg("&eReading playlist entries. Only the first track will be imported initially; the next tracks will be prepared gradually."));
+            processor.listPlaylistUrl(rawInput, maximumItems).whenComplete((listing, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
                         if (sender instanceof Player player && !player.isOnline()) return;
                         if (error != null) {
-                            sender.sendMessage(msg("&cYouTube playlist import failed: " + rootMessage(error)));
+                            sender.sendMessage(msg("&cYouTube playlist lookup failed: " + rootMessage(error)));
                             return;
                         }
-                        String summary = "&aPlaylist ready: &f" + result.tracks().size()
-                                + " &atrack(s) imported or reused.";
-                        if (result.failedEntries() > 0) {
-                            summary += " &eSkipped: &f" + result.failedEntries() + ".";
+                        if (listing.entries().isEmpty()) {
+                            sender.sendMessage(msg("&cThe playlist did not contain any importable tracks."));
+                            return;
                         }
-                        if (result.truncated()) {
-                            summary += " &7The source playlist exceeds the configured item limit ("
-                                    + maximumItems + "); only the first allowed entries were considered.";
+                        String summary = "&aFound &f" + listing.entries().size()
+                                + " &eplaylist entries. Importing the first track now.";
+                        if (listing.truncated()) {
+                            summary += " &7The source playlist exceeds the configured limit (" + maximumItems
+                                    + "); only the first allowed entries will be played.";
                         }
                         sender.sendMessage(msg(summary));
-                        startImportedPlaylist(sender, result.tracks(), request);
+                        importFirstPlaylistTrack(sender, listing.entries(), request);
                     }));
             return;
         }
@@ -1369,29 +1371,145 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         startPrepared(sender, track, request, false);
     }
 
-    private void startImportedPlaylist(CommandSender sender, List<MusicTrack> tracks, PlayRequest request) {
-        if (tracks == null || tracks.isEmpty()
-                || sender instanceof Player player && !player.isOnline()) return;
-        boolean mono = "mono".equalsIgnoreCase(request.audioMode);
-        if (!mono) {
-            for (MusicTrack track : tracks) startPrepared(sender, track, request, false);
-            return;
+    private void importFirstPlaylistTrack(CommandSender sender,
+                                           List<YtDlpDownloader.PlaylistEntry> entries,
+                                           PlayRequest request) {
+        YtDlpDownloader.PlaylistEntry first = entries.get(0);
+        sender.sendMessage(msg("&eImporting first playlist track: &f" + first.title()));
+        processor.importPlaylistEntry(first).thenCompose(track ->
+                "mono".equalsIgnoreCase(request.audioMode)
+                        ? processor.ensureMonoVariant(track)
+                        : CompletableFuture.completedFuture(track))
+                .whenComplete((track, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (sender instanceof Player player && !player.isOnline()) return;
+                    if (error != null) {
+                        sender.sendMessage(msg("&cCould not import the first playlist track: " + rootMessage(error)));
+                        return;
+                    }
+                    UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
+                    boolean mono = "mono".equalsIgnoreCase(request.audioMode);
+                    PlaybackSession session;
+                    try {
+                        session = playback.startSession(owner, sender.getName(), request.zone,
+                                request.all, request.listeners, List.of(track), request.priority, mono);
+                    } catch (IllegalStateException limit) {
+                        sender.sendMessage(msg("&cCould not start playlist: " + limit.getMessage()));
+                        return;
+                    }
+                    if (session.isEmpty()) {
+                        sender.sendMessage(msg("&cThe first playlist track could not be queued."));
+                        return;
+                    }
+                    session.queuePending(true);
+                    sender.sendMessage(msg("&aStarted playlist with &f" + track.title()
+                            + "&a. Additional tracks will be prepared shortly before they are needed."));
+                    PlaylistRunner runner = new PlaylistRunner(sender, request, session, entries, 1);
+                    playlistRunners.add(runner);
+                    runner.start();
+                }));
+    }
+
+    /**
+     * Keeps a URL playlist flowing without downloading the entire list up front.
+     * Only a bounded number of future tracks are imported, and each new item is
+     * added to the playback queue rather than delivered ahead of the current song.
+     */
+    private final class PlaylistRunner implements Runnable {
+        private final CommandSender sender;
+        private final PlayRequest request;
+        private final PlaybackSession session;
+        private final List<YtDlpDownloader.PlaylistEntry> entries;
+        private final boolean mono;
+        private final boolean repeat;
+        private final int leadSeconds;
+        private final int maximumAhead;
+        private int nextIndex;
+        private int inFlight;
+        private int skipped;
+        private boolean closed;
+        private BukkitTask task;
+
+        private PlaylistRunner(CommandSender sender, PlayRequest request, PlaybackSession session,
+                               List<YtDlpDownloader.PlaylistEntry> entries, int nextIndex) {
+            this.sender = sender;
+            this.request = request;
+            this.session = session;
+            this.entries = List.copyOf(entries);
+            this.nextIndex = nextIndex;
+            this.mono = "mono".equalsIgnoreCase(request.audioMode);
+            this.repeat = plugin.getConfig().getBoolean("playlists.repeat", false);
+            this.leadSeconds = Math.max(0, Math.min(300,
+                    plugin.getConfig().getInt("playlists.preimport.lead-seconds", 20)));
+            this.maximumAhead = Math.max(1, Math.min(8,
+                    plugin.getConfig().getInt("playlists.preimport.max-preimported-tracks", 2)));
         }
 
-        List<MusicTrack> prepared = new ArrayList<>();
-        CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
-        for (MusicTrack track : tracks) {
-            chain = chain.thenCompose(ignored ->
-                    processor.ensureMonoVariant(track).thenAccept(prepared::add));
+        private void start() {
+            task = Bukkit.getScheduler().runTaskTimer(plugin, this, 1L, 5L);
         }
-        chain.whenComplete((ignored, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
-            if (sender instanceof Player player && !player.isOnline()) return;
-            if (error != null) {
-                sender.sendMessage(msg("&cCould not prepare the mono playlist: " + rootMessage(error)));
+
+        @Override
+        public void run() {
+            if (closed) return;
+            if (!playback.isSessionActive(session)) {
+                close(false);
                 return;
             }
-            for (MusicTrack track : prepared) startPrepared(sender, track, request, true);
-        }));
+
+            MusicTrack current = session.current();
+            boolean insidePrefetchWindow = current == null || session.paused()
+                    || current.durationMs() - session.elapsedMs() <= leadSeconds * 1000L;
+            if (!insidePrefetchWindow) return;
+
+            while (session.queueSize() + inFlight < maximumAhead) {
+                if (nextIndex >= entries.size()) {
+                    if (!repeat) break;
+                    nextIndex = 0;
+                }
+                YtDlpDownloader.PlaylistEntry entry = entries.get(nextIndex++);
+                inFlight++;
+                processor.importPlaylistEntry(entry)
+                        .thenCompose(track -> mono ? processor.ensureMonoVariant(track)
+                                : CompletableFuture.completedFuture(track))
+                        .whenComplete((track, error) ->
+                                Bukkit.getScheduler().runTask(plugin, () -> completeEntry(entry, track, error)));
+            }
+
+            if (!repeat && nextIndex >= entries.size() && inFlight == 0) {
+                session.queuePending(false);
+                close(false);
+                if (skipped > 0) sender.sendMessage(msg("&eSkipped " + skipped
+                        + " playlist track(s) that could not be imported."));
+                sender.sendMessage(msg("&aPlaylist pre-import finished. Remaining queued tracks will play in order."));
+            }
+        }
+
+        private void completeEntry(YtDlpDownloader.PlaylistEntry entry, MusicTrack track, Throwable error) {
+            if (closed) return;
+            inFlight = Math.max(0, inFlight - 1);
+            if (!playback.isSessionActive(session)) {
+                close(false);
+                return;
+            }
+            if (error != null || track == null) {
+                skipped++;
+                sender.sendMessage(msg("&eSkipped playlist entry &f" + TextUtil.truncate(entry.title(), 55)
+                        + "&e: " + rootMessage(error == null
+                        ? new IllegalStateException("No track was returned.") : error)));
+                return;
+            }
+            session.enqueue(track);
+            sender.sendMessage(msg("&7Prepared next playlist track: &f" + TextUtil.truncate(track.title(), 55)
+                    + " &8(" + session.queueSize() + " queued)"));
+        }
+
+        private void close(boolean clearPending) {
+            if (closed) return;
+            closed = true;
+            if (task != null) task.cancel();
+            playlistRunners.remove(this);
+            if (clearPending) session.queuePending(false);
+        }
     }
 
     private void startPrepared(CommandSender sender, MusicTrack track, PlayRequest request, boolean mono) {
