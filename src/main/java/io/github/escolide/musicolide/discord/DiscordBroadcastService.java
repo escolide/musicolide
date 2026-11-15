@@ -119,8 +119,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
         try {
             NativeDaveFactory.ensureAvailable();
             JDA client = JDABuilder.createLight(token,
-                            GatewayIntent.GUILDS, GatewayIntent.GUILD_VOICE_STATES,
-                            GatewayIntent.DIRECT_MESSAGES)
+                            GatewayIntent.GUILD_VOICE_STATES, GatewayIntent.DIRECT_MESSAGES)
                     .setAutoReconnect(reconnectAndResync)
                     .enableCache(CacheFlag.VOICE_STATE)
                     .setAudioModuleConfig(new AudioModuleConfig().withDaveSessionFactory(
