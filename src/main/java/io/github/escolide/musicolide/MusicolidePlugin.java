@@ -179,6 +179,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.commands.autocomplete-global-cooldown-seconds", 1);
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.commands.autocomplete-response-cooldown-ms")) {
+            getConfig().set("discord.commands.autocomplete-response-cooldown-ms", 250);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.autocomplete-global-response-cooldown-ms")) {
+            getConfig().set("discord.commands.autocomplete-global-response-cooldown-ms", 50);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("discord.commands.otp-user-attempts-per-minute")) {
             getConfig().set("discord.commands.otp-user-attempts-per-minute", 5);
             migratedConfig = true;
