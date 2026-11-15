@@ -411,7 +411,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (playback.requestLibrary(player)) {
             sender.sendMessage(msg("&aYour Musicolide library resource pack was requested. Cached packs may be reused."));
         } else {
-            sender.sendMessage(msg("&cThe music library pack could not be requested. Check the server's pack-hosting configuration and logs."));
+            sender.sendMessage(msg("&cThe music library pack could not be requested yet. It may already be loading, be rate-limited, or have a pack-hosting issue; check the server logs."));
         }
     }
 
