@@ -215,6 +215,22 @@ public final class TrackRepository implements AutoCloseable {
         return tracks;
     }
 
+    /** Returns every temporary URL/imported track, including entries not yet expired. */
+    public synchronized List<MusicTrack> temporaryTracks() throws SQLException {
+        List<MusicTrack> tracks = new ArrayList<>();
+        String sql = """
+                SELECT t.* FROM tracks t
+                JOIN ephemeral_tracks e ON e.track_id=t.id
+                ORDER BY e.expires_at ASC
+                """;
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) tracks.add(readTrack(rs));
+            }
+        }
+        return tracks;
+    }
+
     public synchronized boolean deleteTrack(String trackId) throws SQLException {
         try (Connection c = open()) {
             c.setAutoCommit(false);
