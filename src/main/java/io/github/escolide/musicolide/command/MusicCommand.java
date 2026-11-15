@@ -87,8 +87,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         // cannot initiate plugin actions through Geyser's command bridge.
         if (sender instanceof Player player
                 && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return true;
-        if (args.length == 0 || args[0].equalsIgnoreCase("help")) { help(sender); return true; }
-        String sub = args[0].toLowerCase(Locale.ROOT);
+        String sub = args.length == 0 ? "help" : args[0].toLowerCase(Locale.ROOT);
+        if (sender instanceof Player player && plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin
+                && musicPlugin.isPlayerMusicDisabled(player.getUniqueId()) && !sub.equals("enable")) {
+            sender.sendMessage(msg("&eMusicolide is disabled for you. Use &f/music enable &eto re-enable it."));
+            return true;
+        }
+        if (args.length == 0 || sub.equals("help")) { help(sender); return true; }
         try {
             switch (sub) {
                 case "link" -> link(sender);
@@ -97,6 +102,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "import-url" -> importUrl(sender, args);
                 case "save" -> saveTrack(sender, args);
                 case "delete" -> deleteTrack(sender, args);
+                case "clear" -> clearTemporaryTracks(sender, args);
+                case "disable" -> disableForSelf(sender);
+                case "enable" -> enableForSelf(sender);
+                case "unload" -> unloadForSelf(sender);
+                case "discord" -> discordToggle(sender, args);
                 case "diagnostics" -> diagnostics(sender);
                 case "download" -> downloadLibrary(sender);
                 case "list" -> listTracks(sender, args);
@@ -1548,6 +1558,66 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 }));
     }
 
+    private void clearTemporaryTracks(CommandSender sender, String[] args) {
+        if (!admin(sender)) return;
+        if (args.length != 1) throw new IllegalArgumentException("Usage: /music clear");
+        if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
+            throw new IllegalStateException("Temporary track cleanup is unavailable.");
+        }
+        sender.sendMessage(msg("&eClearing unused temporary tracks. Active or queued tracks and tracks being downloaded will be kept."));
+        musicPlugin.clearTemporaryTracks().whenComplete((count, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (error != null) sender.sendMessage(msg("&cTemporary track cleanup failed: " + rootMessage(error)));
+                    else sender.sendMessage(msg("&aCleared &f" + count + " &aunused temporary track(s)."));
+                }));
+    }
+
+    private void disableForSelf(CommandSender sender) {
+        if (!(sender instanceof Player player)) throw new IllegalArgumentException("Only an in-game player can disable Musicolide for themselves.");
+        if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
+            throw new IllegalStateException("Player-specific disable is unavailable.");
+        }
+        musicPlugin.disablePlayerMusic(player);
+        sender.sendMessage(msg("&eMusicolide has been disabled for you. Your Musicolide packs were unloaded."));
+        sender.sendMessage(msg("&7Use /music enable to turn it back on."));
+    }
+
+    private void enableForSelf(CommandSender sender) {
+        if (!(sender instanceof Player player)) throw new IllegalArgumentException("Only an in-game player can enable Musicolide for themselves.");
+        if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
+            throw new IllegalStateException("Player-specific enable is unavailable.");
+        }
+        musicPlugin.enablePlayerMusic(player);
+        sender.sendMessage(msg("&aMusicolide is enabled for you again. Your next playback will request the required packs."));
+    }
+
+    private void unloadForSelf(CommandSender sender) {
+        if (!(sender instanceof Player player)) throw new IllegalArgumentException("Only an in-game player can unload your music packs.");
+        if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
+            throw new IllegalStateException("Pack unloading is unavailable.");
+        }
+        musicPlugin.unloadPlayerMusic(player);
+        sender.sendMessage(msg("&eYour Musicolide library and temporary packs were requested to unload."));
+        sender.sendMessage(msg("&7The library will be requested again when a different track starts."));
+    }
+
+    private void discordToggle(CommandSender sender, String[] args) {
+        if (!admin(sender)) return;
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music discord <enable|disable>");
+        boolean enabled = switch (args[1].toLowerCase(Locale.ROOT)) {
+            case "enable", "on" -> true;
+            case "disable", "off" -> false;
+            default -> throw new IllegalArgumentException("Use /music discord enable or /music discord disable.");
+        };
+        if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
+            throw new IllegalStateException("Discord runtime controls are unavailable.");
+        }
+        musicPlugin.setDiscordEnabled(enabled);
+        sender.sendMessage(msg(enabled
+                ? "&aDiscord broadcasting has been enabled. It will start in the background."
+                : "&eDiscord broadcasting has been disabled."));
+    }
+
     private void deleteTrack(CommandSender sender, String[] args) throws SQLException {
         if (!admin(sender)) return;
         if (args.length != 2) throw new IllegalArgumentException("Usage: /music delete <TrackID>");
@@ -1714,7 +1784,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only. Use /music " + (muted ? "mute" : "unmute") + " <player> as an admin.")); return; }
             target = player;
         }
-        if (!muted && target.equals(sender) && "precise".equalsIgnoreCase(plugin.getConfig().getString(
+        boolean selfTarget = sender instanceof Player actorPlayer
+                && actorPlayer.getUniqueId().equals(target.getUniqueId());
+        if (!muted && "precise".equalsIgnoreCase(plugin.getConfig().getString(
                 "playback.volume-change-mode", "next-track"))
                 && !admitHeavyRequest(sender, "transform",
                 "audio.processing.transform-cooldown-seconds", 3,
@@ -1725,7 +1797,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             if (finalTarget.isOnline()) finalTarget.sendMessage(msg(notification));
         });
         sender.sendMessage(msg((muted ? "&eMuted " : "&aUnmuted ") + "&f" + target.getName() + "&a."));
-        if (!target.equals(sender)) target.sendMessage(msg(muted ? "&eAn administrator muted your Musicolide audio." : "&aAn administrator unmuted your Musicolide audio."));
+        if (!selfTarget) target.sendMessage(msg(muted ? "&eAn administrator muted your Musicolide audio." : "&aAn administrator unmuted your Musicolide audio."));
         if (!muted && result == PlaybackEngine.VolumeChangeResult.RESYNCHRONIZING) {
             target.sendMessage(msg("&eYour current track is being reloaded at your saved volume."));
         } else if (!muted && result == PlaybackEngine.VolumeChangeResult.NEXT_TRACK) {
@@ -2011,7 +2083,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) return partial(List.of("help", "play", "pause", "resume", "skip", "stop", "queue",
                 "nowplaying", "progress", "volume", "speed", "mute", "unmute", "seek", "sync",
                 "list", "search", "select", "page", "save", "delete", "playlist", "import", "import-url",
-                "download", "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
+                "download", "clear", "disable", "enable", "unload", "discord",
+                "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
         if (args.length >= 3 && args[0].equalsIgnoreCase("play")) {
             String prefix = args[args.length - 1];
             String previous = args.length >= 2 ? args[args.length - 2].toLowerCase(Locale.ROOT) : "";
@@ -2058,6 +2131,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("speed"))
             return partial(List.of("0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"), args[1]);
+        if (args.length == 2 && (args[0].equalsIgnoreCase("mute") || args[0].equalsIgnoreCase("unmute"))) {
+            if (!sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"))) return List.of();
+            return partial(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList(), args[1]);
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("discord"))
+            return partial(List.of("enable", "disable"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("volume"))
             return partial(List.of("0", "25", "50", "75", "100"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
