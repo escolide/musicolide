@@ -19,4 +19,20 @@ public final class DiscordCommandPolicy {
     public static boolean isAllowedRoot(String command) {
         return command != null && ALLOWED_ROOTS.contains(command.trim().toLowerCase(Locale.ROOT));
     }
+
+    /** True only for the command that always creates a fresh playlist session. */
+    public static boolean requiresPlaylistPlayCooldown(String commandLine) {
+        if (commandLine == null) return false;
+        String normalized = commandLine.trim();
+        if (normalized.regionMatches(true, 0, "/music ", 0, 7)) {
+            normalized = normalized.substring(7).trim();
+        } else if (normalized.regionMatches(true, 0, "music ", 0, 6)) {
+            normalized = normalized.substring(6).trim();
+        }
+        if (normalized.startsWith("/")) normalized = normalized.substring(1).trim();
+        String[] arguments = normalized.split("\\s+", 3);
+        return arguments.length >= 2
+                && arguments[0].equalsIgnoreCase("playlist")
+                && arguments[1].equalsIgnoreCase("play");
+    }
 }
