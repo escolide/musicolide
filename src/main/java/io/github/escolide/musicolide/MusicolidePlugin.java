@@ -159,6 +159,34 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.commands.admin-role-ids", List.of());
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.commands.allowed-guild-ids")) {
+            getConfig().set("discord.commands.allowed-guild-ids", List.of());
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.user-cooldown-ms")) {
+            getConfig().set("discord.commands.user-cooldown-ms", 1000);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.global-cooldown-ms")) {
+            getConfig().set("discord.commands.global-cooldown-ms", 100);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.autocomplete-cooldown-seconds")) {
+            getConfig().set("discord.commands.autocomplete-cooldown-seconds", 5);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.autocomplete-global-cooldown-seconds")) {
+            getConfig().set("discord.commands.autocomplete-global-cooldown-seconds", 1);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.otp-user-attempts-per-minute")) {
+            getConfig().set("discord.commands.otp-user-attempts-per-minute", 5);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.otp-global-attempts-per-minute")) {
+            getConfig().set("discord.commands.otp-global-attempts-per-minute", 30);
+            migratedConfig = true;
+        }
         for (String commandName : List.of("info", "help", "play", "music")) {
             String visibilityPath = "discord.commands.visibility." + commandName;
             if (!getConfig().contains(visibilityPath)) {
