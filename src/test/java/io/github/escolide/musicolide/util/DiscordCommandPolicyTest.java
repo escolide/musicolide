@@ -12,7 +12,7 @@ class DiscordCommandPolicyTest {
         assertTrue(DiscordCommandPolicy.isAllowedRoot("playlist"));
         assertTrue(DiscordCommandPolicy.isAllowedRoot("import"));
         assertTrue(DiscordCommandPolicy.isAllowedRoot("reload"));
-        assertTrue(DiscordCommandPolicy.isAllowedRoot("MUSIC"));
+        assertFalse(DiscordCommandPolicy.isAllowedRoot("MUSIC"));
 
         assertFalse(DiscordCommandPolicy.isAllowedRoot("op"));
         assertFalse(DiscordCommandPolicy.isAllowedRoot("ban"));
