@@ -234,8 +234,8 @@ public final class AudioProcessor implements AutoCloseable {
                 "limits.max-playlist-tracks", 500), 1, 500));
         final int itemLimit = maximum;
 
-        CompletableFuture<PlaylistImportResult> existing = inFlightPlaylistImports.get(playlistKey);
-        if (existing != null) return existing;
+        CompletableFuture<PlaylistImportResult> existingPlaylist = inFlightPlaylistImports.get(playlistKey);
+        if (existingPlaylist != null) return existingPlaylist;
         if (!playlistImportActive.compareAndSet(false, true)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Another YouTube playlist batch is already being processed. Try again after it finishes."));
