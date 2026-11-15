@@ -252,7 +252,8 @@ public final class YtDlpDownloader {
         int maximum = bounded(maximumItems, 1, 20);
         JsonArray entries = entryElement.getAsJsonArray();
         int reportedCount = readCount(object, "playlist_count", "n_entries");
-        if (reportedCount <= 0) reportedCount = entries.size();
+        boolean reportedCountKnown = reportedCount > 0;
+        if (!reportedCountKnown) reportedCount = entries.size();
 
         List<PlaylistEntry> result = new ArrayList<>();
         Set<String> seen = new HashSet<>();
@@ -283,8 +284,14 @@ public final class YtDlpDownloader {
                     duration, "https://www.youtube.com/watch?v=" + id));
         }
         if (result.isEmpty()) throw new IOException("The YouTube playlist contains no importable video entries.");
-        return new PlaylistListing(result, reportedCount,
-                reportedCount > result.size() || entries.size() > maximum);
+        // Filtering duplicate, unavailable or live entries can reduce the
+        // returned playable count without meaning the source playlist was capped.
+        // Use the source's reported total when present; otherwise a full page is
+        // conservatively considered potentially truncated.
+        boolean truncated = reportedCountKnown
+                ? reportedCount > maximum || entries.size() > maximum
+                : entries.size() >= maximum;
+        return new PlaylistListing(result, reportedCount, truncated);
     }
 
     private static int readCount(JsonObject object, String... keys) {
