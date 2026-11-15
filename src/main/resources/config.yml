@@ -69,6 +69,9 @@ discord:
     # Limit repeated /link code generation from Minecraft accounts.
     link-code-cooldown-seconds: 30
     global-link-code-cooldown-seconds: 1
+    # /music command: playlist play creates a fresh playback session rather than appending to one.
+    playlist-play-cooldown-seconds: 30
+    global-playlist-play-cooldown-seconds: 2
     # Slash command response visibility: requester (ephemeral/private) or everyone (public).
     # Existing installations default to requester so current privacy is preserved.
     visibility:
