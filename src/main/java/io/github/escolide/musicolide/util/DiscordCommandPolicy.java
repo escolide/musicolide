@@ -40,7 +40,7 @@ public final class DiscordCommandPolicy {
         if (token == null || token.length() < 2) return token == null ? "" : token;
         char first = token.charAt(0);
         char last = token.charAt(token.length() - 1);
-        if ((first == '"' && last == '"') || (first == '\\'' && last == '\\'')) {
+        if (first == '"' && last == '"') {
             return token.substring(1, token.length() - 1);
         }
         return token;
