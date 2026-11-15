@@ -151,8 +151,9 @@ resource-packs:
     tracks-ahead: 4
     max-concurrent-downloads: 2
   cache:
-    # false keeps the music library active for the entire connection and lets
-    # Minecraft reuse its local SHA-1 cache after reconnecting.
+    # false keeps applied library/track packs active for the connection and lets
+    # Minecraft reuse their local SHA-1 caches after reconnecting.
+    # In per-track mode this also avoids removing and re-applying packs at each session end.
     remove-pack-after-session: false
 
 playback:
