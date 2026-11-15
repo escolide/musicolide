@@ -244,6 +244,7 @@ public final class AudioProcessor implements AutoCloseable {
                             new YtDlpDownloader(plugin, toolchain).listPlaylist(sourceUrl, itemLimit);
                     List<MusicTrack> imported = new ArrayList<>();
                     int failed = 0;
+                    int newlyImported = 0;
                     for (YtDlpDownloader.PlaylistEntry entry : listing.entries()) {
                         String videoAlias = "youtube:" + entry.videoId();
                         Optional<MusicTrack> existing = repository.resolveAlias(videoAlias);
@@ -252,7 +253,8 @@ public final class AudioProcessor implements AutoCloseable {
                             continue;
                         }
                         try {
-                            imported.add(importUrlNow(entry.url(), entry.title(), null));
+                            imported.add(importUrlNow(entry.url(), entry.title(), null, false));
+                            newlyImported++;
                         } catch (Exception itemError) {
                             failed++;
                             plugin.getLogger().warning("Skipped YouTube playlist item '" + entry.title()
@@ -261,6 +263,17 @@ public final class AudioProcessor implements AutoCloseable {
                     }
                     if (imported.isEmpty()) {
                         throw new IOException("No tracks from the YouTube playlist could be imported.");
+                    }
+                    // The Java pack must be published before each new catalogue row
+                    // becomes visible. The optional Bedrock aggregate can be rebuilt
+                    // once after this batch instead of once per playlist entry.
+                    if (newlyImported > 0) {
+                        try {
+                            packBuilder.rebuildBedrockLibrary();
+                        } catch (IOException bedrockError) {
+                            plugin.getLogger().warning("Playlist tracks were imported, but the Geyser Bedrock library "
+                                    + "could not be refreshed: " + bedrockError.getMessage());
+                        }
                     }
                     result.complete(new PlaylistImportResult(imported, listing.entries().size(),
                             failed, listing.truncated(), listing.reportedCount()));
@@ -280,6 +293,11 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private MusicTrack importUrlNow(String sourceUrl, String requestedTitle, String customId) throws Exception {
+        return importUrlNow(sourceUrl, requestedTitle, customId, true);
+    }
+
+    private MusicTrack importUrlNow(String sourceUrl, String requestedTitle,
+                                    String customId, boolean rebuildBedrockLibrary) throws Exception {
         String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
         if (sourceKey.isBlank()) throw new IOException("The source URL is invalid.");
         Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
@@ -460,11 +478,13 @@ public final class AudioProcessor implements AutoCloseable {
                 repository.saveTrack(track);
             }
             monoVariantsReady.add(track.id());
-            try {
-                packBuilder.rebuildBedrockLibrary();
-            } catch (IOException bedrockError) {
-                plugin.getLogger().warning("Track imported, but the Geyser Bedrock library could not be refreshed: "
-                        + bedrockError.getMessage());
+            if (rebuildBedrockLibrary) {
+                try {
+                    packBuilder.rebuildBedrockLibrary();
+                } catch (IOException bedrockError) {
+                    plugin.getLogger().warning("Track imported, but the Geyser Bedrock library could not be refreshed: "
+                            + bedrockError.getMessage());
+                }
             }
 
             // Keep the original input if processing or catalogue persistence failed.
