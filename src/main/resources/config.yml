@@ -179,6 +179,8 @@ audio:
     # Bulk import counts as one request and continues sequentially.
     import-cooldown-seconds: 10
     global-import-cooldown-seconds: 2
+    # Maximum files selected by /music import all. Hard-capped at 200.
+    max-bulk-import-files: 50
     # Remote metadata searches share the same bounded audio worker.
     search-cooldown-seconds: 3
     global-search-cooldown-seconds: 1
