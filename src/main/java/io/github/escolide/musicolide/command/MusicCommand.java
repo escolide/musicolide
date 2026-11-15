@@ -696,7 +696,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         if (!admitHeavyRequest(player, "search",
                 "audio.processing.search-cooldown-seconds", 3,
-                "audio.processing.global-search-cooldown-seconds", 1, "another remote search")) return;
+                "audio.processing.global-search-cooldown-seconds", 1, "another remote search")) {
+            // Still show any local catalogue matches collected above; only the
+            // remote metadata lookup is postponed by this cooldown.
+            renderSearchPage(player, search, page, null);
+            return;
+        }
         search.loading = true;
         processor.searchYouTube(search.query, remoteRequired).whenComplete((results, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
