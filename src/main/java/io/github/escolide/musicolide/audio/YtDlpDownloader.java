@@ -136,6 +136,11 @@ public final class YtDlpDownloader {
      * before the normal, allowlist-checked import path can download audio.
      */
     public List<SearchResult> searchYouTube(String query) throws IOException, InterruptedException {
+        int configured = bounded(plugin.getConfig().getInt("audio.yt-dlp.search.result-count", 6), 1, 20);
+        return searchYouTube(query, configured);
+    }
+
+    public List<SearchResult> searchYouTube(String query, int maximumResults) throws IOException, InterruptedException {
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             throw new IOException("YouTube search is disabled. Enable audio.yt-dlp first.");
         }
@@ -160,7 +165,7 @@ public final class YtDlpDownloader {
             throw new IOException("Add youtube.com or youtu.be to audio.yt-dlp.allowed-hosts before searching.");
         }
 
-        int resultCount = bounded(plugin.getConfig().getInt("audio.yt-dlp.search.result-count", 6), 1, 20);
+        int resultCount = bounded(maximumResults, 1, 160);
         boolean prioritizeSongs = plugin.getConfig().getBoolean(
                 "audio.yt-dlp.search.prioritize-songs", true);
         int fetchCount = prioritizeSongs ? Math.min(30, Math.max(resultCount, resultCount * 3)) : resultCount;
@@ -220,7 +225,7 @@ public final class YtDlpDownloader {
         if (jsRuntimeExecutable == null || jsRuntimeExecutable.isBlank()) {
             throw new IllegalArgumentException("A JavaScript runtime is required for YouTube search.");
         }
-        int boundedLimit = bounded(searchLimit, 1, 30);
+        int boundedLimit = bounded(searchLimit, 1, 160);
         List<String> command = new ArrayList<>();
         command.add(executable);
         command.addAll(List.of(
@@ -297,7 +302,7 @@ public final class YtDlpDownloader {
         } else {
             results.sort(Comparator.comparingInt(RankedSearchResult::originalOrder));
         }
-        return results.stream().limit(bounded(resultLimit, 1, 20))
+        return results.stream().limit(bounded(resultLimit, 1, 160))
                 .map(RankedSearchResult::result).toList();
     }
 

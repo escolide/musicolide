@@ -50,6 +50,10 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle) {
+        return importFile(fileName, requestedTitle, null);
+    }
+
+    public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle, String customId) {
         if (!toolchain.isInitialized()) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
@@ -59,7 +63,7 @@ public final class AudioProcessor implements AutoCloseable {
                     "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
-            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false), worker);
+            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false, customId), worker);
         } catch (RejectedExecutionException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
@@ -78,6 +82,11 @@ public final class AudioProcessor implements AutoCloseable {
      * the normal allowlist and explicit auto-import configuration.
      */
     public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query) {
+        int configured = bounded(plugin.getConfig().getInt("audio.yt-dlp.search.result-count", 6), 1, 20);
+        return searchYouTube(query, configured);
+    }
+
+    public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query, int maximumResults) {
         if (!toolchain.isInitialized()) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
@@ -97,7 +106,7 @@ public final class AudioProcessor implements AutoCloseable {
         try {
             return CompletableFuture.supplyAsync(() -> {
                 try {
-                    return new YtDlpDownloader(plugin, toolchain).searchYouTube(query);
+                    return new YtDlpDownloader(plugin, toolchain).searchYouTube(query, bounded(maximumResults, 1, 160));
                 } catch (Exception ex) {
                     throw new CompletionException(ex);
                 }
@@ -109,6 +118,10 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
+        return importUrl(sourceUrl, requestedTitle, null);
+    }
+
+    public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle, String customId) {
         String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
         if (sourceKey.isBlank()) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("The source URL is invalid."));
@@ -157,7 +170,7 @@ public final class AudioProcessor implements AutoCloseable {
                             new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
                     String relative = incoming.relativize(download.audioFile()).toString();
                     MusicTrack imported = processFile(relative, requestedTitle, true,
-                            download.title(), download.artist());
+                            download.title(), download.artist(), customId);
 
                     // LinkNormalizer maps YouTube watch, youtu.be, music.youtube.com,
                     // and Shorts URLs to the same youtube:<video-id> key.
@@ -196,11 +209,21 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport) {
-        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "");
+        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "", null);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String customId) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "", customId);
     }
 
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
                                    String metadataTitle, String metadataArtist) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, metadataTitle, metadataArtist, null);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist, String requestedCustomId) {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
@@ -229,11 +252,17 @@ public final class AudioProcessor implements AutoCloseable {
                 throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
             }
 
-            String rawTitle = requestedTitle != null && !requestedTitle.isBlank() ? requestedTitle.trim()
+            String customId = normalizeCustomId(requestedCustomId);
+            if (customId != null && repository.getTrack(customId).isPresent()) {
+                throw new IOException("The custom track ID '" + customId + "' is already in use.");
+            }
+            String rawTitle = customId != null ? customId.replace('_', ' ')
+                    : requestedTitle != null && !requestedTitle.isBlank() ? requestedTitle.trim()
                     : metadataTitle != null && !metadataTitle.isBlank() ? metadataTitle.trim()
                     : stripExtension(source.getFileName().toString());
             String artist = metadataArtist == null ? "" : metadataArtist.trim();
-            String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
+            String id = customId != null ? customId
+                    : slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
             // The ms_ namespace marks the new single-file streaming format. The
             // older mc_ namespace remains readable for tracks imported with segments.
             String playbackMode = configuredPlaybackMode();
@@ -334,6 +363,15 @@ public final class AudioProcessor implements AutoCloseable {
             }
             throw new CompletionException(ex);
         }
+    }
+
+    private static String normalizeCustomId(String requestedId) throws IOException {
+        if (requestedId == null || requestedId.isBlank()) return null;
+        String normalized = requestedId.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "_");
+        if (!SAFE_ID.matcher(normalized).matches()) {
+            throw new IOException("Custom track IDs must be 1-48 characters using lowercase letters, numbers, and underscores.");
+        }
+        return normalized;
     }
 
     private String configuredPlaybackMode() {

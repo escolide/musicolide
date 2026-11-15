@@ -176,6 +176,70 @@ public final class TrackRepository implements AutoCloseable {
         return tracks;
     }
 
+    /**
+     * Search local playable tracks in a stable, useful order. Exact IDs and
+     * titles win first, then title prefixes, then artist prefixes, with newer
+     * imports taking priority among comparable matches.
+     */
+    public synchronized List<MusicTrack> searchForPlayback(String query, int limit, int offset) throws SQLException {
+        String normalized = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isBlank()) return List.of();
+        String escaped = normalized.replace("!", "!!").replace("%", "!%").replace("_", "!_");
+        String contains = "%" + escaped + "%";
+        String prefix = escaped + "%";
+        String sql = """
+                SELECT * FROM tracks
+                WHERE lower(id)=lower(?)
+                   OR lower(title) LIKE ? ESCAPE '!'
+                   OR lower(artist) LIKE ? ESCAPE '!'
+                ORDER BY CASE
+                    WHEN lower(id)=lower(?) THEN 0
+                    WHEN lower(title)=lower(?) THEN 1
+                    WHEN lower(title) LIKE ? ESCAPE '!' THEN 2
+                    WHEN lower(artist) LIKE ? ESCAPE '!' THEN 3
+                    ELSE 4 END,
+                    created_at DESC, title COLLATE NOCASE
+                LIMIT ? OFFSET ?
+                """;
+        List<MusicTrack> tracks = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, normalized);
+            ps.setString(2, contains);
+            ps.setString(3, contains);
+            ps.setString(4, normalized);
+            ps.setString(5, normalized);
+            ps.setString(6, prefix);
+            ps.setString(7, prefix);
+            ps.setInt(8, Math.max(1, limit));
+            ps.setInt(9, Math.max(0, offset));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) tracks.add(readTrack(rs));
+            }
+        }
+        return tracks;
+    }
+
+    public synchronized Optional<MusicTrack> findExactTitle(String title) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT * FROM tracks WHERE lower(title)=lower(?) ORDER BY created_at DESC LIMIT 1")) {
+            ps.setString(1, title == null ? "" : title.trim());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(readTrack(rs)) : Optional.empty();
+            }
+        }
+    }
+
+    /** Returns a validated-at-call-site YouTube video ID for Discord embeds. */
+    public synchronized Optional<String> getYouTubeVideoId(String trackId) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT substr(alias_key,9) FROM aliases WHERE track_id=? AND lower(alias_key) LIKE 'youtube:%' ORDER BY alias_key LIMIT 1")) {
+            ps.setString(1, trackId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.ofNullable(rs.getString(1)) : Optional.empty();
+            }
+        }
+    }
+
     public synchronized List<MusicTrack> allTracks(int limit) throws SQLException {
         List<MusicTrack> tracks = new ArrayList<>();
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
