@@ -95,6 +95,43 @@ class YtDlpDownloaderTest {
     }
 
     @Test
+    void playlistParserDoesNotReportTruncationOnlyBecauseEntriesWereFiltered() throws Exception {
+        String json = """
+                {
+                  "playlist_count": 3,
+                  "entries": [
+                    {"id":"Video0001","title":"First Song","duration":180},
+                    {"id":"Video0002","title":"Live Stream","duration":300,"is_live":true},
+                    {"id":"Video0003","title":"Third Song","duration":210}
+                  ]
+                }
+                """;
+        YtDlpDownloader.PlaylistListing listing =
+                YtDlpDownloader.parsePlaylistEntries(json, 10);
+
+        assertEquals(2, listing.entries().size());
+        assertEquals(3, listing.reportedCount());
+        assertFalse(listing.truncated());
+    }
+
+    @Test
+    void playlistParserTreatsFullUnknownCountPageAsPotentiallyTruncated() throws Exception {
+        String json = """
+                {
+                  "entries": [
+                    {"id":"Video0001","title":"First Song"},
+                    {"id":"Video0002","title":"Second Song"}
+                  ]
+                }
+                """;
+        YtDlpDownloader.PlaylistListing listing =
+                YtDlpDownloader.parsePlaylistEntries(json, 2);
+
+        assertEquals(2, listing.entries().size());
+        assertTrue(listing.truncated());
+    }
+
+    @Test
     void playlistParserDeduplicatesFiltersLiveEntriesAndReportsTruncation() throws Exception {
         String json = """
                 {
