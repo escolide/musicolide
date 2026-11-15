@@ -799,7 +799,7 @@ public final class PlaybackEngine {
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
-            if (isIgnoredBedrockPlayer(player)) continue;
+            if (isIgnoredBedrockPlayer(player) || packs.isPlayerDisabled(player.getUniqueId())) continue;
             Candidate winner = null;
             for (PlaybackSession session : active) {
                 if (!session.targets(player.getUniqueId()) || session.current() == null
@@ -900,6 +900,10 @@ public final class PlaybackEngine {
         }
 
         for (Player player : online) {
+            if (packs.isPlayerDisabled(player.getUniqueId())) {
+                stopPlayer(player);
+                continue;
+            }
             if (isIgnoredBedrockPlayer(player)) {
                 // Normally there is no state for an excluded player. If the
                 // setting was enabled while they were already listening, stop
@@ -1381,6 +1385,11 @@ public final class PlaybackEngine {
         }
     }
 
+    /** Stops the current client sound without changing the shared playback session. */
+    public void unloadPlayerAudio(Player player) {
+        if (player != null) stopPlayer(player);
+    }
+
     public void onQuit(Player player) {
         stopPlayer(player);
         barrierExcludedTracks.remove(player.getUniqueId());
@@ -1457,7 +1466,8 @@ public final class PlaybackEngine {
     }
 
     private Candidate findCandidate(Player player) {
-        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return null;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
+                || packs.isPlayerDisabled(player.getUniqueId())) return null;
         Candidate winner = null;
         for (PlaybackSession session : sessions()) {
             if (!session.targets(player.getUniqueId()) || session.current() == null
