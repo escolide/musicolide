@@ -187,6 +187,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.commands.otp-global-attempts-per-minute", 30);
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.commands.link-code-cooldown-seconds")) {
+            getConfig().set("discord.commands.link-code-cooldown-seconds", 30);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.global-link-code-cooldown-seconds")) {
+            getConfig().set("discord.commands.global-link-code-cooldown-seconds", 1);
+            migratedConfig = true;
+        }
         for (String commandName : List.of("info", "help", "play", "music")) {
             String visibilityPath = "discord.commands.visibility." + commandName;
             if (!getConfig().contains(visibilityPath)) {
