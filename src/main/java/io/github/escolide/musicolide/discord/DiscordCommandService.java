@@ -579,7 +579,7 @@ public final class DiscordCommandService extends ListenerAdapter {
         StringBuilder escaped = new StringBuilder(Math.min(value.length(), 1024) + 16);
         for (int i = 0; i < value.length() && escaped.length() < 1000; i++) {
             char ch = value.charAt(i);
-            if (Character.isISOControl(ch) && ch != '\\t') {
+            if (Character.isISOControl(ch) && ch != '\t') {
                 escaped.append(' ');
                 continue;
             }
