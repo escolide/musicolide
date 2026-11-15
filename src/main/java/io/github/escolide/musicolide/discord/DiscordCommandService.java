@@ -155,15 +155,15 @@ public final class DiscordCommandService extends ListenerAdapter {
             reply(event, "Musicolide Discord commands are restricted to the configured server.");
             return;
         }
-        // Only accepted guilds consume the shared global command budget; an
-        // unrelated server that invited the bot cannot starve the real server.
-        if (!allowSlashCommandGlobal()) {
-            reply(event, "Please wait a moment before using another Musicolide command.");
-            return;
-        }
         switch (event.getName()) {
-            case "info" -> showInfo(event);
-            case "help" -> showHelp(event);
+            case "info" -> {
+                if (allowSlashCommandGlobal()) showInfo(event);
+                else reply(event, "Please wait a moment before using another Musicolide command.");
+            }
+            case "help" -> {
+                if (allowSlashCommandGlobal()) showHelp(event);
+                else reply(event, "Please wait a moment before using another Musicolide command.");
+            }
             case "play" -> {
                 try { runLinkedCommand(event, buildPlayCommand(event)); }
                 catch (IllegalArgumentException error) { reply(event, error.getMessage()); }
@@ -185,12 +185,6 @@ public final class DiscordCommandService extends ListenerAdapter {
             event.replyChoices(List.of()).queue();
             return;
         }
-        // Untrusted guilds cannot consume the trusted guild's autocomplete
-        // response budget, even if they repeatedly trigger stale global commands.
-        if (!allowAutocompleteGlobalResponse()) {
-            event.replyChoices(List.of()).queue();
-            return;
-        }
         try {
             if (accountLinks.findByDiscord(event.getUser().getId()).isEmpty()) {
                 event.replyChoices(List.of()).queue();
@@ -198,6 +192,12 @@ public final class DiscordCommandService extends ListenerAdapter {
             }
         } catch (SQLException error) {
             plugin.getLogger().log(Level.WARNING, "Discord account-link lookup failed during autocomplete.", error);
+            event.replyChoices(List.of()).queue();
+            return;
+        }
+        // Unlinked users cannot consume the trusted linked users' shared
+        // autocomplete response budget.
+        if (!allowAutocompleteGlobalResponse()) {
             event.replyChoices(List.of()).queue();
             return;
         }
@@ -405,6 +405,13 @@ public final class DiscordCommandService extends ListenerAdapter {
         } catch (SQLException error) {
             plugin.getLogger().log(Level.WARNING, "Could not look up a linked Discord account.", error);
             reply(event, "Account linking is temporarily unavailable.");
+            return;
+        }
+
+        // Only linked users consume the shared game-command budget. This keeps
+        // unlinked attempts from starving the actual Minecraft player controls.
+        if (!allowSlashCommandGlobal()) {
+            reply(event, "Please wait a moment before using another Musicolide command.");
             return;
         }
 
