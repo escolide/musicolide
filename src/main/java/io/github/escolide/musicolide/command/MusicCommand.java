@@ -405,7 +405,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void diagnostics(CommandSender sender) {
         if (!admin(sender)) return;
-        sender.sendMessage(msg("&bMusicolide native tool diagnostics:"));
+        sender.sendMessage(msg("&5Musicolide native tool diagnostics:"));
         if (processor.toolStatuses().isEmpty()) {
             sender.sendMessage(msg("&eNative tools are still initializing. Run /music diagnostics again shortly."));
             return;
@@ -480,8 +480,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
 
         chain.whenComplete((ignored, error) -> Bukkit.getScheduler().runTask(plugin, () ->
-                sender.sendMessage(msg("&bBulk import finished. &aSuccessful: &f" + imported.get()
-                        + " &7| &cFailed: &f" + failed.get() + " &7| &bScanned: &f" + files.size()))));
+                sender.sendMessage(msg("&5Bulk import finished. &aSuccessful: &f" + imported.get()
+                        + " &7| &cFailed: &f" + failed.get() + " &7| &5Scanned: &f" + files.size()))));
     }
 
     private static boolean isSupportedAudioFile(String fileName) {
@@ -495,12 +495,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void listTracks(CommandSender sender, String[] args) throws SQLException {
         String query = args.length > 1 ? String.join(" ", Arrays.copyOfRange(args, 1, args.length)) : "";
         List<MusicTrack> tracks = query.isBlank() ? repository.allTracks(50) : repository.search(query, 50);
-        sender.sendMessage(msg("&bMusicolide tracks (&f" + tracks.size() + "&b):"));
+        sender.sendMessage(msg("&5Musicolide tracks (&f" + tracks.size() + "&5):"));
         for (MusicTrack track : tracks) {
             String title = TextUtil.truncate(track.title(), 48);
             String artist = TextUtil.truncate(track.artist(), 28);
             String details = artist.isBlank() ? title : title + " &7by &f" + artist;
-            sender.sendMessage(msg("&7- &f" + track.id() + " &8| &b" + details
+            sender.sendMessage(msg("&7- &f" + track.id() + " &8| &5" + details
                     + " &8| &7" + format(track.durationMs())));
         }
     }
@@ -706,7 +706,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         search.currentPage = page;
         search.pageResults = List.copyOf(entries);
-        player.sendMessage(msg("&bSearch results for &f" + safeChat(search.query) + " &7(page " + page
+        player.sendMessage(msg("&5Search results for &f" + safeChat(search.query) + " &7(page " + page
                 + "/" + configuredSearchMaxPages() + "):"));
         for (int i = 0; i < entries.size(); i++) {
             SearchEntry entry = entries.get(i);
@@ -719,7 +719,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             } else {
                 YtDlpDownloader.SearchResult result = entry.remoteResult;
                 String duration = result.durationSeconds() > 0 ? format(result.durationSeconds() * 1000L) : "duration ?";
-                player.sendMessage(msg("&e" + (i + 1) + ". &b[YouTube] &f" + TextUtil.truncate(safeChat(result.title()), 58)
+                player.sendMessage(msg("&e" + (i + 1) + ". &5[YouTube] &f" + TextUtil.truncate(safeChat(result.title()), 58)
                         + (result.uploader().isBlank() ? "" : " &7- " + TextUtil.truncate(safeChat(result.uploader()), 24))
                         + " &8[" + duration + "]"));
                 player.sendMessage(msg("&8" + result.url()));
@@ -1130,7 +1130,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             MusicTrack track = session.current();
             String title = track == null ? "Unknown" : TextUtil.truncate(track.title(), 48);
             String artist = track == null ? "" : TextUtil.truncate(track.artist(), 28);
-            sender.sendMessage(msg("&b" + title + (artist.isBlank() ? "" : " &7by &f" + artist)
+            sender.sendMessage(msg("&5" + title + (artist.isBlank() ? "" : " &7by &f" + artist)
                     + " &7| " + session.ownerName()
                     + " &8| &7" + format(session.elapsedMs()) + " / " + format(track == null ? 0 : track.durationMs())
                     + (session.paused() ? " &e(PAUSED)" : "")));
@@ -1163,7 +1163,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             PlaybackSession session = playback.findControllableSession(actor, admin)
                     .orElseThrow(() -> new IllegalArgumentException("No controllable playback session was found."));
             Double pending = session.pendingSpeed();
-            String status = "&bCurrent playback speed: &f"
+            String status = "&5Current playback speed: &f"
                     + String.format(Locale.ROOT, "%.2f", session.speed()) + "x";
             if (pending != null) status += " &7| Next track: &f" + String.format(Locale.ROOT, "%.2f", pending) + "x";
             sender.sendMessage(msg(status));
@@ -1292,7 +1292,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 repository.addPlaylistTrack(args[2], track.id());
                 sender.sendMessage(msg("&aAdded " + track.title() + " to " + args[2]));
             }
-            case "list" -> sender.sendMessage(msg("&bPlaylists: &f" + String.join(", ", repository.listPlaylists())));
+            case "list" -> sender.sendMessage(msg("&5Playlists: &f" + String.join(", ", repository.listPlaylists())));
             case "play" -> {
                 if (!dj(sender)) return;
                 if (args.length < 3) throw new IllegalArgumentException("Usage: /music playlist play <name>");
@@ -1373,7 +1373,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void help(CommandSender sender) {
-        sender.sendMessage(msg("&bMusicolide commands:"));
+        sender.sendMessage(msg("&5Musicolide commands:"));
         sender.sendMessage(msg("&f/link &7- create a five-minute one-use Discord pairing code"));
         sender.sendMessage(msg("&f/unlink &7- unlink your Discord account"));
         sender.sendMessage(msg("&f/music import <file> [title] &7- import one authorized audio file"));
