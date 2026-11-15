@@ -86,7 +86,7 @@ audio:
   # high: larger packs and downloads, with higher audio quality.
   # Use custom to read the individual audio.stereo-quality and audio.mono-quality values below.
   profiles:
-    active: "balanced"
+    active: "custom"
     presets:
       balanced:
         stereo-quality: 5
