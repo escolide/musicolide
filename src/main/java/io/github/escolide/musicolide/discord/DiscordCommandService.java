@@ -136,7 +136,7 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
-        if (!allowSlashCommand(event.getUser().getId())) {
+        if (!allowSlashCommandUser(event.getUser().getId())) {
             reply(event, "Please wait a moment before using another Musicolide command.");
             return;
         }
@@ -146,6 +146,12 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
         if (!isAllowedGuild(event)) {
             reply(event, "Musicolide Discord commands are restricted to the configured server.");
+            return;
+        }
+        // Only accepted guilds consume the shared global command budget; an
+        // unrelated server that invited the bot cannot starve the real server.
+        if (!allowSlashCommandGlobal()) {
+            reply(event, "Please wait a moment before using another Musicolide command.");
             return;
         }
         switch (event.getName()) {
@@ -162,13 +168,19 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onCommandAutoCompleteInteraction(CommandAutoCompleteInteractionEvent event) {
-        if (!allowAutocompleteResponse(event.getUser().getId())) {
+        if (!allowAutocompleteUserResponse(event.getUser().getId())) {
             event.replyChoices(List.of()).queue();
             return;
         }
         if (!event.getName().equals("play") || !event.getFocusedOption().getName().equals("query")
                 || !plugin.getConfig().getBoolean("discord.commands.enabled", true)
                 || !isAllowedGuild(event)) {
+            event.replyChoices(List.of()).queue();
+            return;
+        }
+        // Untrusted guilds cannot consume the trusted guild's autocomplete
+        // response budget, even if they repeatedly trigger stale global commands.
+        if (!allowAutocompleteGlobalResponse()) {
             event.replyChoices(List.of()).queue();
             return;
         }
@@ -312,21 +324,15 @@ public final class DiscordCommandService extends ListenerAdapter {
     private final Map<String, Long> autocompleteLastReply = new HashMap<>();
     private long autocompleteGlobalLastReplyNanos;
 
-    private boolean allowAutocompleteResponse(String discordUserId) {
+    private boolean allowAutocompleteUserResponse(String discordUserId) {
         long now = System.nanoTime();
         long userCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
                 Math.min(5_000L, plugin.getConfig().getLong(
                         "discord.commands.autocomplete-response-cooldown-ms", 250L))));
-        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
-                Math.min(1_000L, plugin.getConfig().getLong(
-                        "discord.commands.autocomplete-global-response-cooldown-ms", 50L))));
         synchronized (autocompleteLastReply) {
             Long previous = autocompleteLastReply.get(discordUserId);
             if (previous != null && now - previous < userCooldown) return false;
-            if (globalCooldown > 0 && autocompleteGlobalLastReplyNanos != 0L
-                    && now - autocompleteGlobalLastReplyNanos < globalCooldown) return false;
             autocompleteLastReply.put(discordUserId, now);
-            if (globalCooldown > 0) autocompleteGlobalLastReplyNanos = now;
             if (autocompleteLastReply.size() > 10_000) {
                 autocompleteLastReply.entrySet().removeIf(entry -> now - entry.getValue()
                         >= TimeUnit.MINUTES.toNanos(10));
@@ -335,25 +341,46 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
     }
 
-    private boolean allowSlashCommand(String discordUserId) {
+    private boolean allowAutocompleteGlobalResponse() {
+        long now = System.nanoTime();
+        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                Math.min(1_000L, plugin.getConfig().getLong(
+                        "discord.commands.autocomplete-global-response-cooldown-ms", 50L))));
+        synchronized (autocompleteLastReply) {
+            if (globalCooldown > 0 && autocompleteGlobalLastReplyNanos != 0L
+                    && now - autocompleteGlobalLastReplyNanos < globalCooldown) return false;
+            if (globalCooldown > 0) autocompleteGlobalLastReplyNanos = now;
+            return true;
+        }
+    }
+
+    private boolean allowSlashCommandUser(String discordUserId) {
         long now = System.nanoTime();
         long userCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
                 Math.min(60_000L, plugin.getConfig().getLong(
                         "discord.commands.user-cooldown-ms", 1000L))));
-        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
-                Math.min(10_000L, plugin.getConfig().getLong(
-                        "discord.commands.global-cooldown-ms", 100L))));
         synchronized (slashCommandLastAttempt) {
             Long previous = slashCommandLastAttempt.get(discordUserId);
             if (previous != null && now - previous < userCooldown) return false;
-            if (globalCooldown > 0 && slashCommandGlobalLastAttemptNanos != 0L
-                    && now - slashCommandGlobalLastAttemptNanos < globalCooldown) return false;
             slashCommandLastAttempt.put(discordUserId, now);
-            if (globalCooldown > 0) slashCommandGlobalLastAttemptNanos = now;
             if (slashCommandLastAttempt.size() > 10_000) {
                 slashCommandLastAttempt.entrySet().removeIf(entry -> now - entry.getValue()
                         >= TimeUnit.MINUTES.toNanos(10));
             }
+            return true;
+        }
+    }
+
+    private boolean allowSlashCommandGlobal() {
+        long now = System.nanoTime();
+        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                Math.min(10_000L, plugin.getConfig().getLong(
+                        "discord.commands.global-cooldown-ms", 100L))));
+        if (globalCooldown <= 0) return true;
+        synchronized (slashCommandLastAttempt) {
+            if (slashCommandGlobalLastAttemptNanos != 0L
+                    && now - slashCommandGlobalLastAttemptNanos < globalCooldown) return false;
+            slashCommandGlobalLastAttemptNanos = now;
             return true;
         }
     }
