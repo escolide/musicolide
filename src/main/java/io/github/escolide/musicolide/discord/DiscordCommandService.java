@@ -227,7 +227,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             Consumer<String> output = message -> {
                 if (message == null || message.isBlank()) return;
                 lines.add(safe(stripLegacyColors(message)));
-                while (lines.size() > 12) lines.remove(0);
+                while (lines.size() > 24) lines.remove(0);
                 String description = String.join("\n", lines);
                 if (first.getAndSet(false)) {
                     hook.editOriginalEmbeds(embed().setDescription(truncate(description, 3900)).build()).queue();

@@ -32,6 +32,24 @@ class TrackRepositorySearchTest {
     }
 
     @Test
+    void localSearchPagesUseStableOffsetsWithoutRepeatingResults() throws Exception {
+        TrackRepository repository = new TrackRepository(temporaryDirectory.resolve("pages.db"));
+        repository.saveTrack(track("page-1", "Ambient One", "Artist"));
+        repository.saveTrack(track("page-2", "Ambient Two", "Artist"));
+        repository.saveTrack(track("page-3", "Ambient Three", "Artist"));
+        repository.saveTrack(track("page-4", "Ambient Four", "Artist"));
+
+        List<MusicTrack> firstPage = repository.searchForPlayback("ambient", 2, 0);
+        List<MusicTrack> secondPage = repository.searchForPlayback("ambient", 2, 2);
+
+        assertEquals(2, firstPage.size());
+        assertEquals(2, secondPage.size());
+        assertTrue(java.util.Collections.disjoint(
+                firstPage.stream().map(MusicTrack::id).toList(),
+                secondPage.stream().map(MusicTrack::id).toList()));
+    }
+
+    @Test
     void playbackSearchTreatsUnderscoreAndPercentAsLiteralCharacters() throws Exception {
         TrackRepository repository = new TrackRepository(temporaryDirectory.resolve("wildcards.db"));
         repository.saveTrack(track("literal-underscore", "AC_DC", "Artist"));

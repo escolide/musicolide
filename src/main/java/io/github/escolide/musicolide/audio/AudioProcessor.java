@@ -269,7 +269,9 @@ public final class AudioProcessor implements AutoCloseable {
             if (customId != null && repository.getTrack(customId).isPresent()) {
                 throw new IOException("The custom track ID '" + customId + "' is already in use.");
             }
-            String rawTitle = customId != null ? customId.replace('_', ' ')
+            String customDisplayName = requestedCustomId == null ? ""
+                    : requestedCustomId.trim().replace('_', ' ').replaceAll("\\s+", " ");
+            String rawTitle = customId != null ? customDisplayName
                     : requestedTitle != null && !requestedTitle.isBlank() ? requestedTitle.trim()
                     : metadataTitle != null && !metadataTitle.isBlank() ? metadataTitle.trim()
                     : stripExtension(source.getFileName().toString());
