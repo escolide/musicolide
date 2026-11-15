@@ -387,6 +387,22 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return String.join(" ", values).trim();
     }
 
+    private void downloadLibrary(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cUse /music download in game to request the music library for your own client."));
+            return;
+        }
+        if (playback.isIgnoredBedrockPlayer(player.getUniqueId())) {
+            sender.sendMessage(msg("&cBedrock players are excluded by the server configuration."));
+            return;
+        }
+        if (playback.requestLibrary(player)) {
+            sender.sendMessage(msg("&aYour Musicolide library resource pack was requested. Cached packs may be reused."));
+        } else {
+            sender.sendMessage(msg("&cThe music library pack could not be requested. Check the server's pack-hosting configuration and logs."));
+        }
+    }
+
     private void diagnostics(CommandSender sender) {
         if (!admin(sender)) return;
         sender.sendMessage(msg("&bMusicolide native tool diagnostics:"));
@@ -729,7 +745,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private int configuredSearchMaxPages() {
-        return bounded(plugin.getConfig().getInt("audio.yt-dlp.search.max-pages", 4), 1, 8);
+        return Math.max(1, Math.min(8, plugin.getConfig().getInt("audio.yt-dlp.search.max-pages", 4)));
     }
 
     private static String normalizeSearchQuery(String value) {
