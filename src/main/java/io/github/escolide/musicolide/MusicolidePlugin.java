@@ -249,6 +249,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("audio.processing.global-import-cooldown-seconds", 2);
             migratedConfig = true;
         }
+        if (!getConfig().contains("audio.processing.max-bulk-import-files")) {
+            getConfig().set("audio.processing.max-bulk-import-files", 50);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("audio.processing.search-cooldown-seconds")) {
             getConfig().set("audio.processing.search-cooldown-seconds", 3);
             migratedConfig = true;
