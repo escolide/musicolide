@@ -603,6 +603,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
             int maximumItems = Math.max(1, Math.min(20,
                     plugin.getConfig().getInt("audio.yt-dlp.max-playlist-items", 10)));
+            maximumItems = Math.min(maximumItems, Math.max(1, Math.min(500,
+                    plugin.getConfig().getInt("limits.max-playlist-tracks", 500))));
             sender.sendMessage(msg("&eImporting up to &f" + maximumItems
                     + " &eauthorized YouTube playlist tracks. Downloads and audio processing run one at a time."));
             processor.importPlaylistUrl(rawInput).whenComplete((result, error) ->
