@@ -123,6 +123,11 @@ audio:
     # The separate /music import-url command remains admin-only and requires --rights-confirmed.
     # Keep false unless the server operator has confirmed download and redistribution rights.
     auto-import-on-play: false
+    # Accept YouTube playlist URLs in /play only when this is explicitly enabled.
+    # Each video is still downloaded individually with --no-playlist and processed sequentially.
+    allow-playlists: false
+    # Hard-capped by the plugin at 20; also cannot exceed limits.max-playlist-tracks.
+    max-playlist-items: 10
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
     # URL-imported packs become eligible for expiry this many minutes after import.
