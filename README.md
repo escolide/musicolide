@@ -84,7 +84,6 @@ discord:
   presence:
     enabled: true
     template: "{title} • {elapsed}"
-    idle-text: ""
     update-interval-seconds: 15
   info:
     enabled: true
@@ -102,6 +101,8 @@ discord:
     global-cooldown-ms: 100
     autocomplete-cooldown-seconds: 5
     autocomplete-global-cooldown-seconds: 1
+    autocomplete-response-cooldown-ms: 250
+    autocomplete-global-response-cooldown-ms: 50
     otp-user-attempts-per-minute: 5
     otp-global-attempts-per-minute: 30
     link-code-cooldown-seconds: 30
