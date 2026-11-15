@@ -510,7 +510,7 @@ public final class PlaybackEngine {
                     state.baseVolume = playbackBaseVolume(player);
                     state.segment = segment;
                     state.fading = candidate.mode == MusicZone.AudioMode.FADE;
-                    state.sound = track.soundKey(segment, session.isMono());
+                    state.sound = track.soundKey(segment, candidate.session.isMono());
                     float adjusted = playbackVolume(state.baseVolume, candidate.session, state.fading, player);
                     if (adjusted > 0) {
                         player.playSound(player.getLocation(), state.sound, SOUND_CATEGORY,
