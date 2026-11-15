@@ -217,8 +217,10 @@ public final class DiscordCommandService extends ListenerAdapter {
         boolean allowRemoteSearch = autocompleteCooldowns.tryAcquire(
                 "discord-autocomplete", event.getUser().getId(),
                 autocompleteCooldown, autocompleteGlobalCooldown) == 0L;
-        musicCommand.discordPlaySuggestions(query, allowRemoteSearch)
-                .completeOnTimeout(List.of(), 2200, TimeUnit.MILLISECONDS)
+        musicCommand.discordPlaySuggestions(query, allowRemoteSearch, guildScopedUser)
+                // Discord autocomplete is time-limited. Return quickly; completed
+                // remote results are cached for subsequent keystrokes.
+                .completeOnTimeout(List.of(), 2500, TimeUnit.MILLISECONDS)
                 .exceptionally(error -> List.of())
                 .thenAccept(suggestions -> {
                     List<Command.Choice> choices = new ArrayList<>();
