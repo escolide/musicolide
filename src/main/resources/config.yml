@@ -62,6 +62,9 @@ discord:
     # Pairing-code guesses are limited both per Discord user and globally.
     otp-user-attempts-per-minute: 5
     otp-global-attempts-per-minute: 30
+    # Limit repeated /link code generation from Minecraft accounts.
+    link-code-cooldown-seconds: 30
+    global-link-code-cooldown-seconds: 1
     # Slash command response visibility: requester (ephemeral/private) or everyone (public).
     # Existing installations default to requester so current privacy is preserved.
     visibility:
