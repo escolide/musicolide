@@ -192,9 +192,9 @@ playback:
     warn-session-owner: true
     warning-cooldown-seconds: 60
   range:
-    # /play or /music search with a spatial option and no explicit target defaults
-    # to @a; only players inside the selected zone become recipients.
-    # Without a spatial option, a player command still defaults to @s.
+    # With a spatial option and no explicit target, admins default to @a while
+    # ordinary players default to @s when permissions.allow-player-self-zones is enabled.
+    # Without a spatial option, a player command defaults to @s.
     circle:
       radius: 60
     square:
