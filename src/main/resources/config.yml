@@ -42,7 +42,8 @@ discord:
     server-port: 25565
   commands:
     enabled: true
-    # Leave blank for global slash commands, or set a guild ID for faster development registration.
+    # Explicit command guild. Blank defaults to the guild containing voice-channel-id.
+    # Commands are never globally registered; use allowed-guild-ids for an explicit multi-guild allowlist.
     guild-id: ""
     # minecraft-op / discord-administrator / either / both
     # minecraft-op checks the linked player's actual OP/admin permission in Bukkit.
