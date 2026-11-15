@@ -4,6 +4,7 @@
 general:
   check-interval-ticks: 5
 
+# HTTP hosting used to deliver the generated Java and Bedrock resource packs.
 server:
   hosting-mode: "shared-port"
   bind-address: "0.0.0.0"
@@ -23,7 +24,7 @@ server:
 
   path-prefix: "/packs"
   max-download-mb: 100
-  
+
 # Audio import, processing and encoding. These settings affect newly imported tracks.
 
 audio:
@@ -128,7 +129,6 @@ audio:
     yt-dlp-search-timeout-seconds: 45
     ffmpeg-threads: 1
 
-# How Musicolide sends, caches and prefetches resource packs for players.
 # Storage limits and cleanup for permanent sources and temporary imports.
 
 storage:
@@ -144,6 +144,7 @@ storage:
     # How often Musicolide checks for expired temporary tracks. Valid range: 1-1440 minutes.
     cleanup-interval-minutes: 1
 
+# How Musicolide sends, caches and prefetches resource packs for players.
 resource-packs:
   required-on-first-use: false
   prompt: "Musicolide needs its music library to play tracks."
@@ -233,6 +234,7 @@ matching:
   require-confirmation-for-alias: true
   metadata-lookup: true
 
+# Optional integrations for Bedrock players, protected regions and Discord.
 geyser:
   # Completely exclude Geyser-identified Bedrock players from Musicolide:
   # no Bedrock music pack, no Java or temporary packs, no playback, and no plugin messages.
@@ -241,8 +243,6 @@ geyser:
   # Enable before Bedrock players connect. Players already sent a pack must reconnect
   # after changing this option so Geyser starts a new session without offering it.
   ignore-bedrock-players: false
-
-# HTTP hosting used to deliver the generated Java and Bedrock resource packs.
 
 worldguard:
   enabled: true
@@ -261,8 +261,6 @@ permissions:
   use: "musicolide.use"
   dj: "musicolide.dj"
   admin: "musicolide.admin"
-
-# Text shown by Minecraft commands and playback feedback.
 
 discord:
   # Optional Discord bot integration: passive one-way voice broadcast plus linked-account slash commands.
@@ -351,6 +349,7 @@ discord:
       play: "requester"
       music: "requester"
 
+# Text shown by Minecraft commands and playback feedback.
 messages:
   prefix: "&8[&5Musicolide&8] &r"
   no-permission: "&cYou do not have permission to do that."
