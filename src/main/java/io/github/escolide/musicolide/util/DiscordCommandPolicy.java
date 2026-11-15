@@ -24,16 +24,15 @@ public final class DiscordCommandPolicy {
     public static boolean requiresPlaylistPlayCooldown(String commandLine) {
         if (commandLine == null) return false;
         String normalized = commandLine.trim();
-        if (normalized.regionMatches(true, 0, "/music ", 0, 7)) {
-            normalized = normalized.substring(7).trim();
-        } else if (normalized.regionMatches(true, 0, "music ", 0, 6)) {
-            normalized = normalized.substring(6).trim();
-        }
-        if (normalized.startsWith("/")) normalized = normalized.substring(1).trim();
-        String[] arguments = normalized.split("\\s+", 3);
-        return arguments.length >= 2
-                && unquoteRoot(arguments[0]).equalsIgnoreCase("playlist")
-                && unquoteRoot(arguments[1]).equalsIgnoreCase("play");
+        if (normalized.isEmpty()) return false;
+        String[] arguments = normalized.split("\\s+");
+        int index = 0;
+        String first = unquoteRoot(arguments[0]);
+        if (first.startsWith("/")) first = first.substring(1);
+        if (first.equalsIgnoreCase("music")) index++;
+        return index + 1 < arguments.length
+                && unquoteRoot(arguments[index]).equalsIgnoreCase("playlist")
+                && unquoteRoot(arguments[index + 1]).equalsIgnoreCase("play");
     }
 
     private static String unquoteRoot(String token) {
