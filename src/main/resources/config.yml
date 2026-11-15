@@ -240,7 +240,7 @@ permissions:
   admin: "musicolide.admin"
 
 messages:
-  prefix: "&8[&bMusicolide&8] &r"
+  prefix: "&8[&5Musicolide&8] &r"
   no-permission: "&cYou do not have permission to do that."
   player-only: "&cThis command must be run by a player."
   track-not-found: "&cTrack not found. Import an authorized audio file first."
