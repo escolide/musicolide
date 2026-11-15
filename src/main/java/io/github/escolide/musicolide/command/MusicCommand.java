@@ -592,6 +592,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     + " &eauthorized YouTube playlist tracks. Downloads and audio processing run one at a time."));
             processor.importPlaylistUrl(rawInput).whenComplete((result, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (sender instanceof Player player && !player.isOnline()) return;
                         if (error != null) {
                             sender.sendMessage(msg("&cYouTube playlist import failed: " + rootMessage(error)));
                             return;
@@ -631,6 +632,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&eImporting this allowlisted URL. Confirm that your server may distribute this audio."));
             processor.importUrl(rawInput, null, request.customId).whenComplete((imported, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (sender instanceof Player player && !player.isOnline()) return;
                         if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
                         else {
                             sender.sendMessage(msg("&aImported &f" + imported.title() + "&a; starting playback."));
@@ -1177,7 +1179,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void startImportedPlaylist(CommandSender sender, List<MusicTrack> tracks, PlayRequest request) {
-        if (tracks == null || tracks.isEmpty()) return;
+        if (tracks == null || tracks.isEmpty()
+                || sender instanceof Player player && !player.isOnline()) return;
         boolean mono = "mono".equalsIgnoreCase(request.audioMode);
         if (!mono) {
             for (MusicTrack track : tracks) startPrepared(sender, track, request, false);
