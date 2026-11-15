@@ -2,6 +2,7 @@ package io.github.escolide.musicolide.resource;
 
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
+import io.github.escolide.musicolide.util.RequestCooldowns;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -30,7 +31,7 @@ public final class PackManager {
     private final Set<UUID> waitingForPublicAddress = ConcurrentHashMap.newKeySet();
     private final Set<UUID> removeLibraryWhenReady = ConcurrentHashMap.newKeySet();
     // Explicit /music download requests are rate-limited; playback-driven ensureLibrary calls are not.
-    private final Map<UUID, Long> manualLibraryRequestAt = new ConcurrentHashMap<>();
+    private final RequestCooldowns manualLibraryRequestCooldowns = new RequestCooldowns();
 
     // Only temporary per-session remainder packs are sent separately.
     private final Map<UUID, Set<UUID>> ready = new ConcurrentHashMap<>();
@@ -115,19 +116,24 @@ public final class PackManager {
         String hash = currentLibraryHash();
         if (hash == null) return false;
         if (hash.equals(libraryReadyHash.get(playerId))) return true;
-        // A request already in progress is not repeated and must not consume another slot.
-        if (hash.equals(libraryRequestedHash.get(playerId))) return false;
+        // A pending request for any library revision, or a request waiting for
+        // public-address discovery, already has work queued. Never duplicate it.
+        if (libraryRequestedHash.containsKey(playerId) || waitingForPublicAddress.contains(playerId)) return true;
 
-        long cooldownSeconds = Math.max(0L,
+        long playerCooldown = Math.max(0L,
                 plugin.getConfig().getLong("resource-packs.request-cooldown-seconds", 30L));
-        long now = System.currentTimeMillis();
-        Long lastRequest = manualLibraryRequestAt.get(playerId);
-        long cooldownMillis = Math.min(cooldownSeconds, 86_400L) * 1000L;
-        if (lastRequest != null && now - lastRequest < cooldownMillis) return false;
+        long globalCooldown = Math.max(0L,
+                plugin.getConfig().getLong("resource-packs.global-request-cooldown-seconds", 1L));
+        if (manualLibraryRequestCooldowns.tryAcquire("manual-library", playerId.toString(),
+                playerCooldown, globalCooldown) > 0L) return false;
 
-        manualLibraryRequestAt.put(playerId, now);
         if (retry) libraryDeclinedHash.remove(playerId, hash);
-        return ensureLibrary(player);
+        ensureLibrary(player);
+        // ensureLibrary returns false when it starts a new addResourcePack request;
+        // for the manual command, that is a successful request, not a failure.
+        return hash.equals(libraryReadyHash.get(playerId))
+                || libraryRequestedHash.containsKey(playerId)
+                || waitingForPublicAddress.contains(playerId);
     }
 
     /** Called after public-address discovery finishes, mainly for on-join delivery. */
@@ -528,7 +534,6 @@ public final class PackManager {
         removeWhenReady.remove(playerId);
         pinnedTemporaryPacks.remove(playerId);
         inFlight.remove(playerId);
-        manualLibraryRequestAt.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
         cleanupLibraryArchivesAsync();
     }
