@@ -67,6 +67,21 @@ public final class PackManager {
         loadAcceptedPlayers();
     }
 
+    /**
+     * Called once for each joining Java player. By default, the last successfully
+     * loaded library revision is remembered so an unchanged pack is not offered
+     * again on reconnect. Disabling the optimization forces one fresh application
+     * on the next pack request after each join.
+     */
+    public void onPlayerJoin(Player player) {
+        if (player == null) return;
+        if (!plugin.getConfig().getBoolean("resource-packs.optimization.avoid-redundant-reloads", true)) {
+            UUID playerId = player.getUniqueId();
+            libraryReadyHash.remove(playerId);
+            libraryDeclinedHash.remove(playerId);
+        }
+    }
+
     private boolean isIgnoredBedrockPlayer(Player player) {
         return player != null && geyser != null
                 && geyser.isIgnoredBedrockPlayer(player.getUniqueId());
