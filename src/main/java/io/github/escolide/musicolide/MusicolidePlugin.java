@@ -170,6 +170,43 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("audio.yt-dlp.search.max-pages", 4);
             migratedConfig = true;
         }
+
+        // Add bounded-request controls to existing installations without
+        // disturbing unrelated playback and hosting settings.
+        if (!getConfig().contains("resource-packs.request-cooldown-seconds")) {
+            getConfig().set("resource-packs.request-cooldown-seconds", 30);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.import-cooldown-seconds")) {
+            getConfig().set("audio.processing.import-cooldown-seconds", 10);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.global-import-cooldown-seconds")) {
+            getConfig().set("audio.processing.global-import-cooldown-seconds", 2);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.search-cooldown-seconds")) {
+            getConfig().set("audio.processing.search-cooldown-seconds", 3);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.global-search-cooldown-seconds")) {
+            getConfig().set("audio.processing.global-search-cooldown-seconds", 1);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.transform-cooldown-seconds")) {
+            getConfig().set("audio.processing.transform-cooldown-seconds", 3);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.processing.global-transform-cooldown-seconds")) {
+            getConfig().set("audio.processing.global-transform-cooldown-seconds", 1);
+            migratedConfig = true;
+        }
+        // The previous default was four temporary packs ahead. Move that default
+        // to two while retaining deliberately customized non-default values.
+        if (getConfig().getInt("resource-packs.prefetch.tracks-ahead", 4) == 4) {
+            getConfig().set("resource-packs.prefetch.tracks-ahead", 2);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("audio.mono-quality")) {
             getConfig().set("audio.mono-quality", getConfig().getInt("audio.stereo-quality", 5));
             migratedConfig = true;
