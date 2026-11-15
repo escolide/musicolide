@@ -36,6 +36,8 @@ public final class AudioProcessor implements AutoCloseable {
     private final ThreadPoolExecutor worker;
     private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightUrlImports =
             new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CompletableFuture<PlaylistImportResult>> inFlightPlaylistImports =
+            new ConcurrentHashMap<>();
     private final Set<String> monoVariantsReady = ConcurrentHashMap.newKeySet();
     private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightMonoVariants =
             new ConcurrentHashMap<>();
@@ -134,14 +136,16 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle, String customId) {
+        if (YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "YouTube playlist URLs are not accepted by the single-track importer. Use /play with audio.yt-dlp.allow-playlists enabled."));
+        }
         String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
         if (sourceKey.isBlank()) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("The source URL is invalid."));
         }
 
         // Check the persistent alias before checking native tools or queueing a job.
-        // A previously imported video must not be downloaded again just because
-        // yt-dlp is currently unavailable or a second player pasted another URL variant.
         try {
             Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
             if (existing.isPresent()) return CompletableFuture.completedFuture(existing.get());
@@ -180,47 +184,145 @@ public final class AudioProcessor implements AutoCloseable {
 
         try {
             worker.execute(() -> {
-                Path temporary = null;
                 try {
-                    Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
-                    Files.createDirectories(incoming);
-                    temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
-                    YtDlpDownloader.DownloadResult download =
-                            new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
-                    String relative = incoming.relativize(download.audioFile()).toString();
-                    MusicTrack imported = processFile(relative, requestedTitle, true,
-                            download.title(), download.artist(), normalizedCustomId);
-
-                    // LinkNormalizer maps YouTube watch, youtu.be, music.youtube.com,
-                    // and Shorts URLs to the same youtube:<video-id> key.
-                    try {
-                        repository.addAlias(sourceKey, imported.id());
-                        String extractor = download.extractor() == null ? "" : download.extractor().toLowerCase(Locale.ROOT);
-                        String sourceId = download.sourceId() == null ? "" : download.sourceId().trim();
-                        if (!sourceId.isBlank() && extractor.contains("youtube")) {
-                            // The extractor-provided ID is authoritative if a future
-                            // YouTube URL form is not recognized by LinkNormalizer.
-                            repository.addAlias("youtube:" + sourceId, imported.id());
-                        }
-                    } catch (SQLException aliasError) {
-                        plugin.getLogger().warning("Imported " + imported.title()
-                                + " but could not save its source-ID alias: " + aliasError.getMessage());
-                    }
-                    result.complete(imported);
-                } catch (Throwable ex) {
-                    result.completeExceptionally(ex instanceof CompletionException && ex.getCause() != null
-                            ? ex.getCause() : ex);
+                    result.complete(importUrlNow(sourceUrl, requestedTitle, normalizedCustomId));
+                } catch (Throwable error) {
+                    result.completeExceptionally(error instanceof CompletionException && error.getCause() != null
+                            ? error.getCause() : error);
                 } finally {
-                    deleteQuietly(temporary);
                     inFlightUrlImports.remove(sourceKey, result);
                 }
             });
         } catch (RejectedExecutionException ex) {
             inFlightUrlImports.remove(sourceKey, result);
             result.completeExceptionally(new IllegalStateException(
-                    "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
         }
         return result;
+    }
+
+    /**
+     * Imports only a bounded number of entries from an explicitly permitted
+     * YouTube playlist. Playlist metadata is read first; each video then follows
+     * the normal single-video (--no-playlist), allowlist and audio validation path.
+     */
+    public CompletableFuture<PlaylistImportResult> importPlaylistUrl(String sourceUrl) {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "YouTube playlist importing is disabled. Enable audio.yt-dlp.allow-playlists in config.yml first."));
+        }
+        if (!YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "The URL is not a recognized YouTube playlist URL."));
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
+                || !toolchain.isInitialized()
+                || !toolchain.available(NativeToolchain.Tool.YT_DLP)
+                || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)
+                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The YouTube playlist importer or required audio tools are unavailable."));
+        }
+
+        String playlistKey = sourceUrl.trim();
+        int maximum = bounded(plugin.getConfig().getInt(
+                "audio.yt-dlp.max-playlist-items", 10), 1, 20);
+        // Respect the server's general playlist cap as an additional ceiling.
+        maximum = Math.min(maximum, bounded(plugin.getConfig().getInt(
+                "limits.max-playlist-tracks", 500), 1, 500));
+        final int itemLimit = maximum;
+
+        CompletableFuture<PlaylistImportResult> result = new CompletableFuture<>();
+        CompletableFuture<PlaylistImportResult> active =
+                inFlightPlaylistImports.putIfAbsent(playlistKey, result);
+        if (active != null) return active;
+
+        try {
+            worker.execute(() -> {
+                try {
+                    YtDlpDownloader.PlaylistListing listing =
+                            new YtDlpDownloader(plugin, toolchain).listPlaylist(sourceUrl, itemLimit);
+                    List<MusicTrack> imported = new ArrayList<>();
+                    int failed = 0;
+                    for (YtDlpDownloader.PlaylistEntry entry : listing.entries()) {
+                        String videoAlias = "youtube:" + entry.videoId();
+                        Optional<MusicTrack> existing = repository.resolveAlias(videoAlias);
+                        if (existing.isPresent()) {
+                            imported.add(existing.get());
+                            continue;
+                        }
+                        try {
+                            imported.add(importUrlNow(entry.url(), entry.title(), null));
+                        } catch (Exception itemError) {
+                            failed++;
+                            plugin.getLogger().warning("Skipped YouTube playlist item '" + entry.title()
+                                    + "': " + rootMessage(itemError));
+                        }
+                    }
+                    if (imported.isEmpty()) {
+                        throw new IOException("No tracks from the YouTube playlist could be imported.");
+                    }
+                    result.complete(new PlaylistImportResult(imported, listing.entries().size(),
+                            failed, listing.truncated(), listing.reportedCount()));
+                } catch (Throwable error) {
+                    result.completeExceptionally(error instanceof CompletionException && error.getCause() != null
+                            ? error.getCause() : error);
+                } finally {
+                    inFlightPlaylistImports.remove(playlistKey, result);
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            inFlightPlaylistImports.remove(playlistKey, result);
+            result.completeExceptionally(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
+        }
+        return result;
+    }
+
+    private MusicTrack importUrlNow(String sourceUrl, String requestedTitle, String customId) throws Exception {
+        String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
+        if (sourceKey.isBlank()) throw new IOException("The source URL is invalid.");
+        Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
+        if (existing.isPresent()) return existing.get();
+
+        Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
+        Files.createDirectories(incoming);
+        Path temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
+        try {
+            YtDlpDownloader.DownloadResult download =
+                    new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
+            String relative = incoming.relativize(download.audioFile()).toString();
+            MusicTrack imported = processFile(relative, requestedTitle, true,
+                    download.title(), download.artist(), customId);
+
+            try {
+                repository.addAlias(sourceKey, imported.id());
+                String extractor = download.extractor() == null ? "" : download.extractor().toLowerCase(Locale.ROOT);
+                String sourceId = download.sourceId() == null ? "" : download.sourceId().trim();
+                if (!sourceId.isBlank() && extractor.contains("youtube")) {
+                    repository.addAlias("youtube:" + sourceId, imported.id());
+                }
+            } catch (SQLException aliasError) {
+                plugin.getLogger().warning("Imported " + imported.title()
+                        + " but could not save its source-ID alias: " + aliasError.getMessage());
+            }
+            return imported;
+        } finally {
+            deleteQuietly(temporary);
+        }
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    public record PlaylistImportResult(List<MusicTrack> tracks, int entriesFound,
+                                       int failedEntries, boolean truncated, int reportedTotal) {
+        public PlaylistImportResult {
+            tracks = List.copyOf(tracks);
+        }
     }
 
     public List<NativeToolchain.ToolStatus> toolStatuses() {
