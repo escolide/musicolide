@@ -311,7 +311,7 @@ public final class AudioProcessor implements AutoCloseable {
                     new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
             String relative = incoming.relativize(download.audioFile()).toString();
             MusicTrack imported = processFile(relative, requestedTitle, true,
-                    download.title(), download.artist(), customId);
+                    download.title(), download.artist(), customId, rebuildBedrockLibrary);
 
             try {
                 repository.addAlias(sourceKey, imported.id());
@@ -363,6 +363,13 @@ public final class AudioProcessor implements AutoCloseable {
 
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
                                    String metadataTitle, String metadataArtist, String requestedCustomId) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport,
+                metadataTitle, metadataArtist, requestedCustomId, true);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist, String requestedCustomId,
+                                   boolean rebuildBedrockLibrary) {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
