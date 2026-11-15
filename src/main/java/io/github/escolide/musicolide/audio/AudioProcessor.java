@@ -241,6 +241,60 @@ public final class AudioProcessor implements AutoCloseable {
      * YouTube playlist. Playlist metadata is read first; each video then follows
      * the normal single-video (--no-playlist), allowlist and audio validation path.
      */
+    /**
+     * Reads playlist metadata only. Media is intentionally not downloaded here;
+     * MusicCommand imports entries one at a time as playback approaches them.
+     */
+    public CompletableFuture<YtDlpDownloader.PlaylistListing> listPlaylistUrl(
+            String sourceUrl, int maximumItems) {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "YouTube playlist importing is disabled. Enable audio.yt-dlp.allow-playlists in config.yml first."));
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)
+                || !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Playlist importing requires audio.yt-dlp.enabled and audio.yt-dlp.auto-import-on-play."));
+        }
+        if (!YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "The URL is not a recognized YouTube playlist URL."));
+        }
+        if (!toolchain.isInitialized()) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Native audio tools are still being checked during startup. Try again in a moment."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)
+                || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "yt-dlp and QuickJS must be available before playlist lookup can start."));
+        }
+        int configuredMaximum = bounded(plugin.getConfig().getInt(
+                "audio.yt-dlp.max-playlist-items", 10), 1, 20);
+        int playlistLimit = bounded(plugin.getConfig().getInt("limits.max-playlist-tracks", 500), 1, 500);
+        int maximum = Math.min(Math.min(configuredMaximum, playlistLimit), bounded(maximumItems, 1, 20));
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new YtDlpDownloader(plugin, toolchain).listPlaylist(sourceUrl, maximum);
+                } catch (Exception ex) {
+                    throw new CompletionException(ex);
+                }
+            }, worker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
+        }
+    }
+
+    /** Imports one already-authorized playlist entry as a temporary playback track. */
+    public CompletableFuture<MusicTrack> importPlaylistEntry(YtDlpDownloader.PlaylistEntry entry) {
+        if (entry == null || entry.url() == null || entry.url().isBlank()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("The playlist entry URL is invalid."));
+        }
+        return importUrl(entry.url(), entry.title());
+    }
+
     public synchronized CompletableFuture<PlaylistImportResult> importPlaylistUrl(String sourceUrl) {
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
