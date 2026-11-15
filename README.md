@@ -46,10 +46,10 @@ This is selected from the **server's** Minecraft version. If a proxy permits cli
 
 ## Audio source and rights
 
-YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once an administrator enables that setting and configures authorized hosts, users with the DJ permission can run /play <url> in-game to import the source and start playback after the resource pack is generated. From console, non-spatial playback must specify @a or an online player name; player-centered spatial options require an in-game sender. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
+YouTube URL ingestion is supported through yt-dlp when the server administrator explicitly enables URL auto-import and the source host is allowlisted. The default config prelists youtube.com and youtu.be, but keeps audio.yt-dlp.auto-import-on-play disabled. Once enabled, users with the DJ permission can run `/play <url>` in-game to import one video. YouTube playlist URLs are separately opt-in with `audio.yt-dlp.allow-playlists: true` (default `false`); `audio.yt-dlp.max-playlist-items` defaults to 10 and is hard-capped at 20, as well as being limited by `limits.max-playlist-tracks`. Playlist metadata is inspected first, then each selected video is downloaded and processed sequentially through the single-video `--no-playlist` path. Ordinary video URLs that contain a playlist context still import only that video. From console, non-spatial playback must specify @a or an online player name; player-centered spatial options require an in-game sender. The administrator is responsible for ensuring that the server has permission to download, cache and distribute the audio to players. Spotify and SoundCloud remain metadata/alias-only sources. Musicolide does not bypass DRM, subscriptions, region controls or platform protections.
 
 Import only audio that you own or are authorized to distribute to your players. The presence of yt-dlp does not grant redistribution rights.
-YouTube search itself does not download audio. Selecting a result follows the same `audio.yt-dlp.auto-import-on-play` opt-in, allowed-host checks and redistribution-rights responsibility as `/play <YouTube URL>`. When auto-import is disabled, players can still inspect the metadata results, but selection is blocked until an administrator enables the setting.
+YouTube search itself does not download audio. Selecting a result follows the same `audio.yt-dlp.auto-import-on-play` opt-in, allowed-host checks and redistribution-rights responsibility as `/play <YouTube URL>`. When auto-import is disabled, players can still inspect the metadata results, but selection is blocked until an administrator enables the setting. Playlist import is a separate option and remains disabled unless `audio.yt-dlp.allow-playlists: true` is configured. It only accepts a bounded number of entries and downloads them one at a time.
 
 ## Build and native-tool setup
 
@@ -94,16 +94,25 @@ discord:
     server-port: 25565
   commands:
     enabled: true
-    guild-id: "" # blank = global commands; set a guild ID for faster registration
+    guild-id: "" # blank = global registration; command execution is still restricted to the trusted guild
+    allowed-guild-ids: [] # optional explicit allowlist; otherwise guild-id or voice-channel-id's guild is trusted
     admin-authorization: "minecraft-op" # minecraft-op / discord-administrator / either / both
     admin-role-ids: []
+    user-cooldown-ms: 1000
+    global-cooldown-ms: 100
+    autocomplete-cooldown-seconds: 5
+    autocomplete-global-cooldown-seconds: 1
+    otp-user-attempts-per-minute: 5
+    otp-global-attempts-per-minute: 30
+    link-code-cooldown-seconds: 30
+    global-link-code-cooldown-seconds: 1
 ```
 
-Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs **View Channel**, **Connect**, and **Speak** in the configured voice channel. For DM pairing, enable the bot's DM access and invite it with the normal application command scope. Restart the Minecraft server after changing the bot token or voice channel. The runtime bootstrap/download occurs on a background thread.
+Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs only **View Channel**, **Connect**, and **Speak** in the configured voice channel, plus the normal application-command integration and access to DMs for account pairing. Do not grant the bot Administrator, Manage Server, Manage Roles, Manage Messages, Kick Members, Ban Members or other moderation permissions. Musicolide's Discord code does not implement moderation actions or arbitrary Bukkit command dispatch; its gateway intents are limited to voice state and direct messages. Slash command execution is restricted to the trusted guild: `allowed-guild-ids` takes precedence, then `guild-id`, then the guild containing `voice-channel-id`. Global slash-command registration does not grant access from other guilds. Restart the Minecraft server after changing the bot token or voice channel. The runtime bootstrap/download occurs on a background thread.
 
 ### Presence and /info
 
-The bot can display the current track and elapsed time using Discord listening activity. The presence template supports `{title}`, `{artist}`, `{elapsed}`, `{duration}`, and `{state}`. Discord presence updates are rate-limited to at least 15 seconds, but a track or playback-state change is sent immediately. Set `presence.enabled: false` to disable activity or customize `idle-text`.
+The bot can display the current track and elapsed time using Discord listening activity. The presence template supports `{title}`, `{artist}`, `{elapsed}`, `{duration}`, and `{state}`. Discord presence updates are rate-limited to at least 15 seconds, but a track or playback-state change is sent immediately. Set `presence.enabled: false` to disable activity.
 
 Discord `/info` shows the selected Musicolide track, artist, current timestamp, duration and playback state. Set `info.show-server-address: true` and configure `server-ip` plus `server-port` to show a public server address; the address is hidden by default. `info.show-thumbnail: true` displays a YouTube thumbnail only inside Discord when a saved YouTube source ID exists. It does not add an image to Java or Bedrock resource packs, so player downloads are unchanged. `info.custom-message` adds a final embed field after the standard details; it supports `{state}`, `{track}`/`{title}`, `{artist}`, `{position}`, `{duration}`, and `{server}`. The embed accent is configured through `embed-color` (six-digit hex, default purple). Per-command visibility is controlled by `discord.commands.visibility.<command>`: `requester` (private/ephemeral, default) or `everyone` (public).
 
@@ -119,7 +128,7 @@ Admin authorization is configurable:
 - `either`: either of those checks is sufficient.
 - `both`: both must be satisfied.
 
-Role IDs are configured explicitly; ordinary Discord roles do not automatically confer Minecraft OP. Do not give bot Administrator permission unless the bot actually needs it. Slash command registration is global when `guild-id` is blank; a configured guild ID is useful for faster testing and development.
+Role IDs are configured explicitly; ordinary Discord roles do not automatically confer Minecraft OP. Discord Administrator or configured admin-role checks grant Musicolide's admin/DJ permission only when the caller is in the trusted Musicolide guild and the selected authorization mode permits it. The default remains `minecraft-op`. The bot never performs Discord moderation actions. Keep the bot role least-privileged; the code does not need Administrator permission. Additional protections include per-user/global slash-command cooldowns, rate-limited remote autocomplete, per-user/global one-time-code attempt limits, a cooldown on `/link` code creation, a fixed Musicolide command-root allowlist, and coalesced Discord response edits. The command bridge cannot invoke arbitrary Discord moderation operations or unrelated Bukkit commands.
 
 ### Voice broadcast selection and runtime
 
