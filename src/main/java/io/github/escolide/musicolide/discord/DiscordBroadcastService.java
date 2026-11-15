@@ -68,6 +68,8 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private String lastPresenceText = "";
     private String lastPresenceIdentity = "";
     private OnlineStatus lastPresenceStatus = null;
+    // Musicolide owns one configured voice channel, not every guild cached by JDA.
+    private volatile String lastKnownVoiceGuildId;
 
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
                                    PlaybackEngine playback, NativeToolchain toolchain,
@@ -176,7 +178,9 @@ public final class DiscordBroadcastService implements AutoCloseable {
         if (channel == null) {
             streamer.stop();
             lastTimelineKey = null;
-            client.getGuilds().forEach(knownGuild -> knownGuild.getAudioManager().closeAudioConnection());
+            Guild managedGuild = lastKnownVoiceGuildId == null ? null
+                    : client.getGuildById(lastKnownVoiceGuildId);
+            if (managedGuild != null) managedGuild.getAudioManager().closeAudioConnection();
             if (!missingChannelLogged) {
                 logger.warning("Discord voice channel " + channelId
                         + " is not visible to the bot. Check the channel ID and bot access.");
@@ -187,6 +191,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
         missingChannelLogged = false;
 
         Guild guild = channel.getGuild();
+        lastKnownVoiceGuildId = guild.getId();
         Member self = guild.getSelfMember();
         if (!self.hasPermission(channel, Permission.VIEW_CHANNEL,
                 Permission.VOICE_CONNECT, Permission.VOICE_SPEAK)) {
@@ -396,11 +401,13 @@ public final class DiscordBroadcastService implements AutoCloseable {
         if (client != null) {
             try {
                 client.removeEventListener(commandService);
-                client.getGuilds().forEach(guild -> {
-                    AudioManager manager = guild.getAudioManager();
+                Guild managedGuild = lastKnownVoiceGuildId == null ? null
+                        : client.getGuildById(lastKnownVoiceGuildId);
+                if (managedGuild != null) {
+                    AudioManager manager = managedGuild.getAudioManager();
                     manager.closeAudioConnection();
                     manager.setSendingHandler(null);
-                });
+                }
                 client.shutdown();
             } catch (Exception error) {
                 logger.log(Level.FINE, "Discord shutdown completed with " + error.getClass().getSimpleName());
