@@ -1226,6 +1226,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (actor == null) { sender.sendMessage(msg("&cConsole control is not supported; use an in-game DJ.")); return; }
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
         if (action.equals("resume")) {
+            Optional<PlaybackSession> resumableSession = playback.findControllableSession(actor, admin);
+            boolean buildsAudioTail = "resumable".equalsIgnoreCase(
+                    plugin.getConfig().getString("audio.playback-mode", "resumable"))
+                    && resumableSession.filter(session -> session.paused()
+                    && session.current() != null && session.current().isStreamed()).isPresent();
+            if (buildsAudioTail && !admitHeavyRequest(sender, "transform",
+                    "audio.processing.transform-cooldown-seconds", 3,
+                    "audio.processing.global-transform-cooldown-seconds", 1,
+                    "another audio preparation")) return;
             PlaybackEngine.ResumeStart result = playback.resume(actor, admin, notification -> {
                 if (sender instanceof Player player && player.isOnline()) sender.sendMessage(msg(notification));
             });
@@ -1275,6 +1284,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length < 2) { sender.sendMessage(msg("&eYour volume: " + playback.getPlayerVolume(player) + "%")); return; }
         int value = Integer.parseInt(args[1]);
         if (value < 0 || value > 100) throw new IllegalArgumentException("Volume must be between 0 and 100.");
+        if ("precise".equalsIgnoreCase(plugin.getConfig().getString(
+                "playback.volume-change-mode", "next-track"))
+                && !admitHeavyRequest(sender, "transform",
+                "audio.processing.transform-cooldown-seconds", 3,
+                "audio.processing.global-transform-cooldown-seconds", 1,
+                "another audio preparation")) return;
         PlaybackEngine.VolumeChangeResult result = playback.setPlayerVolume(player, value, notification -> {
             if (player.isOnline()) sender.sendMessage(msg(notification));
         });
@@ -1320,6 +1335,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void mute(CommandSender sender, boolean muted) {
         if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
+        if (!muted && "precise".equalsIgnoreCase(plugin.getConfig().getString(
+                "playback.volume-change-mode", "next-track"))
+                && !admitHeavyRequest(sender, "transform",
+                "audio.processing.transform-cooldown-seconds", 3,
+                "audio.processing.global-transform-cooldown-seconds", 1,
+                "another audio preparation")) return;
         PlaybackEngine.VolumeChangeResult result = playback.setPlayerMuted(player, muted, notification -> {
             if (player.isOnline()) sender.sendMessage(msg(notification));
         });
