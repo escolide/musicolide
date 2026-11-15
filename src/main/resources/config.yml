@@ -17,11 +17,13 @@ discord:
   voice-channel-id: ""
   # Rejoin after an unexpected voice disconnect and restart from Minecraft's current timer.
   reconnect-and-resync: true
-  # Discord rich-presence text. {title}, {artist}, {elapsed}, {duration}, and {state} are supported.
+  # Discord profile presence is metadata-only and never controls audio playback.
+  # No active song (including paused/preparing): bot appears Idle with no activity.
+  # Actively playing: bot appears Online with a "Playing" activity using this template.
+  # Placeholders: {title}, {artist}, {elapsed}, {duration}, and {state}.
   presence:
     enabled: true
-    template: "{title} • {elapsed}"
-    idle-text: ""
+    template: "🎵 {title} • {elapsed}"
     # Discord presence is rate-limited; values below 15 seconds are raised to 15.
     update-interval-seconds: 15
   # Bot replies use this accent colour (six-digit hex).
