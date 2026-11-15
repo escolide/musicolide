@@ -121,8 +121,8 @@ class BedrockResourcePackBuilderTest {
             try (var input = bedrock.getInputStream(bedrock.getEntry("sounds/sound_definitions.json"))) {
                 definitions = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
             }
-            assertTrue(definitions.contains("\\\"ms_alpha:music\\\""));
-            assertTrue(definitions.contains("\\\"ms_beta:music\\\""));
+            assertTrue(definitions.contains("\"ms_alpha:music\""));
+            assertTrue(definitions.contains("\"ms_beta:music\""));
             assertTrue(definitions.contains("sounds/musicolide/ms_alpha/music"));
         }
 
@@ -141,12 +141,6 @@ class BedrockResourcePackBuilderTest {
 
     private void writeStreamArchive(Path archive, String namespace, byte[] audio) throws Exception {
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
-            zip.putNextEntry(new ZipEntry("assets/" + namespace + "/sounds.json"));
-            String definitions = "{\\\"music\\\":{\\\"sounds\\\":[{\\\"name\\\":\\\""
-                    + namespace + ":music\\\",\\\"stream\\\":true}]}}";
-            zip.write(definitions.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            zip.closeEntry();
-
             zip.putNextEntry(new ZipEntry("assets/" + namespace + "/sounds/music.ogg"));
             zip.write(audio);
             zip.closeEntry();
