@@ -58,6 +58,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     public boolean onPlayCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("save")) {
+            String[] delegated = new String[args.length];
+            System.arraycopy(args, 0, delegated, 0, args.length);
+            return onCommand(sender, command, "music", delegated);
+        }
         String[] delegated = new String[args.length + 1];
         delegated[0] = "play";
         System.arraycopy(args, 0, delegated, 1, args.length);
@@ -65,6 +70,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     public List<String> onPlayTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("save")) {
+            return onTabComplete(sender, command, "music", args);
+        }
         String[] delegated = new String[args.length + 1];
         delegated[0] = "play";
         System.arraycopy(args, 0, delegated, 1, args.length);
@@ -100,8 +108,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "nowplaying", "progress" -> nowPlaying(sender);
                 case "volume" -> volume(sender, args);
                 case "speed" -> speed(sender, args);
-                case "mute" -> mute(sender, true);
-                case "unmute" -> mute(sender, false);
+                case "mute" -> mute(sender, true, args);
+                case "unmute" -> mute(sender, false, args);
                 case "seek" -> seek(sender, args);
                 case "sync" -> sync(sender, args);
                 case "playlist" -> playlist(sender, args);
@@ -736,6 +744,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             boolean compact = normalized.startsWith("target:") || normalized.startsWith("id:")
                     || normalized.startsWith("mode:") || normalized.startsWith("circle:")
                     || normalized.startsWith("square:") || normalized.startsWith("region:")
+                    || normalized.equals("center")
                     || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
             if (normalized.startsWith("--") || compact || normalized.equals("mono") || normalized.equals("stereo")
                     || normalized.equals("@a") || normalized.equals("@p") || normalized.equals("@s")
@@ -1118,6 +1127,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         boolean square = false;
         boolean fadeEnabled = false;
         boolean fadeSpecified = false;
+        boolean centeredMono = false;
         double fade = 0;
         String customId = null;
         String audioMode = "stereo";
@@ -1139,6 +1149,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 audioMode = option.substring(5);
                 if (!audioMode.equals("mono") && !audioMode.equals("stereo"))
                     throw new IllegalArgumentException("Use mode:mono or mode:stereo.");
+                continue;
+            }
+            if (option.equals("center")) {
+                centeredMono = true;
                 continue;
             }
             if (option.startsWith("circle:")) {
@@ -1215,6 +1229,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
         }
 
+        if (centeredMono && !audioMode.equals("mono")) {
+            throw new IllegalArgumentException("The center option is only available with mode:mono.");
+        }
+        if (centeredMono && region != null) {
+            throw new IllegalArgumentException("The center option supports circle/square mono zones, not WorldGuard regions.");
+        }
+        if (centeredMono && !circle && !square) circle = true;
+
         // Mono has a default outer attenuation band for geometries where distance
         // from the zone edge is well-defined. An explicit --fade (including 0)
         // always overrides this default. WorldGuard polygon regions do not expose
@@ -1227,7 +1249,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             throw new IllegalArgumentException("Distance fade is supported for circle and square zones, not WorldGuard regions.");
         }
 
-        boolean spatialOption = circle || square || region != null || fadeEnabled;
+        boolean spatialOption = circle || square || region != null || fadeEnabled || centeredMono;
         if (selector == null) {
             selector = PlayTargetDefaults.defaultSelector(sender instanceof Player, spatialOption);
         }
@@ -1259,13 +1281,23 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             targets.add(target);
         }
 
-        boolean requiresAdmin = spatialOption || all
-                || (sender instanceof Player source && (targets.isEmpty()
-                || !targets.get(0).getUniqueId().equals(source.getUniqueId())))
-                || !(sender instanceof Player);
-        if (requiresAdmin && !sender.hasPermission(plugin.getConfig().getString(
-                "permissions.admin", "musicolide.admin"))) {
-            throw new IllegalArgumentException("Targeting other players or using a spatial zone requires OP or the Musicolide admin permission.");
+        boolean isSelfTarget = sender instanceof Player source && !all && !targets.isEmpty()
+                && targets.get(0).getUniqueId().equals(source.getUniqueId());
+        boolean hasAdmin = sender.hasPermission(plugin.getConfig().getString(
+                "permissions.admin", "musicolide.admin"));
+        boolean allowSelfZones = plugin.getConfig().getBoolean("permissions.allow-player-self-zones", true);
+        boolean allowAllTargets = plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
+        if (!(sender instanceof Player)) {
+            throw new IllegalArgumentException("Playback commands must be run by an in-game player.");
+        }
+        if (!hasAdmin && all && !allowAllTargets) {
+            throw new IllegalArgumentException("Using target:@a requires the Musicolide admin permission.");
+        }
+        if (!hasAdmin && spatialOption && !(isSelfTarget && allowSelfZones)) {
+            throw new IllegalArgumentException("Normal players may use zones only when targeting themselves. Use target:@s or ask an admin.");
+        }
+        if (!hasAdmin && !all && !isSelfTarget) {
+            throw new IllegalArgumentException("Targeting another player requires the Musicolide admin permission.");
         }
 
         boolean limited = plugin.getConfig().getString("playback.range.vertical.mode", "unlimited")
@@ -1293,11 +1325,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 double rotation = plugin.getConfig().getString("playback.range.square.rotation", "world")
                         .equalsIgnoreCase("player-facing")
                         ? Math.toRadians(center.getLocation().getYaw()) : 0;
-                zone = MusicZone.square(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
-                        width, length, rotation, limited, vertical, fadeEnabled, fade);
+                zone = centeredMono
+                        ? MusicZone.centeredSquare(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
+                            width, length, rotation, limited, vertical, fadeEnabled, fade)
+                        : MusicZone.square(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
+                            width, length, rotation, limited, vertical, fadeEnabled, fade);
             } else {
-                zone = MusicZone.circle(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
-                        radius, limited, vertical, fadeEnabled, fade);
+                zone = centeredMono
+                        ? MusicZone.centeredCircle(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
+                            radius, limited, vertical, fadeEnabled, fade)
+                        : MusicZone.circle(center.getWorld().getUID(), center.getX(), center.getY(), center.getZ(),
+                            radius, limited, vertical, fadeEnabled, fade);
             }
         }
 
@@ -1371,9 +1409,18 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void saveTrack(CommandSender sender, String[] args) throws SQLException {
         if (!libraryManager(sender)) return;
-        if (args.length != 2) throw new IllegalArgumentException("Usage: /music save <TrackID>");
-        MusicTrack track = repository.getTrack(args[1])
-                .orElseThrow(() -> new IllegalArgumentException("TrackID not found. Use /music list to see saved tracks."));
+        if (args.length > 2) throw new IllegalArgumentException("Usage: /music save [TrackID]");
+        MusicTrack track;
+        if (args.length == 2) {
+            track = repository.getTrack(args[1])
+                    .orElseThrow(() -> new IllegalArgumentException("TrackID not found. Use /music list to see saved tracks."));
+        } else {
+            if (!(sender instanceof Player player)) {
+                throw new IllegalArgumentException("Console must specify a TrackID. In-game, /music save saves your current or most recently played track.");
+            }
+            track = playback.mostRecentTrack(player.getUniqueId())
+                    .orElseThrow(() -> new IllegalArgumentException("You have not played a track yet. Specify a TrackID instead."));
+        }
         sender.sendMessage(msg("&eSaving &f" + track.title() + " &eto the permanent SavedMusic library..."));
         processor.saveTrackPermanently(track.id()).whenComplete((saved, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
@@ -1505,8 +1552,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
         if (args.length < 2) {
-            PlaybackSession session = playback.findControllableSession(actor, admin)
-                    .orElseThrow(() -> new IllegalArgumentException("No controllable playback session was found."));
+            Optional<PlaybackSession> active = playback.findControllableSession(actor, admin);
+            if (active.isEmpty()) {
+                sender.sendMessage(msg("&5Default playback speed: &f"
+                        + String.format(Locale.ROOT, "%.2f", playback.playbackSpeedDefault(actor)) + "x"));
+                sender.sendMessage(msg("&7Set with /music speed <0.5-2.0>; it applies to your future sessions."));
+                return;
+            }
+            PlaybackSession session = active.get();
             Double pending = session.pendingSpeed();
             String status = "&5Current playback speed: &f"
                     + String.format(Locale.ROOT, "%.2f", session.speed()) + "x";
@@ -1521,32 +1574,55 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         PlaybackEngine.SpeedChangeResult result = playback.setPlaybackSpeed(actor, admin, value);
         switch (result) {
-            case NO_SESSION -> throw new IllegalArgumentException("No controllable playback session was found.");
+            case NO_SESSION -> throw new IllegalArgumentException("A player session is required to set a personal speed default.");
+            case DEFAULT_SET -> sender.sendMessage(msg("&aDefault playback speed set to &f"
+                    + String.format(Locale.ROOT, "%.2f", value) + "x&a. It will apply to your next session."));
             case APPLIED_NOW -> sender.sendMessage(msg("&aPlayback speed set to &f"
                     + String.format(Locale.ROOT, "%.2f", value) + "x&a."));
             case NEXT_TRACK -> sender.sendMessage(msg("&aPlayback speed set to &f"
                     + String.format(Locale.ROOT, "%.2f", value)
-                    + "x&a. It will take effect on the next track."));
+                    + "x&a. It will take effect with the next track."));
         }
     }
 
-    private void mute(CommandSender sender, boolean muted) {
-        if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
-        if (!muted && "precise".equalsIgnoreCase(plugin.getConfig().getString(
+    private void mute(CommandSender sender, boolean muted, String[] args) {
+        if (args.length > 2) throw new IllegalArgumentException("Usage: /music " + (muted ? "mute" : "unmute") + " [player]");
+        Player target;
+        if (args.length == 2) {
+            if (!admin(sender)) return;
+            target = Bukkit.getPlayerExact(args[1]);
+            if (target == null) throw new IllegalArgumentException("That player is not online.");
+        } else {
+            if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only. Use /music " + (muted ? "mute" : "unmute") + " <player> as an admin.")); return; }
+            target = player;
+        }
+        if (!muted && target.equals(sender) && "precise".equalsIgnoreCase(plugin.getConfig().getString(
                 "playback.volume-change-mode", "next-track"))
                 && !admitHeavyRequest(sender, "transform",
                 "audio.processing.transform-cooldown-seconds", 3,
                 "audio.processing.global-transform-cooldown-seconds", 1,
                 "another audio preparation")) return;
-        PlaybackEngine.VolumeChangeResult result = playback.setPlayerMuted(player, muted, notification -> {
-            if (player.isOnline()) sender.sendMessage(msg(notification));
+        Player finalTarget = target;
+        PlaybackEngine.VolumeChangeResult result = playback.setPlayerMuted(target, muted, notification -> {
+            if (finalTarget.isOnline()) finalTarget.sendMessage(msg(notification));
         });
-        sender.sendMessage(msg(muted ? "&eMusic muted." : "&aMusic unmuted."));
+        sender.sendMessage(msg((muted ? "&eMuted " : "&aUnmuted ") + "&f" + target.getName() + "&a."));
+        if (!target.equals(sender)) target.sendMessage(msg(muted ? "&eAn administrator muted your Musicolide audio." : "&aAn administrator unmuted your Musicolide audio."));
         if (!muted && result == PlaybackEngine.VolumeChangeResult.RESYNCHRONIZING) {
-            sender.sendMessage(msg("&eYour current track is being reloaded at your saved volume."));
+            target.sendMessage(msg("&eYour current track is being reloaded at your saved volume."));
         } else if (!muted && result == PlaybackEngine.VolumeChangeResult.NEXT_TRACK) {
-            sender.sendMessage(msg("&eYour saved volume will apply from the next track."));
+            target.sendMessage(msg("&eYour saved volume will apply from the next track."));
         }
+    }
+
+    public boolean onDeafenCommand(CommandSender sender, Command command, String label, String[] args) {
+        mute(sender, true, new String[]{"mute"});
+        return true;
+    }
+
+    public boolean onUndeafenCommand(CommandSender sender, Command command, String label, String[] args) {
+        mute(sender, false, new String[]{"unmute"});
+        return true;
     }
 
     private void sync(CommandSender sender, String[] args) {
@@ -1818,15 +1894,27 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 "nowplaying", "progress", "volume", "speed", "mute", "unmute", "seek", "sync",
                 "list", "search", "select", "page", "save", "delete", "playlist", "import", "import-url",
                 "download", "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
-        if (args.length >= 4 && args[0].equalsIgnoreCase("play")
-                && args[args.length - 2].equalsIgnoreCase("--target")) {
-            List<String> targets = new ArrayList<>(List.of("@s", "@p", "@a"));
-            Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
-            return partial(targets, args[args.length - 1]);
-        }
-        if (args.length >= 4 && args[0].equalsIgnoreCase("play")
-                && args[args.length - 2].equalsIgnoreCase("--mode")) {
-            return partial(List.of("stereo", "mono"), args[args.length - 1]);
+        if (args.length >= 3 && args[0].equalsIgnoreCase("play")) {
+            String prefix = args[args.length - 1];
+            String previous = args.length >= 2 ? args[args.length - 2].toLowerCase(Locale.ROOT) : "";
+            if (previous.equals("--target")) {
+                List<String> targets = new ArrayList<>(List.of("@s", "@p", "@a"));
+                Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
+                return partial(targets, prefix);
+            }
+            if (previous.equals("--mode")) return partial(List.of("stereo", "mono"), prefix);
+            if (previous.equals("--circle") || previous.equals("--fade")) return partial(List.of("0", "10", "20", "40", "60", "100"), prefix);
+            if (previous.equals("--square")) return partial(List.of("25x25", "50x50", "100x100"), prefix);
+            if (previous.equals("--region")) return List.of();
+            if (prefix.startsWith("--")) {
+                return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"), prefix);
+            }
+            List<String> options = new ArrayList<>(List.of(
+                    "target:@s", "target:@p", "target:@a", "id:", "circle:", "square:",
+                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo", "center",
+                    "@s", "@p", "@a", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"));
+            Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(options::add);
+            return partial(options, prefix);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("page")) {
             return partial(java.util.stream.IntStream.rangeClosed(2, configuredSearchMaxPages())
