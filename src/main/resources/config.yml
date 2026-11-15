@@ -342,7 +342,7 @@ discord:
     user-cooldown-ms: 1000
     global-cooldown-ms: 100
     # Remote autocomplete is metadata-only but uses yt-dlp; local results remain available during cooldown.
-    autocomplete-cooldown-seconds: 5
+    autocomplete-cooldown-seconds: 1
     autocomplete-global-cooldown-seconds: 1
     # Also bound cheap local autocomplete work and reply volume.
     autocomplete-response-cooldown-ms: 250
