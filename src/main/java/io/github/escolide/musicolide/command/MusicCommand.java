@@ -476,16 +476,32 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
      * and gives hosts with strict CPU/RAM limits a predictable workload.
      */
     private void importAllTracks(CommandSender sender) {
+        // Admit before scanning the directory so a repeated command cannot turn
+        // directory enumeration itself into a disk-I/O workload.
+        if (!admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
+
         Path incoming = plugin.getDataFolder().toPath().resolve("incoming");
+        int maximumFiles = Math.max(1, Math.min(200,
+                plugin.getConfig().getInt("audio.processing.max-bulk-import-files", 50)));
         final List<String> files;
+        final boolean truncated;
         try {
             Files.createDirectories(incoming);
             try (var stream = Files.list(incoming)) {
-                files = stream.filter(Files::isRegularFile)
+                // Limit before sorting/materializing so a directory containing
+                // hundreds of thousands of files cannot create an enormous list.
+                List<String> discovered = stream.filter(Files::isRegularFile)
                         .map(path -> path.getFileName().toString())
                         .filter(MusicCommand::isSupportedAudioFile)
+                        .limit((long) maximumFiles + 1L)
                         .sorted(String.CASE_INSENSITIVE_ORDER)
                         .toList();
+                truncated = discovered.size() > maximumFiles;
+                files = truncated
+                        ? List.copyOf(discovered.subList(0, maximumFiles))
+                        : discovered;
             }
         } catch (IOException ex) {
             sender.sendMessage(msg("&cCould not scan the incoming directory: " + ex.getMessage()));
@@ -497,11 +513,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        if (!admitHeavyRequest(sender, "import",
-                "audio.processing.import-cooldown-seconds", 10,
-                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         sender.sendMessage(msg("&aBulk import started for &f" + files.size()
-                + " &aaudio file(s). Files are processed one at a time."));
+                + " &aaudio file(s). Files are processed one at a time."
+                + (truncated ? " &eThe configured batch limit was reached; additional files remain in incoming/." : "")));
         AtomicInteger imported = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
@@ -524,7 +538,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         chain.whenComplete((ignored, error) -> Bukkit.getScheduler().runTask(plugin, () ->
                 sender.sendMessage(msg("&5Bulk import finished. &aSuccessful: &f" + imported.get()
-                        + " &7| &cFailed: &f" + failed.get() + " &7| &5Scanned: &f" + files.size()))));
+                        + " &7| &cFailed: &f" + failed.get() + " &7| &5Selected: &f" + files.size()
+                        + (truncated ? " &e| More files remain; this batch was capped at " + maximumFiles + "." : "")))));
     }
 
     private static boolean isSupportedAudioFile(String fileName) {
