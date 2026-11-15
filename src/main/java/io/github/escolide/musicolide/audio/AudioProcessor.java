@@ -34,6 +34,8 @@ public final class AudioProcessor implements AutoCloseable {
     private final ResourcePackBuilder packBuilder;
     private final NativeToolchain toolchain;
     private final ThreadPoolExecutor worker;
+    // Metadata-only searches do not wait behind long audio imports.
+    private final ThreadPoolExecutor searchWorker;
     private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightUrlImports =
             new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CompletableFuture<PlaylistImportResult>> inFlightPlaylistImports =
@@ -54,6 +56,12 @@ public final class AudioProcessor implements AutoCloseable {
         this.worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(maxQueued), runnable -> {
                     Thread thread = new Thread(runnable, "Musicolide-AudioWorker");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
+        this.searchWorker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(8), runnable -> {
+                    Thread thread = new Thread(runnable, "Musicolide-SearchWorker");
                     thread.setDaemon(true);
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
@@ -89,8 +97,7 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(error);
         }
         if (!toolchain.isInitialized()) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Native audio tools are still being checked during startup. Try again in a moment."));
+            return toolchain.initializeAsync().thenCompose(ignored -> importFile(fileName, requestedTitle, customId));
         }
         if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -122,8 +129,7 @@ public final class AudioProcessor implements AutoCloseable {
 
     public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query, int maximumResults) {
         if (!toolchain.isInitialized()) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Native audio tools are still being checked during startup. Try again in a moment."));
+            return toolchain.initializeAsync().thenCompose(ignored -> searchYouTube(query, maximumResults));
         }
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -144,10 +150,10 @@ public final class AudioProcessor implements AutoCloseable {
                 } catch (Exception ex) {
                     throw new CompletionException(ex);
                 }
-            }, worker);
+            }, searchWorker);
         } catch (RejectedExecutionException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
-                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
+                    "The Musicolide metadata-search queue is full. Try again shortly.", ex));
         }
     }
 
@@ -195,8 +201,8 @@ public final class AudioProcessor implements AutoCloseable {
         }
 
         if (!toolchain.isInitialized()) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Native audio tools are still being checked during startup. Try again in a moment."));
+            return toolchain.initializeAsync().thenCompose(ignored ->
+                    importUrlInternal(sourceUrl, requestedTitle, customId, temporaryTrack));
         }
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -261,8 +267,7 @@ public final class AudioProcessor implements AutoCloseable {
                     "The URL is not a recognized YouTube playlist URL."));
         }
         if (!toolchain.isInitialized()) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Native audio tools are still being checked during startup. Try again in a moment."));
+            return toolchain.initializeAsync().thenCompose(ignored -> listPlaylistUrl(sourceUrl, maximumItems));
         }
         if (!toolchain.available(NativeToolchain.Tool.YT_DLP)
                 || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
@@ -304,9 +309,14 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "The URL is not a recognized YouTube playlist URL."));
         }
-        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
-                || !toolchain.isInitialized()
-                || !toolchain.available(NativeToolchain.Tool.YT_DLP)
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The YouTube playlist importer is disabled."));
+        }
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored -> importPlaylistUrl(sourceUrl));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)
                 || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)
                 || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -828,6 +838,12 @@ public final class AudioProcessor implements AutoCloseable {
     public CompletableFuture<MusicTrack> ensureMonoVariant(MusicTrack track) {
         if (track == null) return CompletableFuture.failedFuture(
                 new IllegalArgumentException("A track is required for mono preparation."));
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored -> ensureMonoVariant(track));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException("FFmpeg is unavailable for mono preparation."));
+        }
         if (monoVariantsReady.contains(track.id())) return CompletableFuture.completedFuture(track);
         CompletableFuture<MusicTrack> result = new CompletableFuture<>();
         CompletableFuture<MusicTrack> current = inFlightMonoVariants.putIfAbsent(track.id(), result);
@@ -988,7 +1004,11 @@ public final class AudioProcessor implements AutoCloseable {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "A source track is required for timestamp-based synchronization."));
         }
-        if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored ->
+                    createResumeTrack(sourceTrack, startMs, includeMono));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "FFmpeg is not ready; timestamp-based resume cannot be generated yet."));
         }
@@ -1360,6 +1380,7 @@ public final class AudioProcessor implements AutoCloseable {
     @Override
     public void close() {
         worker.shutdownNow();
+        searchWorker.shutdownNow();
         toolchain.close();
     }
 }
