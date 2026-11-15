@@ -408,13 +408,6 @@ public final class DiscordCommandService extends ListenerAdapter {
             return;
         }
 
-        // Only linked users consume the shared game-command budget. This keeps
-        // unlinked attempts from starving the actual Minecraft player controls.
-        if (!allowSlashCommandGlobal()) {
-            reply(event, "Please wait a moment before using another Musicolide command.");
-            return;
-        }
-
         boolean discordAdmin = isDiscordAdministrator(event.getMember(), event.getJDA());
         event.deferReply(isEphemeral(event.getName())).queue(hook -> {
             List<String> lines = new ArrayList<>();
@@ -460,6 +453,12 @@ public final class DiscordCommandService extends ListenerAdapter {
                 if (player == null || !player.isOnline()) {
                     output.accept("Your linked Minecraft account (**" + safe(link.minecraftName())
                             + "**) must be online to run game commands through Discord.");
+                    return;
+                }
+                // Only linked, online players consume the shared game-command
+                // budget; offline linked accounts cannot starve live controls.
+                if (!allowSlashCommandGlobal()) {
+                    output.accept("Please wait a moment before using another Musicolide command.");
                     return;
                 }
                 boolean elevateAdmin = authorizeAdmin(player, discordAdmin);
