@@ -230,7 +230,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
             lastTimelineKey = timelineKey(snapshot) + ":waiting-for-clock";
             if (!connectOnlyWhenPlaying) {
                 maintainVoiceConnectionWhileIdle(audio, channel);
-            } else if (!stayConnectedWhilePaused && snapshot.preparing()) {
+            } else if (!stayConnectedWhilePaused) {
                 if (disconnectAfterIdle(audio)) {
                     voiceWasConnected = false;
                     hasEverConnected = false;
@@ -427,6 +427,9 @@ public final class DiscordBroadcastService implements AutoCloseable {
      */
     private boolean disconnectAfterIdle(AudioManager audio) {
         if (!audio.isConnected()) {
+            if (audio.getConnectionStatus() != ConnectionStatus.NOT_CONNECTED) {
+                audio.closeAudioConnection();
+            }
             noPlaybackSinceNanos = 0L;
             return true;
         }
