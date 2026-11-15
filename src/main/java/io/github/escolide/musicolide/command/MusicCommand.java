@@ -412,7 +412,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return tokens.toArray(String[]::new);
     }
 
-    public record DiscordPlaySuggestion(String label, String value) {}
 
     private void importTrack(CommandSender sender, String[] args) {
         if (!admin(sender)) return;
