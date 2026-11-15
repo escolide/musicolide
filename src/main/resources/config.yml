@@ -135,9 +135,16 @@ audio:
 resource-packs:
   required-on-first-use: false
   prompt: "Musicolide needs its music library to play tracks."
-  # on-play: send the complete Java music library when a player first starts/needs music.
-  # on-join: send it as the player joins, even when no music is currently playing.
-  # The Java library is one pack containing all imported tracks; new imports publish a new revision.
+  # Java delivery mode:
+  # library: default; one aggregate Java resource pack containing the complete track catalogue.
+  # per-track: experimental; send independent track packs on demand plus the configured prefetch window.
+  # Per-track mode avoids retransmitting the whole library after a new import, but first-time
+  # delivery of a new track may trigger a client resource reload. Test with real clients before production.
+  # Geyser/Bedrock continues to use its aggregate Bedrock pack in either mode.
+  java-delivery-mode: "library"
+  # on-play: request the aggregate Java library when a player first needs music (library mode).
+  # on-join: request the aggregate Java library as a player joins, even when no music is playing.
+  # Per-track mode skips automatic on-join library requests; individual tracks are still sent on demand.
   download-mode: "on-play"
   prefetch:
     enabled: true
