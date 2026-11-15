@@ -428,16 +428,9 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 getLogger().warning("Could not rebuild the Bedrock music library: " + ex.getMessage());
             }
 
+            // Native tools are installed and probed only when a feature first needs them.
+            // Existing catalogue playback does not need yt-dlp, FFmpeg or QuickJS running.
             nativeToolchain = new NativeToolchain(this);
-            nativeToolchain.initializeAsync().thenAccept(statuses -> {
-                if (getConfig().getBoolean("audio.yt-dlp.enabled", false)
-                        && !nativeToolchain.available(NativeToolchain.Tool.YT_DLP)) {
-                    getLogger().warning("URL importing is enabled in config, but yt-dlp did not pass its startup check.");
-                }
-            }).exceptionally(error -> {
-                getLogger().warning("Native tool initialization failed: " + error.getMessage());
-                return null;
-            });
             processor = new AudioProcessor(this, repository, builder, nativeToolchain);
             geyserBridge = new GeyserBridge(this, builder.bedrockPackPath());
             initializeGeyserPackIntegration(builder.bedrockPackPath());
@@ -546,6 +539,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             bootstrap.execute(() -> {
                 AutoCloseable startedService = null;
                 try {
+                    if (nativeToolchain != null) nativeToolchain.initializeAsync().join();
                     startedService = DiscordRuntimeBundle.start(
                             this, playback, nativeToolchain, musicCommand, accountLinks);
                     synchronized (discordStartupLock) {
