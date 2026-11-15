@@ -178,6 +178,11 @@ resource-packs:
 
 playback:
   default-volume: 100
+  # Keep the playback clock moving even when nobody is currently inside the selected zone.
+  # A listener arriving later will synchronize to the current track position.
+  continue-without-listeners: true
+  # Separate rule for a completely empty server.
+  continue-when-server-empty: true
   # next-track: no new file; the current sound retains its old volume until the next track.
   # precise: Java players receive a timestamp-aligned temporary OGG tail to change volume mid-track.
   # restart-segment: restart the current segment in legacy segmented mode; streamed tracks use next-track.
@@ -228,6 +233,12 @@ playlists:
   enabled: true
   shuffle: false
   repeat: false
+  preimport:
+    # Begin preparing the next playlist track this many seconds before the current one ends.
+    # Short tracks start their next import immediately when the remaining time is below this value.
+    lead-seconds: 20
+    # Maximum imported future tracks waiting in the queue (not including the current track).
+    max-preimported-tracks: 2
 
 matching:
   enabled: true
@@ -261,6 +272,10 @@ permissions:
   use: "musicolide.use"
   dj: "musicolide.dj"
   admin: "musicolide.admin"
+  # Allow non-admin players to use circle/square zones only when targeting themselves.
+  allow-player-self-zones: true
+  # Allow non-admin players to use target:@a. Disabled by default.
+  allow-player-all-target: false
 
 discord:
   # Optional Discord bot integration: passive one-way voice broadcast plus linked-account slash commands.
