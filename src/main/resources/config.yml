@@ -247,6 +247,7 @@ worldguard:
 limits:
   max-sessions: 20
   max-queue-length: 500
+  # Maximum entries allowed in each Musicolide playlist, including imported URL tracks once added.
   max-playlist-tracks: 500
   max-track-library-gb: 10
 
