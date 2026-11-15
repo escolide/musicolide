@@ -203,6 +203,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.commands.global-link-code-cooldown-seconds", 1);
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.commands.playlist-play-cooldown-seconds")) {
+            getConfig().set("discord.commands.playlist-play-cooldown-seconds", 30);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.commands.global-playlist-play-cooldown-seconds")) {
+            getConfig().set("discord.commands.global-playlist-play-cooldown-seconds", 2);
+            migratedConfig = true;
+        }
         for (String commandName : List.of("info", "help", "play", "music")) {
             String visibilityPath = "discord.commands.visibility." + commandName;
             if (!getConfig().contains(visibilityPath)) {
