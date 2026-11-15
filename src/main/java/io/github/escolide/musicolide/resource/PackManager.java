@@ -41,6 +41,9 @@ public final class PackManager {
     private final Map<UUID, Set<UUID>> pinnedTemporaryPacks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
     private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
+    // Back off immediate request failures (for example a temporary URL/address issue)
+    // so a current track is not re-requested and logged on every playback tick.
+    private final Map<UUID, Long> sendRetryAfter = new ConcurrentHashMap<>();
     private final Path acceptedPlayersFile;
 
     public PackManager(JavaPlugin plugin,
@@ -290,16 +293,25 @@ public final class PackManager {
     }
 
     private void enqueueIfNeeded(UUID playerId, LinkedHashMap<UUID, MusicTrack> queue, MusicTrack track) {
-        if (ready.getOrDefault(playerId, Set.of()).contains(track.packId())
-                || requested.getOrDefault(playerId, Set.of()).contains(track.packId())
-                || declined.getOrDefault(playerId, Set.of()).contains(track.packId())) return;
-        queue.putIfAbsent(track.packId(), track);
+        UUID packId = track.packId();
+        if (ready.getOrDefault(playerId, Set.of()).contains(packId)
+                || requested.getOrDefault(playerId, Set.of()).contains(packId)
+                || declined.getOrDefault(playerId, Set.of()).contains(packId)) return;
+        Long retryAt = sendRetryAfter.get(packId);
+        if (retryAt != null) {
+            if (System.currentTimeMillis() < retryAt) return;
+            sendRetryAfter.remove(packId, retryAt);
+        }
+        queue.putIfAbsent(packId, track);
     }
 
     private void pump(Player player) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return;
         UUID playerId = player.getUniqueId();
         int maximum = Math.max(1, plugin.getConfig().getInt("resource-packs.prefetch.max-concurrent-downloads", 2));
+        // Applying multiple independent Java packs at once can cause concurrent
+        // client resource-stack rebuilds. Keep the experimental path serial.
+        if (isPerTrackDeliveryEnabled()) maximum = 1;
         LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
         if (queue == null) return;
         // Address discovery is asynchronous. Never block the Bukkit main thread
@@ -335,8 +347,10 @@ public final class PackManager {
                 active.getOrDefault(playerId, Set.of()).remove(track.packId());
                 inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
             }
+            sendRetryAfter.put(track.packId(), System.currentTimeMillis() + 5000L);
             plugin.getLogger().warning("Could not send playback pack " + track.id()
-                    + " to " + player.getName() + ": " + ex.getMessage());
+                    + " to " + player.getName() + ": " + ex.getMessage()
+                    + " (will retry after a short back-off if the track is still needed).");
         }
     }
 
@@ -360,6 +374,7 @@ public final class PackManager {
         // pack active for this connection; its bytes can be deleted server-side
         // once in-flight downloads finish. releaseAll() handles optional cleanup
         // only after the player's whole playback session has ended.
+        sendRetryAfter.remove(packId);
         deleteGeneratedWhenIdle.put(packId, file);
         deleteGeneratedFileIfIdle(packId);
     }
@@ -473,6 +488,7 @@ public final class PackManager {
         if (wasRequested) {
             inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
         }
+        sendRetryAfter.remove(packId);
 
         Player player = Bukkit.getPlayer(playerId);
         boolean removeAfterDownload = removeWhenReady.getOrDefault(playerId, Set.of()).contains(packId);
