@@ -59,6 +59,64 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         // Older config.yml files are not overwritten on upgrades; add this new
         // selector once so administrators can choose a playback format explicitly.
         boolean migratedConfig = false;
+        // Existing quality values remain authoritative for installations that predate presets.
+        if (!getConfig().contains("audio.profiles.active")) {
+            getConfig().set("audio.profiles.active", "custom");
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.profiles.presets.balanced.stereo-quality")) {
+            getConfig().set("audio.profiles.presets.balanced.stereo-quality", 5);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.profiles.presets.balanced.mono-quality")) {
+            getConfig().set("audio.profiles.presets.balanced.mono-quality", 5);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.profiles.presets.compact.stereo-quality")) {
+            getConfig().set("audio.profiles.presets.compact.stereo-quality", 3);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.profiles.presets.compact.mono-quality")) {
+            getConfig().set("audio.profiles.presets.compact.mono-quality", 3);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.profiles.presets.high.stereo-quality")) {
+            getConfig().set("audio.profiles.presets.high.stereo-quality", 7);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("audio.profiles.presets.high.mono-quality")) {
+            getConfig().set("audio.profiles.presets.high.mono-quality", 7);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("storage.saved-music.max-library-gb")) {
+            getConfig().set("storage.saved-music.max-library-gb", 10);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("storage.temporary.track-retention-minutes")) {
+            getConfig().set("storage.temporary.track-retention-minutes",
+                    getConfig().getInt("audio.yt-dlp.url-import-retention-minutes", 15));
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("storage.temporary.cleanup-interval-minutes")) {
+            getConfig().set("storage.temporary.cleanup-interval-minutes", 1);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("resource-packs.optimization.avoid-redundant-reloads")) {
+            getConfig().set("resource-packs.optimization.avoid-redundant-reloads", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.voice.connect-only-when-playing")) {
+            getConfig().set("discord.voice.connect-only-when-playing", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.voice.stay-connected-while-paused")) {
+            getConfig().set("discord.voice.stay-connected-while-paused", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.voice.disconnect-delay-seconds")) {
+            getConfig().set("discord.voice.disconnect-delay-seconds", 0);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("audio.playback-mode")) {
             getConfig().set("audio.playback-mode", "resumable");
             migratedConfig = true;
@@ -486,7 +544,9 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     }
 
     private void scheduleTemporaryTrackCleanup() {
-        long periodTicks = 20L * 60L;
+        long intervalMinutes = Math.max(1L, Math.min(1440L,
+                getConfig().getLong("storage.temporary.cleanup-interval-minutes", 1L)));
+        long periodTicks = 20L * 60L * intervalMinutes;
         temporaryTrackCleanupTask = Bukkit.getScheduler().runTaskTimer(
                 this, this::cleanupExpiredTemporaryTracks, periodTicks, periodTicks);
     }
@@ -604,6 +664,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         if (playback != null && playback.isIgnoredBedrockPlayer(event.getPlayer().getUniqueId())) return;
+        if (packManager != null) packManager.onPlayerJoin(event.getPlayer());
         if (playback != null) playback.onJoin(event.getPlayer());
         if (packManager != null && getConfig().getString(
                 "resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
