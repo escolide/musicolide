@@ -48,6 +48,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
     private final RequestCooldowns requestCooldowns = new RequestCooldowns();
     private final Set<PlaylistRunner> playlistRunners = ConcurrentHashMap.newKeySet();
+    private final Map<String, CachedDiscordAutocomplete> discordAutocompleteCache = new ConcurrentHashMap<>();
 
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
@@ -246,13 +247,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return DiscordCommandPolicy.isAllowedRoot(command);
     }
 
-    /** YouTube metadata-only suggestions for Discord's 3-second autocomplete response. */
+    /** YouTube metadata-only suggestions for Discord's short autocomplete response. */
     public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query) {
-        return discordPlaySuggestions(query, true);
+        return discordPlaySuggestions(query, true, "default");
     }
 
-    /** Allows the Discord adapter to serve local results when remote lookup is rate-limited. */
     public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query, boolean allowRemoteLookup) {
+        return discordPlaySuggestions(query, allowRemoteLookup, "default");
+    }
+
+    public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(
+            String query, boolean allowRemoteLookup, String requesterKey) {
         String cleaned = normalizeSearchQuery(query);
         if (cleaned.length() < 2 || cleaned.length() > 100) {
             return CompletableFuture.completedFuture(List.of());
@@ -260,7 +265,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         final List<DiscordPlaySuggestion> local;
         try {
-            local = repository.searchForPlayback(cleaned, 25, 0).stream()
+            // Keep space for remote choices instead of allowing local results to
+            // crowd every YouTube result out of Discord's 25-choice limit.
+            local = repository.searchForPlayback(cleaned, 10, 0).stream()
                     .map(track -> new DiscordPlaySuggestion(
                             TextUtil.truncate("[" + displayTrackId(track) + "] " + track.title()
                                     + (track.artist() == null || track.artist().isBlank()
@@ -271,23 +278,33 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return CompletableFuture.failedFuture(error);
         }
 
-        // Remote autocomplete choices are only actionable when the server
-        // administrator explicitly enabled automatic importing of allowlisted
-        // YouTube URLs. Otherwise, expose only tracks already in the local
-        // authorized catalogue, matching /play's existing safety policy.
         boolean allowRemote = allowRemoteLookup
                 && plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
                 && plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
-        if (!allowRemote) return CompletableFuture.completedFuture(local);
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
+                || !plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            return CompletableFuture.completedFuture(local);
+        }
+
+        long now = System.currentTimeMillis();
+        CachedDiscordAutocomplete cached = discordAutocompleteCache.get(requesterKey);
+        if (!allowRemote) {
+            if (cached == null || now - cached.createdAtMillis() > 30_000L
+                    || !(cleaned.startsWith(cached.query()) || cached.query().startsWith(cleaned))) {
+                return CompletableFuture.completedFuture(local);
+            }
+            return CompletableFuture.completedFuture(mergeDiscordSuggestions(local, cached.results()));
+        }
         if (local.size() >= 25) return CompletableFuture.completedFuture(local);
 
-        return processor.searchYouTube(cleaned).handle((results, error) -> {
-            List<DiscordPlaySuggestion> suggestions = new ArrayList<>(local);
-            if (error != null || results == null) return List.copyOf(suggestions);
+        int remoteLimit = Math.max(1, 25 - local.size());
+        return processor.searchYouTube(cleaned, Math.min(15, remoteLimit)).handle((results, error) -> {
+            if (error != null || results == null) return local;
+            List<DiscordPlaySuggestion> remote = new ArrayList<>();
             Set<String> existing = new HashSet<>();
             for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
             for (YtDlpDownloader.SearchResult result : results) {
-                if (suggestions.size() >= 25) break;
+                if (remote.size() + local.size() >= 25) break;
                 String url = result.url();
                 if (url == null || url.isBlank()) {
                     url = "https://www.youtube.com/watch?v=" + result.videoId();
@@ -300,11 +317,35 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     long seconds = result.durationSeconds();
                     label += " • " + String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
                 }
-                suggestions.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+                remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
             }
-            return List.copyOf(suggestions);
+            discordAutocompleteCache.put(requesterKey,
+                    new CachedDiscordAutocomplete(cleaned, List.copyOf(remote), now));
+            if (discordAutocompleteCache.size() > 2_000) {
+                discordAutocompleteCache.entrySet().removeIf(entry ->
+                        now - entry.getValue().createdAtMillis() > 60_000L);
+            }
+            return mergeDiscordSuggestions(local, remote);
         });
     }
+
+    private List<DiscordPlaySuggestion> mergeDiscordSuggestions(
+            List<DiscordPlaySuggestion> local, List<DiscordPlaySuggestion> remote) {
+        List<DiscordPlaySuggestion> merged = new ArrayList<>(local);
+        Set<String> existing = new HashSet<>();
+        for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
+        for (DiscordPlaySuggestion suggestion : remote) {
+            if (merged.size() >= 25) break;
+            if (suggestion.value() != null && existing.add(suggestion.value())) merged.add(suggestion);
+        }
+        return List.copyOf(merged);
+    }
+
+    private record CachedDiscordAutocomplete(String query,
+                                              List<DiscordPlaySuggestion> results,
+                                              long createdAtMillis) {}
+
+    public record DiscordPlaySuggestion(String label, String value) {}
 
     private Player createDiscordPlayerProxy(Player target, boolean elevateAdmin, Consumer<String> output) {
         return (Player) Proxy.newProxyInstance(Player.class.getClassLoader(), new Class<?>[]{Player.class},
