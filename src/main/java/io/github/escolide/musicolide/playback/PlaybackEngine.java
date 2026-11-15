@@ -11,6 +11,7 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.SoundCategory;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -30,6 +31,8 @@ public final class PlaybackEngine {
     private final AudioProcessor audioProcessor;
     private final List<PlaybackSession> sessions = new ArrayList<>();
     private final Map<UUID, PlayerPreferences> preferences = new ConcurrentHashMap<>();
+    private final Map<UUID, Double> speedDefaults = new ConcurrentHashMap<>();
+    private final Map<UUID, MusicTrack> lastPlayedByOwner = new ConcurrentHashMap<>();
     private final Map<UUID, PlayerPlayback> playerPlayback = new HashMap<>();
     private final Map<UUID, Long> warningTimes = new HashMap<>();
     private final Map<UUID, String> declinedWarnings = new HashMap<>();
@@ -96,6 +99,11 @@ public final class PlaybackEngine {
         int maximum = plugin.getConfig().getInt("limits.max-sessions", 20);
         if (sessions.size() >= maximum) throw new IllegalStateException("Maximum number of music sessions reached.");
         PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, mono);
+        if (owner != null) {
+            Double defaultSpeed = speedDefaults.get(owner);
+            if (defaultSpeed != null) session.setSpeed(defaultSpeed);
+            if (session.current() != null) lastPlayedByOwner.put(owner, session.current());
+        }
         if (!session.isEmpty()) sessions.add(session);
         return session;
     }
@@ -152,6 +160,18 @@ public final class PlaybackEngine {
     }
 
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
+
+    public synchronized boolean isSessionActive(PlaybackSession session) {
+        return session != null && sessions.contains(session);
+    }
+
+    /** Returns the current track, or the last track this player actually started. */
+    public Optional<MusicTrack> mostRecentTrack(UUID owner) {
+        if (owner == null) return Optional.empty();
+        Optional<PlaybackSession> active = findOwned(owner);
+        if (active.isPresent() && active.get().current() != null) return Optional.of(active.get().current());
+        return Optional.ofNullable(lastPlayedByOwner.get(owner));
+    }
 
     /**
      * Discord's supervisor runs asynchronously. It reads this immutable snapshot
@@ -513,7 +533,7 @@ public final class PlaybackEngine {
                     state.sound = track.soundKey(segment, candidate.session.isMono());
                     float adjusted = playbackVolume(state.baseVolume, candidate.session, state.fading, player);
                     if (adjusted > 0) {
-                        player.playSound(player.getLocation(), state.sound, SOUND_CATEGORY,
+                        player.playSound(soundOrigin(player, candidate.session), state.sound, SOUND_CATEGORY,
                                 adjusted, (float) candidate.session.speed());
                         return VolumeChangeResult.RESTARTED;
                     }
@@ -574,13 +594,22 @@ public final class PlaybackEngine {
         return !isIgnoredBedrockPlayer(player) && packs.requestLibrary(player, true);
     }
 
-    public enum SpeedChangeResult { NO_SESSION, APPLIED_NOW, NEXT_TRACK }
+    public enum SpeedChangeResult { NO_SESSION, DEFAULT_SET, APPLIED_NOW, NEXT_TRACK }
 
-    /** Set the session-wide playback rate using the client sound pitch; no OGG is re-encoded. */
+    /** Set the session rate and remember it for the player's future sessions. */
     public SpeedChangeResult setPlaybackSpeed(UUID actor, boolean admin, double speed) {
+        if (!Double.isFinite(speed) || speed < 0.5 || speed > 2.0) {
+            throw new IllegalArgumentException("Playback speed must be between 0.5x and 2.0x.");
+        }
+        if (actor == null) return SpeedChangeResult.NO_SESSION;
+        speedDefaults.put(actor, speed);
         PlaybackSession session = findControllable(actor, admin);
-        if (session == null) return SpeedChangeResult.NO_SESSION;
+        if (session == null) return SpeedChangeResult.DEFAULT_SET;
         return session.setSpeed(speed) ? SpeedChangeResult.APPLIED_NOW : SpeedChangeResult.NEXT_TRACK;
+    }
+
+    public double playbackSpeedDefault(UUID actor) {
+        return actor == null ? 1.0 : speedDefaults.getOrDefault(actor, 1.0);
     }
 
     public Optional<PlaybackSession> findControllableSession(UUID actor, boolean admin) {
@@ -742,6 +771,9 @@ public final class PlaybackEngine {
                 if (session.finished()) {
                     MusicTrack previous = session.playbackTrack();
                     session.advance();
+                    if (session.owner() != null && session.current() != null) {
+                        lastPlayedByOwner.put(session.owner(), session.current());
+                    }
                     releaseGeneratedTrack(previous);
                 }
             }
@@ -957,6 +989,20 @@ public final class PlaybackEngine {
      * A declined Java pack is already settled and never holds the barrier.
      */
     private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
+        boolean serverEmpty = online.isEmpty();
+        boolean continueWithoutListeners = plugin.getConfig().getBoolean(
+                serverEmpty ? "playback.continue-when-server-empty" : "playback.continue-without-listeners", true);
+        if (continueWithoutListeners) {
+            Set<PlaybackSession> sessionsWithRecipients = new HashSet<>();
+            winners.values().forEach(candidate -> sessionsWithRecipients.add(candidate.session));
+            for (PlaybackSession session : sessions()) {
+                if (!sessionsWithRecipients.contains(session) && !session.clockStarted()
+                        && !session.paused() && !session.resumePreparing() && session.current() != null) {
+                    session.startClockIfNeeded();
+                    barrierWaits.remove(session.id());
+                }
+            }
+        }
         if (!plugin.getConfig().getBoolean("playback.synchronization.start-barrier", true)) {
             for (Candidate candidate : winners.values()) candidate.session.startClockIfNeeded();
             return;
@@ -1089,10 +1135,19 @@ public final class PlaybackEngine {
 
             String sound = track.soundKey(segment, session.isMono());
             if (state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
-            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, (float) session.speed());
+            player.playSound(soundOrigin(player, session), sound, SOUND_CATEGORY, volume, (float) session.speed());
             state.segment = segment;
             state.sound = sound;
         }
+    }
+
+    private Location soundOrigin(Player player, PlaybackSession session) {
+        MusicZone zone = session.zone();
+        if (session.isMono() && zone.centeredAudioOrigin() && zone.worldId() != null
+                && zone.worldId().equals(player.getWorld().getUID())) {
+            return new Location(player.getWorld(), zone.centerX(), zone.centerY(), zone.centerZ());
+        }
+        return player.getLocation();
     }
 
     private float playbackBaseVolume(Player player) {
@@ -1252,7 +1307,7 @@ public final class PlaybackEngine {
                 stopPlayer(player);
                 return;
             }
-            player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, (float) session.speed());
+            player.playSound(soundOrigin(player, session), sound, SOUND_CATEGORY, volume, (float) session.speed());
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
