@@ -44,7 +44,10 @@ public final class PackManager {
     private final Map<UUID, Set<UUID>> pinnedTemporaryPacks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
     private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
+    private final Set<UUID> disabledPlayers = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, String> deferredLibraryReload = new ConcurrentHashMap<>();
     private final Path acceptedPlayersFile;
+    private final Path disabledPlayersFile;
 
     public PackManager(JavaPlugin plugin,
                        ResourcePackBuilder packBuilder,
@@ -64,7 +67,9 @@ public final class PackManager {
         this.publicBaseUrl = Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
         this.geyser = geyser;
         this.acceptedPlayersFile = plugin.getDataFolder().toPath().resolve("accepted-resource-pack-players.txt");
+        this.disabledPlayersFile = plugin.getDataFolder().toPath().resolve("disabled-players.txt");
         loadAcceptedPlayers();
+        loadDisabledPlayers();
     }
 
     /**
@@ -74,11 +79,102 @@ public final class PackManager {
      * on the next pack request after each join.
      */
     public void onPlayerJoin(Player player) {
-        if (player == null) return;
+        if (player == null || isPlayerDisabled(player.getUniqueId())) return;
         if (!plugin.getConfig().getBoolean("resource-packs.optimization.avoid-redundant-reloads", true)) {
             UUID playerId = player.getUniqueId();
             libraryReadyHash.remove(playerId);
             libraryDeclinedHash.remove(playerId);
+        }
+    }
+
+    public boolean isPlayerDisabled(UUID playerId) {
+        return playerId != null && disabledPlayers.contains(playerId);
+    }
+
+    /** Disables Musicolide for one player and immediately unloads their cached packs. */
+    public void disablePlayer(Player player) {
+        if (player == null) return;
+        disabledPlayers.add(player.getUniqueId());
+        persistDisabledPlayers();
+        deferredLibraryReload.remove(player.getUniqueId());
+        unloadPlayerPacks(player);
+    }
+
+    /** Re-enables Musicolide; packs are requested by the next eligible playback event. */
+    public void enablePlayer(Player player) {
+        if (player == null) return;
+        disabledPlayers.remove(player.getUniqueId());
+        persistDisabledPlayers();
+        deferredLibraryReload.remove(player.getUniqueId());
+        libraryReadyHash.remove(player.getUniqueId());
+        libraryDeclinedHash.remove(player.getUniqueId());
+    }
+
+    /**
+     * Explicitly unloads this player's library and temporary pack cache.
+     * When a current track ID is supplied, no replacement library is requested
+     * until playback moves to a different track.
+     */
+    public void unloadPlayer(Player player, String currentTrackId) {
+        if (player == null) return;
+        deferredLibraryReload.put(player.getUniqueId(), currentTrackId == null ? "" : currentTrackId);
+        unloadPlayerPacks(player);
+    }
+
+    private void unloadPlayerPacks(Player player) {
+        UUID playerId = player.getUniqueId();
+        ResourcePackBuilder.BasePackInfo library;
+        try {
+            library = packBuilder.currentBasePackInfo();
+        } catch (RuntimeException unavailable) {
+            library = null;
+        }
+        String readyHash = libraryReadyHash.remove(playerId);
+        libraryDeclinedHash.remove(playerId);
+        waitingForPublicAddress.remove(playerId);
+        if (libraryRequestedHash.containsKey(playerId)) {
+            removeLibraryWhenReady.add(playerId);
+        } else if (readyHash != null && library != null) {
+            try { player.removeResourcePack(library.id()); } catch (Exception ignored) {}
+        }
+
+        Set<UUID> temporaryPacks = new HashSet<>(active.getOrDefault(playerId, Set.of()));
+        temporaryPacks.addAll(requested.getOrDefault(playerId, Set.of()));
+        temporaryPacks.addAll(ready.getOrDefault(playerId, Set.of()));
+        for (UUID packId : temporaryPacks) {
+            if (requested.getOrDefault(playerId, Set.of()).contains(packId)) {
+                removeWhenReady.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(packId);
+            } else {
+                removePack(player, playerId, packId);
+            }
+        }
+        LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
+        if (queue != null) queue.clear();
+        pinnedTemporaryPacks.remove(playerId);
+        cleanupLibraryArchivesAsync();
+    }
+
+    private void loadDisabledPlayers() {
+        if (!Files.isRegularFile(disabledPlayersFile)) return;
+        try {
+            for (String line : Files.readAllLines(disabledPlayersFile)) {
+                try {
+                    if (!line.isBlank()) disabledPlayers.add(UUID.fromString(line.trim()));
+                } catch (IllegalArgumentException ignored) {}
+            }
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not read disabled Musicolide player states: " + ex.getMessage());
+        }
+    }
+
+    private void persistDisabledPlayers() {
+        try {
+            Files.createDirectories(disabledPlayersFile.getParent());
+            List<String> values = disabledPlayers.stream().map(UUID::toString).sorted().toList();
+            Files.write(disabledPlayersFile, values, StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Could not save disabled Musicolide player states: " + ex.getMessage());
         }
     }
 
@@ -103,6 +199,7 @@ public final class PackManager {
      * its client-side sound and trigger another resource-pack application.
      */
     public boolean isReady(Player player, MusicTrack track, boolean allowOlderLibraryRevision) {
+        if (player == null || isPlayerDisabled(player.getUniqueId())) return false;
         if (isTemporary(track)) {
             return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
         }
@@ -126,7 +223,8 @@ public final class PackManager {
      * recovery command.
      */
     public boolean requestLibrary(Player player, boolean retry) {
-        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return false;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
+                || isPlayerDisabled(player.getUniqueId())) return false;
         UUID playerId = player.getUniqueId();
         String hash = currentLibraryHash();
         if (hash == null) return false;
@@ -154,6 +252,10 @@ public final class PackManager {
     /** Called after public-address discovery finishes, mainly for on-join delivery. */
     public void publicAddressAvailable() {
         for (UUID playerId : new HashSet<>(waitingForPublicAddress)) {
+            if (isPlayerDisabled(playerId)) {
+                waitingForPublicAddress.remove(playerId);
+                continue;
+            }
             Player player = Bukkit.getPlayer(playerId);
             if (player != null && player.isOnline() && !isIgnoredBedrockPlayer(player)) ensureLibrary(player);
             else waitingForPublicAddress.remove(playerId);
@@ -172,8 +274,14 @@ public final class PackManager {
 
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
                          int tracksAhead, boolean deferLibraryRefresh) {
-        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
+                || isPlayerDisabled(player.getUniqueId())) return;
         UUID playerId = player.getUniqueId();
+        String deferredTrackId = deferredLibraryReload.get(playerId);
+        if (deferredTrackId != null) {
+            if (deferredTrackId.isBlank() || current == null || deferredTrackId.equals(current.id())) return;
+            deferredLibraryReload.remove(playerId, deferredTrackId);
+        }
         // Existing listeners keep their current immutable library revision until
         // this track finishes. A newly joining player still requests the latest pack.
         if (deferLibraryRefresh) {
@@ -214,7 +322,7 @@ public final class PackManager {
      */
     public boolean requestTemporaryTrack(Player player, MusicTrack track) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
-                || !isTemporary(track)) return false;
+                || isPlayerDisabled(player.getUniqueId()) || !isTemporary(track)) return false;
 
         UUID playerId = player.getUniqueId();
         // A private resume/synchronization tail is self-contained. Do not refresh
@@ -234,7 +342,8 @@ public final class PackManager {
     }
 
     private boolean ensureLibrary(Player player) {
-        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return false;
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
+                || isPlayerDisabled(player.getUniqueId())) return false;
         UUID playerId = player.getUniqueId();
         ResourcePackBuilder.BasePackInfo pack;
         try {
@@ -440,6 +549,18 @@ public final class PackManager {
         Player statusPlayer = Bukkit.getPlayer(playerId);
         if (isIgnoredBedrockPlayer(statusPlayer)) return;
         String statusName = status.name();
+        if (isPlayerDisabled(playerId)) {
+            if (isPendingStatus(statusName)) return;
+            libraryRequestedHash.remove(playerId);
+            libraryReadyHash.remove(playerId);
+            removeLibraryWhenReady.remove(playerId);
+            if (statusPlayer != null) {
+                try { statusPlayer.removeResourcePack(packId); } catch (Exception ignored) {}
+            }
+            removePack(statusPlayer, playerId, packId);
+            cleanupLibraryArchivesAsync();
+            return;
+        }
         if (isPendingStatus(statusName)) return;
 
         ResourcePackBuilder.BasePackInfo library = packBuilder.currentBasePackInfo();
@@ -538,6 +659,7 @@ public final class PackManager {
     public void removePlayer(UUID playerId) {
         libraryReadyHash.remove(playerId);
         libraryRequestedHash.remove(playerId);
+        deferredLibraryReload.remove(playerId);
         libraryDeclinedHash.remove(playerId);
         waitingForPublicAddress.remove(playerId);
         removeLibraryWhenReady.remove(playerId);
