@@ -52,6 +52,8 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private AutoCloseable packServer;
     private ResourcePackBuilder resourcePackBuilder;
     private BukkitTask temporaryTrackCleanupTask;
+    private MusicCommand musicCommand;
+    private long discordGeneration;
 
     @Override
     public void onEnable() {
@@ -115,6 +117,30 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         }
         if (!getConfig().contains("discord.voice.disconnect-delay-seconds")) {
             getConfig().set("discord.voice.disconnect-delay-seconds", 0);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("playback.continue-without-listeners")) {
+            getConfig().set("playback.continue-without-listeners", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("playback.continue-when-server-empty")) {
+            getConfig().set("playback.continue-when-server-empty", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("playlists.preimport.lead-seconds")) {
+            getConfig().set("playlists.preimport.lead-seconds", 20);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("playlists.preimport.max-preimported-tracks")) {
+            getConfig().set("playlists.preimport.max-preimported-tracks", 2);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("permissions.allow-player-self-zones")) {
+            getConfig().set("permissions.allow-player-self-zones", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("permissions.allow-player-all-target")) {
+            getConfig().set("permissions.allow-player-all-target", false);
             migratedConfig = true;
         }
         if (!getConfig().contains("audio.playback-mode")) {
@@ -480,6 +506,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             playback.start();
             scheduleTemporaryTrackCleanup();
             MusicCommand command = new MusicCommand(this, repository, processor, playback, accountLinks);
+            musicCommand = command;
             if (getCommand("music") != null) {
                 getCommand("music").setExecutor(command);
                 getCommand("music").setTabCompleter(command);
@@ -490,50 +517,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             }
             if (getCommand("link") != null) getCommand("link").setExecutor(command::onLinkCommand);
             if (getCommand("unlink") != null) getCommand("unlink").setExecutor(command::onUnlinkCommand);
+            if (getCommand("deafen") != null) getCommand("deafen").setExecutor(command::onDeafenCommand);
+            if (getCommand("undeafen") != null) getCommand("undeafen").setExecutor(command::onUndeafenCommand);
 
-            if (getConfig().getBoolean("discord.enabled", false)) {
-                // Runtime extraction and a first-use native download can be slow.
-                // Keep all of that work away from the Bukkit main thread.
-                discordBootstrapExecutor = Executors.newSingleThreadExecutor(runnable -> {
-                    Thread thread = new Thread(runnable, "Musicolide-Discord-Bootstrap");
-                    thread.setDaemon(true);
-                    return thread;
-                });
-                discordBootstrapExecutor.execute(() -> {
-                    AutoCloseable startedService = null;
-                    try {
-                        startedService = DiscordRuntimeBundle.start(
-                                this, playback, nativeToolchain, command, accountLinks);
-                        synchronized (discordStartupLock) {
-                            if (!discordShuttingDown) {
-                                discordBroadcastService = startedService;
-                                startedService = null;
-                            }
-                        }
-                        if (startedService != null) startedService.close();
-                    } catch (Throwable discordError) {
-                        Throwable cause = discordError;
-                        while (cause instanceof java.lang.reflect.InvocationTargetException
-                                && cause.getCause() != null) {
-                            cause = cause.getCause();
-                        }
-                        getLogger().log(java.util.logging.Level.WARNING,
-                                "Discord services could not be started ("
-                                        + cause.getClass().getSimpleName()
-                                        + "). Minecraft playback is unaffected. Check the server OS/CPU support "
-                                        + "and outbound HTTPS access to Maven Central.", cause);
-                    } finally {
-                        if (startedService != null) {
-                            try {
-                                startedService.close();
-                            } catch (Exception closeError) {
-                                getLogger().log(java.util.logging.Level.FINE,
-                                        "Discord bootstrap cleanup failed.", closeError);
-                            }
-                        }
-                    }
-                });
-            }
+            if (getConfig().getBoolean("discord.enabled", false)) startDiscordServices();
             Bukkit.getPluginManager().registerEvents(this, this);
             getLogger().info("Musicolide enabled. Place local audio files in plugins/Musicolide/SavedMusic/. Permanent imports and metadata are stored there.");
         } catch (Exception ex) {
@@ -541,6 +528,109 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             ex.printStackTrace();
             Bukkit.getPluginManager().disablePlugin(this);
         }
+    }
+
+    private void startDiscordServices() {
+        if (!getConfig().getBoolean("discord.enabled", false) || musicCommand == null
+                || discordShuttingDown) return;
+        synchronized (discordStartupLock) {
+            if (discordBroadcastService != null || discordBootstrapExecutor != null) return;
+            long generation = ++discordGeneration;
+            ExecutorService bootstrap = Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "Musicolide-Discord-Bootstrap");
+                thread.setDaemon(true);
+                return thread;
+            });
+            discordBootstrapExecutor = bootstrap;
+            bootstrap.execute(() -> {
+                AutoCloseable startedService = null;
+                try {
+                    startedService = DiscordRuntimeBundle.start(
+                            this, playback, nativeToolchain, musicCommand, accountLinks);
+                    synchronized (discordStartupLock) {
+                        if (!discordShuttingDown && generation == discordGeneration
+                                && getConfig().getBoolean("discord.enabled", false)) {
+                            discordBroadcastService = startedService;
+                            startedService = null;
+                        }
+                    }
+                } catch (Throwable discordError) {
+                    Throwable cause = discordError;
+                    while (cause instanceof java.lang.reflect.InvocationTargetException
+                            && cause.getCause() != null) cause = cause.getCause();
+                    getLogger().log(java.util.logging.Level.WARNING,
+                            "Discord services could not be started ("
+                                    + cause.getClass().getSimpleName()
+                                    + "). Minecraft playback is unaffected. Check the server OS/CPU support "
+                                    + "and outbound HTTPS access to Maven Central.", cause);
+                } finally {
+                    if (startedService != null) {
+                        try { startedService.close(); }
+                        catch (Exception closeError) {
+                            getLogger().log(java.util.logging.Level.FINE,
+                                    "Discord bootstrap cleanup failed.", closeError);
+                        }
+                    }
+                    synchronized (discordStartupLock) {
+                        if (generation == discordGeneration && discordBootstrapExecutor == bootstrap) {
+                            discordBootstrapExecutor = null;
+                        }
+                    }
+                    bootstrap.shutdown();
+                }
+            });
+        }
+    }
+
+    private void stopDiscordServices() {
+        AutoCloseable service;
+        ExecutorService bootstrap;
+        synchronized (discordStartupLock) {
+            discordGeneration++;
+            service = discordBroadcastService;
+            discordBroadcastService = null;
+            bootstrap = discordBootstrapExecutor;
+            discordBootstrapExecutor = null;
+        }
+        if (bootstrap != null) bootstrap.shutdownNow();
+        if (service != null) {
+            try { service.close(); }
+            catch (Exception ex) {
+                getLogger().warning("Discord shutdown encountered an error ("
+                        + ex.getClass().getSimpleName() + ").");
+            }
+        }
+    }
+
+    /** Changes the optional broadcaster at runtime without changing Minecraft playback. */
+    public void setDiscordEnabled(boolean enabled) {
+        getConfig().set("discord.enabled", enabled);
+        saveConfig();
+        if (enabled) startDiscordServices();
+        else stopDiscordServices();
+    }
+
+    public boolean isPlayerMusicDisabled(java.util.UUID playerId) {
+        return packManager != null && packManager.isPlayerDisabled(playerId);
+    }
+
+    public void disablePlayerMusic(Player player) {
+        if (player == null || packManager == null) return;
+        if (playback != null) playback.unloadPlayerAudio(player);
+        packManager.disablePlayer(player);
+    }
+
+    public void enablePlayerMusic(Player player) {
+        if (player == null || packManager == null) return;
+        packManager.enablePlayer(player);
+    }
+
+    public void unloadPlayerMusic(Player player) {
+        if (player == null || packManager == null) return;
+        String currentTrackId = playback == null ? null
+                : playback.currentTrackFor(player).map(MusicTrack::id).orElse(null);
+        if (playback != null) playback.unloadPlayerAudio(player);
+        packManager.unloadPlayer(player, currentTrackId);
     }
 
     private void scheduleTemporaryTrackCleanup() {
@@ -626,6 +716,58 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         getLogger().info("Expired " + removed.size() + " temporary URL-imported track(s).");
     }
 
+    /**
+     * Deletes temporary catalogue entries that are not in use or being delivered.
+     * Database rows are removed on the server thread before disk cleanup is queued,
+     * preventing new commands from starting one of the selected tracks.
+     */
+    public CompletableFuture<Integer> clearTemporaryTracks() {
+        if (repository == null || playback == null || packManager == null || resourcePackBuilder == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException("Musicolide is not fully initialized."));
+        }
+        final List<MusicTrack> removed = new ArrayList<>();
+        try {
+            for (MusicTrack track : repository.temporaryTracks()) {
+                if (playback.isTrackInUse(track.id()) || packManager.isDownloadInProgress(track.packId())) continue;
+                if (repository.deleteTrack(track.id())) removed.add(track);
+            }
+        } catch (SQLException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+        if (removed.isEmpty()) return CompletableFuture.completedFuture(0);
+        return CompletableFuture.supplyAsync(() -> {
+            Path packsDirectory = getDataFolder().toPath().resolve("packs").toAbsolutePath().normalize();
+            Path tracksDirectory = getDataFolder().toPath().resolve("tracks").toAbsolutePath().normalize();
+            for (MusicTrack track : removed) {
+                try {
+                    Path pack = packsDirectory.resolve(track.packFileName()).normalize();
+                    if (pack.startsWith(packsDirectory)) Files.deleteIfExists(pack);
+                    Path directory = tracksDirectory.resolve(track.id()).normalize();
+                    if (directory.startsWith(tracksDirectory) && Files.exists(directory)) {
+                        try (var walk = Files.walk(directory)) {
+                            for (Path file : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                                Files.deleteIfExists(file);
+                            }
+                        }
+                    }
+                } catch (Exception error) {
+                    getLogger().warning("Could not fully clear temporary track " + track.id() + ": " + error.getMessage());
+                }
+            }
+            try {
+                resourcePackBuilder.buildBasePack();
+                packManager.cleanupObsoleteLibraryArchives();
+            } catch (Exception error) {
+                getLogger().warning("Could not refresh the Java library after clearing temporary tracks: " + error.getMessage());
+            }
+            try { resourcePackBuilder.rebuildBedrockLibrary(); }
+            catch (Exception error) {
+                getLogger().warning("Could not refresh the Bedrock library after clearing temporary tracks: " + error.getMessage());
+            }
+            return removed.size();
+        });
+    }
+
     private void initializeGeyserPackIntegration(Path bedrockPack) {
         if (geyserBridge == null || !geyserBridge.isPresent()) return;
         try {
@@ -685,24 +827,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     public void onDisable() {
         if (temporaryTrackCleanupTask != null) temporaryTrackCleanupTask.cancel();
         closeGeyserPackIntegration();
-        AutoCloseable discordToClose;
         synchronized (discordStartupLock) {
             discordShuttingDown = true;
-            discordToClose = discordBroadcastService;
-            discordBroadcastService = null;
         }
-        if (discordBootstrapExecutor != null) {
-            discordBootstrapExecutor.shutdownNow();
-            discordBootstrapExecutor = null;
-        }
-        if (discordToClose != null) {
-            try {
-                discordToClose.close();
-            } catch (Exception discordCloseError) {
-                getLogger().warning("Discord broadcaster shutdown encountered an error ("
-                        + discordCloseError.getClass().getSimpleName() + ").");
-            }
-        }
+        stopDiscordServices();
         if (playback != null) playback.stopAll();
         if (processor != null) processor.close();
         else if (nativeToolchain != null) nativeToolchain.close();
