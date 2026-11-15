@@ -96,4 +96,37 @@ class ResourcePackBuilderTest {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
+    @Test
+    void aggregateLibraryIsDeterministicAndDeduplicatesIdenticalAudio() throws Exception {
+        Path audio = tempDir.resolve("same-audio.ogg");
+        Files.write(audio, new byte[]{'O', 'g', 'g', 'S', 10, 20, 30, 40});
+
+        ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
+                ResourcePackFormat.forMinecraftVersion("1.21.1-R0.1-SNAPSHOT"));
+        builder.buildStreamed("ms_alpha", audio);
+        builder.buildStreamed("ms_beta", audio);
+
+        ResourcePackBuilder.BasePackInfo first = builder.buildBasePack();
+        ResourcePackBuilder.BasePackInfo second = builder.buildBasePack();
+        assertEquals(first.sha1(), second.sha1(), "unchanged library contents should have a stable ZIP hash");
+        assertEquals(first.fileName(), second.fileName());
+
+        Path library = tempDir.resolve("packs").resolve(first.fileName());
+        try (ZipFile zip = new ZipFile(library.toFile())) {
+            int oggCount = 0;
+            var entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                if (entries.nextElement().getName().endsWith(".ogg")) oggCount++;
+            }
+            assertEquals(1, oggCount, "identical OGG payloads should be stored only once");
+
+            String betaDefinitions;
+            try (InputStream input = zip.getInputStream(zip.getEntry("assets/ms_beta/sounds.json"))) {
+                betaDefinitions = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            assertTrue(betaDefinitions.contains("ms_alpha:music"), betaDefinitions);
+            assertFalse(betaDefinitions.contains("ms_beta:music"), betaDefinitions);
+        }
+    }
+
 }
