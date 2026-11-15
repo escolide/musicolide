@@ -67,6 +67,13 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onReady(net.dv8tion.jda.api.events.session.ReadyEvent event) {
+        // Older releases registered global commands when guild-id was blank.
+        // Remove that stale surface; current commands are registered only in
+        // explicitly trusted guilds, and runtime guild checks remain authoritative.
+        event.getJDA().updateCommands().queue(
+                ignored -> plugin.getLogger().fine("Cleared legacy global Musicolide slash commands."),
+                error -> plugin.getLogger().log(Level.WARNING,
+                        "Could not clear legacy global slash commands; trusted-guild execution checks remain active.", error));
         if (!plugin.getConfig().getBoolean("discord.commands.enabled", true)) return;
         List<CommandData> commands = List.of(
                 Commands.slash("info", "Show the current Musicolide track, timestamp and server information"),
