@@ -308,8 +308,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             return;
         }
 
-        boolean discordAdmin = isDiscordAdministrator(event.getMember());
-        boolean discordAdmin = isDiscordAdministrator(event.getMember());
+        boolean discordAdmin = isDiscordAdministrator(event.getMember(), event.getJDA());
         event.deferReply(isEphemeral(event.getName())).queue(hook -> {
             List<String> lines = new ArrayList<>();
             Object linesLock = new Object();
@@ -356,8 +355,7 @@ public final class DiscordCommandService extends ListenerAdapter {
                             + "**) must be online to run game commands through Discord.");
                     return;
                 }
-                boolean elevateAdmin = authorizeAdmin(player,
-                        isDiscordAdministrator(event.getMember()) && isAllowedGuild(event));
+                boolean elevateAdmin = authorizeAdmin(player, discordAdmin);
                 try {
                     musicCommand.executeDiscordCommand(player, commandLine, elevateAdmin, output);
                     if (lines.isEmpty()) output.accept("Command processed.");
@@ -369,12 +367,12 @@ public final class DiscordCommandService extends ListenerAdapter {
                 "Discord command interaction could not be deferred.", error));
     }
 
-    private boolean isDiscordAdministrator(Member member) {
+    private boolean isDiscordAdministrator(Member member, JDA jda) {
         if (member == null || member.getGuild() == null) return false;
         // Only roles/administrator status in the explicitly trusted Musicolide
         // guild can grant Musicolide admin access.
         String trustedGuildId = member.getGuild().getId();
-        if (!isGuildAllowed(trustedGuildId, member.getJDA())) return false;
+        if (!isGuildAllowed(trustedGuildId, jda)) return false;
         if (member.hasPermission(Permission.ADMINISTRATOR)) return true;
         Set<String> configured = Set.copyOf(plugin.getConfig().getStringList(
                 "discord.commands.admin-role-ids"));
