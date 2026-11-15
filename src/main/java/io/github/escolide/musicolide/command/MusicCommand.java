@@ -350,18 +350,22 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 }));
     }
 
-    private void importUrl(CommandSender sender, String[] args) {
+    private void importUrl(CommandSender sender, String[] args) throws SQLException {
         if (!admin(sender)) return;
         if (args.length < 3 || !args[2].equalsIgnoreCase("--rights-confirmed")) {
             sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> --rights-confirmed [title] [--id custom_id]"));
             sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
             return;
         }
-        if (!admitHeavyRequest(sender, "import",
-                "audio.processing.import-cooldown-seconds", 10,
-                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         String customId = optionValue(args, 3, "--id");
         String title = joinWithoutOption(args, 3, "--id");
+        // Reusing a previously imported URL is a catalogue lookup, not a new download.
+        Optional<String> sourceKey = LinkNormalizer.normalize(args[1]);
+        boolean alreadyImported = sourceKey.isPresent()
+                && repository.resolveAlias(sourceKey.get()).isPresent();
+        if (!alreadyImported && !admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFmpeg starts."));
         processor.importUrl(args[1], title.isBlank() ? null : title, customId).whenComplete((track, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
