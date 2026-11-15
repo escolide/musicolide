@@ -24,6 +24,14 @@ commands:
     description: Unlink your Discord account from Minecraft.
     usage: /unlink
     permission: musicolide.use
+  deafen:
+    description: Mute Musicolide audio for yourself.
+    usage: /deafen
+    permission: musicolide.use
+  undeafen:
+    description: Unmute Musicolide audio for yourself.
+    usage: /undeafen
+    permission: musicolide.use
 permissions:
   musicolide.use:
     description: Allows use of Musicolide playback commands.
