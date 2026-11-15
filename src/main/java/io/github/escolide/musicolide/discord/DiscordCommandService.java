@@ -89,9 +89,17 @@ public final class DiscordCommandService extends ListenerAdapter {
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
         );
 
-        List<String> allowedGuildIds = plugin.getConfig().getStringList("discord.commands.allowed-guild-ids")
-                .stream().filter(value -> value != null && value.matches("[0-9]{5,25}")).distinct().toList();
-        if (!allowedGuildIds.isEmpty()) {
+        List<String> configuredGuildAllowlist =
+                plugin.getConfig().getStringList("discord.commands.allowed-guild-ids");
+        List<String> allowedGuildIds = configuredGuildAllowlist.stream()
+                .filter(value -> value != null && value.matches("[0-9]{5,25}"))
+                .distinct().toList();
+        if (!configuredGuildAllowlist.isEmpty()) {
+            if (allowedGuildIds.isEmpty()) {
+                plugin.getLogger().warning("discord.commands.allowed-guild-ids is configured but contains no valid guild IDs; "
+                        + "slash commands were not registered anywhere.");
+                return;
+            }
             int registered = 0;
             for (String allowedGuildId : allowedGuildIds) {
                 var guild = event.getJDA().getGuildById(allowedGuildId);
@@ -143,16 +151,17 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
-        if (!allowSlashCommandUser(event.getUser().getId())) {
-            reply(event, "Please wait a moment before using another Musicolide command.");
-            return;
-        }
         if (!plugin.getConfig().getBoolean("discord.commands.enabled", true)) {
             reply(event, "Discord commands are disabled on this server.");
             return;
         }
         if (!isAllowedGuild(event)) {
             reply(event, "Musicolide Discord commands are restricted to the configured server.");
+            return;
+        }
+        String guildScopedUser = event.getGuild().getId() + ":" + event.getUser().getId();
+        if (!allowSlashCommandUser(guildScopedUser)) {
+            reply(event, "Please wait a moment before using another Musicolide command.");
             return;
         }
         switch (event.getName()) {
@@ -175,13 +184,14 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onCommandAutoCompleteInteraction(CommandAutoCompleteInteractionEvent event) {
-        if (!allowAutocompleteUserResponse(event.getUser().getId())) {
-            event.replyChoices(List.of()).queue();
-            return;
-        }
         if (!event.getName().equals("play") || !event.getFocusedOption().getName().equals("query")
                 || !plugin.getConfig().getBoolean("discord.commands.enabled", true)
                 || !isAllowedGuild(event)) {
+            event.replyChoices(List.of()).queue();
+            return;
+        }
+        String guildScopedUser = event.getGuild().getId() + ":" + event.getUser().getId();
+        if (!allowAutocompleteUserResponse(guildScopedUser)) {
             event.replyChoices(List.of()).queue();
             return;
         }
@@ -313,9 +323,13 @@ public final class DiscordCommandService extends ListenerAdapter {
     }
 
     private boolean isGuildAllowed(String guildId, JDA jda) {
-        List<String> configured = plugin.getConfig().getStringList("discord.commands.allowed-guild-ids")
-                .stream().filter(value -> value != null && value.matches("[0-9]{5,25}")).toList();
-        if (!configured.isEmpty()) return configured.contains(guildId);
+        List<String> configuredAllowlist =
+                plugin.getConfig().getStringList("discord.commands.allowed-guild-ids");
+        List<String> configured = configuredAllowlist.stream()
+                .filter(value -> value != null && value.matches("[0-9]{5,25}")).toList();
+        // A non-empty but invalid allowlist is a configuration error, not a
+        // reason to fall back to a broader guild trust rule.
+        if (!configuredAllowlist.isEmpty()) return configured.contains(guildId);
 
         String commandGuild = plugin.getConfig().getString("discord.commands.guild-id", "").trim();
         if (!commandGuild.isBlank()) return commandGuild.equals(guildId);
