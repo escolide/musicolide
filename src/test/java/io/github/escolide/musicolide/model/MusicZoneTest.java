@@ -21,6 +21,21 @@ class MusicZoneTest {
     }
 
     @Test
+    void centeredMonoOriginIsDistinctFromTheDefaultListenerOrigin() {
+        MusicZone ordinary = MusicZone.circle(world, 10, 64, 20, 30, false, 0, true, 5);
+        MusicZone centered = MusicZone.centeredCircle(world, 10, 64, 20, 30, false, 0, true, 5);
+        MusicZone sameCentered = MusicZone.centeredCircle(world, 10, 64, 20, 30, false, 0, true, 5);
+
+        assertFalse(ordinary.centeredAudioOrigin());
+        assertTrue(centered.centeredAudioOrigin());
+        assertEquals(10, centered.centerX());
+        assertEquals(64, centered.centerY());
+        assertEquals(20, centered.centerZ());
+        assertFalse(ordinary.sameAs(centered));
+        assertTrue(centered.sameAs(sameCentered));
+    }
+
+    @Test
     void circleUsesHorizontalRadius() {
         MusicZone zone = MusicZone.circle(world, 0, 64, 0, 10, false, 0, false, 0);
         assertTrue(zone.containsBase(world, 10, 200, 0));
