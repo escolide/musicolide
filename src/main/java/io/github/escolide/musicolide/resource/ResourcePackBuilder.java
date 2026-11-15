@@ -64,7 +64,7 @@ public final class ResourcePackBuilder {
                             ZipEntry entry = entries.nextElement();
                             if (entry.isDirectory() || !entry.getName().startsWith("assets/")) continue;
                             String name = entry.getName();
-                            if (name.startsWith("/") || name.contains("../") || name.contains("\\"))
+                            if (name.startsWith("/") || name.contains("../") || name.contains("\\")
                                     || name.contains("/..")) {
                                 throw new IOException("Unsafe asset path in " + archive.getFileName() + ": " + name);
                             }
