@@ -70,6 +70,8 @@ public final class PackManager {
     }
 
     public boolean isBaseDeclined(Player player) {
+        // Per-track delivery does not depend on the aggregate library revision.
+        if (isPerTrackDeliveryEnabled()) return false;
         String hash = currentLibraryHash();
         return hash != null && hash.equals(libraryDeclinedHash.get(player.getUniqueId()));
     }
@@ -85,7 +87,7 @@ public final class PackManager {
      * its client-side sound and trigger another resource-pack application.
      */
     public boolean isReady(Player player, MusicTrack track, boolean allowOlderLibraryRevision) {
-        if (isTemporary(track)) {
+        if (isTemporary(track) || isPerTrackDeliveryEnabled()) {
             return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
         }
         String hash = currentLibraryHash();
@@ -95,7 +97,7 @@ public final class PackManager {
     }
 
     public boolean isDeclined(Player player, MusicTrack track) {
-        if (isTemporary(track)) {
+        if (isTemporary(track) || isPerTrackDeliveryEnabled()) {
             return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
         }
         return isBaseDeclined(player);
@@ -119,8 +121,12 @@ public final class PackManager {
     public void publicAddressAvailable() {
         for (UUID playerId : new HashSet<>(waitingForPublicAddress)) {
             Player player = Bukkit.getPlayer(playerId);
-            if (player != null && player.isOnline() && !isIgnoredBedrockPlayer(player)) ensureLibrary(player);
-            else waitingForPublicAddress.remove(playerId);
+            if (player != null && player.isOnline() && !isIgnoredBedrockPlayer(player)) {
+                if (isPerTrackDeliveryEnabled()) pump(player);
+                else ensureLibrary(player);
+            } else {
+                waitingForPublicAddress.remove(playerId);
+            }
         }
     }
 
@@ -140,10 +146,13 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         // Existing listeners keep their current immutable library revision until
         // this track finishes. A newly joining player still requests the latest pack.
-        if (deferLibraryRefresh) {
-            if (!libraryReadyHash.containsKey(playerId) && !ensureLibrary(player)) return;
-        } else if (!ensureLibrary(player)) {
-            return;
+        boolean perTrackDelivery = isPerTrackDeliveryEnabled();
+        if (!perTrackDelivery) {
+            if (deferLibraryRefresh) {
+                if (!libraryReadyHash.containsKey(playerId) && !ensureLibrary(player)) return;
+            } else if (!ensureLibrary(player)) {
+                return;
+            }
         }
 
         // Normal tracks are already in the single library pack. Only FFmpeg
@@ -151,15 +160,15 @@ public final class PackManager {
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 player.getUniqueId(), ignored -> new LinkedHashMap<>());
         Set<UUID> desired = new HashSet<>(pinnedTemporaryPacks.getOrDefault(player.getUniqueId(), Set.of()));
-        if (isTemporary(current)) {
+        if (current != null && (isTemporary(current) || perTrackDelivery)) {
             desired.add(current.packId());
-            enqueueIfNeeded(player.getUniqueId(), queue, current);
+            enqueueIfNeeded(playerId, queue, current);
         }
         if (upcoming != null) {
             for (MusicTrack track : upcoming.stream().limit(Math.max(0, tracksAhead)).toList()) {
-                if (isTemporary(track)) {
+                if (isTemporary(track) || perTrackDelivery) {
                     desired.add(track.packId());
-                    enqueueIfNeeded(player.getUniqueId(), queue, track);
+                    enqueueIfNeeded(playerId, queue, track);
                 }
             }
         }
@@ -183,17 +192,15 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         // A private resume/synchronization tail is self-contained. Do not refresh
         // an outdated aggregate library as a side effect of requesting the tail.
-        // If this player has never finished loading the library, start that request
-        // but keep the temporary tail pinned in the queue. The library's SUCCESSFULLY_LOADED
-        // callback will pump the tail; returning false here used to silently lose
-        // resume requests made while the library was still loading.
-        if (!libraryReadyHash.containsKey(playerId)) ensureLibrary(player);
+        // In library mode, wait for the base pack before pumping the tail. In
+        // per-track mode, no aggregate pack is required.
+        if (!isPerTrackDeliveryEnabled() && !libraryReadyHash.containsKey(playerId)) ensureLibrary(player);
         pinnedTemporaryPacks.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet())
                 .add(track.packId());
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 playerId, ignored -> new LinkedHashMap<>());
         enqueueIfNeeded(playerId, queue, track);
-        if (libraryReadyHash.containsKey(playerId)) pump(player);
+        if (isPerTrackDeliveryEnabled() || libraryReadyHash.containsKey(playerId)) pump(player);
         return true;
     }
 
@@ -272,6 +279,12 @@ public final class PackManager {
         return PackUrlBuilder.build(base, prefix, fileName, detected, configured, sharedPortMode);
     }
 
+    /** True when Java clients receive independent, cached packs for each track. */
+    public boolean isPerTrackDeliveryEnabled() {
+        String mode = plugin.getConfig().getString("resource-packs.java-delivery-mode", "library");
+        return mode != null && mode.trim().equalsIgnoreCase("per-track");
+    }
+
     private boolean isTemporary(MusicTrack track) {
         return track != null && track.namespace() != null && track.namespace().startsWith("mr_");
     }
@@ -289,6 +302,13 @@ public final class PackManager {
         int maximum = Math.max(1, plugin.getConfig().getInt("resource-packs.prefetch.max-concurrent-downloads", 2));
         LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
         if (queue == null) return;
+        // Address discovery is asynchronous. Never block the Bukkit main thread
+        // by joining its future while trying to send an on-demand track pack.
+        if (!publicBaseUrl.isDone()) {
+            waitingForPublicAddress.add(playerId);
+            return;
+        }
+        waitingForPublicAddress.remove(playerId);
         while (inFlight.getOrDefault(playerId, 0) < maximum && !queue.isEmpty()) {
             Map.Entry<UUID, MusicTrack> next = queue.entrySet().iterator().next();
             queue.remove(next.getKey());
@@ -301,16 +321,21 @@ public final class PackManager {
     private void send(Player player, MusicTrack track) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return;
         UUID playerId = player.getUniqueId();
-        String url = packUrl(track.packFileName());
+        boolean registered = false;
         try {
+            String url = packUrl(track.packFileName());
             requested.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(track.packId());
             active.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet()).add(track.packId());
             inFlight.merge(playerId, 1, Integer::sum);
+            registered = true;
             player.addResourcePack(track.packId(), url, track.sha1Bytes(), null, false);
         } catch (Exception ex) {
-            requested.getOrDefault(playerId, Set.of()).remove(track.packId());
-            inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
-            plugin.getLogger().warning("Could not send temporary playback pack " + track.id()
+            if (registered) {
+                requested.getOrDefault(playerId, Set.of()).remove(track.packId());
+                active.getOrDefault(playerId, Set.of()).remove(track.packId());
+                inFlight.compute(playerId, (key, count) -> Math.max(0, (count == null ? 0 : count) - 1));
+            }
+            plugin.getLogger().warning("Could not send playback pack " + track.id()
                     + " to " + player.getName() + ": " + ex.getMessage());
         }
     }
