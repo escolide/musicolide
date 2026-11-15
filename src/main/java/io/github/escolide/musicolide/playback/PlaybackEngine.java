@@ -295,15 +295,21 @@ public final class PlaybackEngine {
             case "resume" -> session.resume();
             case "skip" -> {
                 MusicTrack previous = session.playbackTrack();
+                if (session.owner() != null && previous != null) lastPlayedByOwner.put(session.owner(), previous);
                 stopPlayersInSession(session);
                 session.advance();
+                if (session.owner() != null && session.current() != null) {
+                    lastPlayedByOwner.put(session.owner(), session.current());
+                }
                 releaseGeneratedTrack(previous);
                 if (session.isEmpty()) sessions.remove(session);
             }
             case "stop" -> {
+                MusicTrack previous = session.playbackTrack();
+                if (session.owner() != null && previous != null) lastPlayedByOwner.put(session.owner(), previous);
                 sessions.remove(session);
                 stopPlayersInSession(session);
-                releaseGeneratedTrack(session.playbackTrack());
+                releaseGeneratedTrack(previous);
                 session.cancelResumePreparation();
             }
             default -> { return false; }
@@ -775,6 +781,9 @@ public final class PlaybackEngine {
             for (PlaybackSession session : sessions) {
                 if (session.finished()) {
                     MusicTrack previous = session.playbackTrack();
+                    if (session.owner() != null && previous != null) {
+                        lastPlayedByOwner.put(session.owner(), previous);
+                    }
                     session.advance();
                     if (session.owner() != null && session.current() != null) {
                         lastPlayedByOwner.put(session.owner(), session.current());
