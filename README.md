@@ -93,7 +93,7 @@ discord:
     server-port: 25565
   commands:
     enabled: true
-    guild-id: "" # blank = global registration; command execution is still restricted to the trusted guild
+    guild-id: "" # blank = voice-channel guild; slash commands are not globally registered
     allowed-guild-ids: [] # optional explicit allowlist; otherwise guild-id or voice-channel-id's guild is trusted
     admin-authorization: "minecraft-op" # minecraft-op / discord-administrator / either / both
     admin-role-ids: []
@@ -109,7 +109,7 @@ discord:
     global-link-code-cooldown-seconds: 1
 ```
 
-Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs only **View Channel**, **Connect**, and **Speak** in the configured voice channel, plus the normal application-command integration and access to DMs for account pairing. Do not grant the bot Administrator, Manage Server, Manage Roles, Manage Messages, Kick Members, Ban Members or other moderation permissions. Musicolide's Discord code does not implement moderation actions or arbitrary Bukkit command dispatch; its gateway intents are limited to voice state and direct messages. Slash command execution is restricted to the trusted guild: `allowed-guild-ids` takes precedence, then `guild-id`, then the guild containing `voice-channel-id`. Global slash-command registration does not grant access from other guilds. Restart the Minecraft server after changing the bot token or voice channel. The runtime bootstrap/download occurs on a background thread.
+Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs only **View Channel**, **Connect**, and **Speak** in the configured voice channel, plus the normal application-command integration and access to DMs for account pairing. Do not grant the bot Administrator, Manage Server, Manage Roles, Manage Messages, Kick Members, Ban Members or other moderation permissions. Musicolide's Discord code does not implement moderation actions or arbitrary Bukkit command dispatch; its gateway intents are limited to voice state and direct messages. Slash commands are registered only in trusted guilds: `allowed-guild-ids` takes precedence and supports an explicit multi-guild allowlist; otherwise `guild-id` is used, then the guild containing `voice-channel-id`. The bot refuses global slash-command registration when no trusted guild can be resolved. Restart the Minecraft server after changing the bot token or voice channel. The runtime bootstrap/download occurs on a background thread.
 
 ### Presence and /info
 
