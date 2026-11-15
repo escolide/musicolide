@@ -38,6 +38,8 @@ public final class AudioProcessor implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CompletableFuture<PlaylistImportResult>> inFlightPlaylistImports =
             new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicBoolean playlistImportActive =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private final Set<String> monoVariantsReady = ConcurrentHashMap.newKeySet();
     private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightMonoVariants =
             new ConcurrentHashMap<>();
@@ -206,7 +208,7 @@ public final class AudioProcessor implements AutoCloseable {
      * YouTube playlist. Playlist metadata is read first; each video then follows
      * the normal single-video (--no-playlist), allowlist and audio validation path.
      */
-    public CompletableFuture<PlaylistImportResult> importPlaylistUrl(String sourceUrl) {
+    public synchronized CompletableFuture<PlaylistImportResult> importPlaylistUrl(String sourceUrl) {
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "YouTube playlist importing is disabled. Enable audio.yt-dlp.allow-playlists in config.yml first."));
@@ -232,11 +234,15 @@ public final class AudioProcessor implements AutoCloseable {
                 "limits.max-playlist-tracks", 500), 1, 500));
         final int itemLimit = maximum;
 
-        CompletableFuture<PlaylistImportResult> result = new CompletableFuture<>();
-        CompletableFuture<PlaylistImportResult> active =
-                inFlightPlaylistImports.putIfAbsent(playlistKey, result);
-        if (active != null) return active;
+        CompletableFuture<PlaylistImportResult> existing = inFlightPlaylistImports.get(playlistKey);
+        if (existing != null) return existing;
+        if (!playlistImportActive.compareAndSet(false, true)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Another YouTube playlist batch is already being processed. Try again after it finishes."));
+        }
 
+        CompletableFuture<PlaylistImportResult> result = new CompletableFuture<>();
+        inFlightPlaylistImports.put(playlistKey, result);
         try {
             worker.execute(() -> {
                 try {
@@ -282,10 +288,12 @@ public final class AudioProcessor implements AutoCloseable {
                             ? error.getCause() : error);
                 } finally {
                     inFlightPlaylistImports.remove(playlistKey, result);
+                    playlistImportActive.set(false);
                 }
             });
         } catch (RejectedExecutionException ex) {
             inFlightPlaylistImports.remove(playlistKey, result);
+            playlistImportActive.set(false);
             result.completeExceptionally(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
         }
