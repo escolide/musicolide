@@ -47,6 +47,9 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private final String token;
     private final String channelId;
     private final boolean reconnectAndResync;
+    private final boolean connectOnlyWhenPlaying;
+    private final boolean stayConnectedWhilePaused;
+    private final long disconnectDelaySeconds;
     private final DiscordAudioSendHandler sendHandler = new DiscordAudioSendHandler();
     private final DiscordTrackStreamer streamer;
     private final ScheduledExecutorService executor;
@@ -63,6 +66,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private boolean voiceWasConnected;
     private boolean hasEverConnected;
     private long lastVoiceConnectAttemptNanos;
+    private long noPlaybackSinceNanos;
     private long lastRestartAttemptNanos;
     private long lastPresenceUpdateNanos;
     private String lastPresenceText = "";
@@ -82,6 +86,12 @@ public final class DiscordBroadcastService implements AutoCloseable {
         this.token = plugin.getConfig().getString("discord.bot-token", "").trim();
         this.channelId = plugin.getConfig().getString("discord.voice-channel-id", "").trim();
         this.reconnectAndResync = plugin.getConfig().getBoolean("discord.reconnect-and-resync", true);
+        this.connectOnlyWhenPlaying = plugin.getConfig().getBoolean(
+                "discord.voice.connect-only-when-playing", true);
+        this.stayConnectedWhilePaused = plugin.getConfig().getBoolean(
+                "discord.voice.stay-connected-while-paused", true);
+        this.disconnectDelaySeconds = Math.max(0L, Math.min(3600L,
+                plugin.getConfig().getLong("discord.voice.disconnect-delay-seconds", 0L)));
         Path dataDirectory = plugin.getDataFolder().toPath();
         this.streamer = new DiscordTrackStreamer(toolchain, dataDirectory, sendHandler, logger);
         this.executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -218,7 +228,17 @@ public final class DiscordBroadcastService implements AutoCloseable {
         if (snapshot != null && !snapshot.clockStarted()) {
             streamer.stop();
             lastTimelineKey = timelineKey(snapshot) + ":waiting-for-clock";
-            if (!audio.isConnected()) voiceWasConnected = false;
+            if (!connectOnlyWhenPlaying) {
+                maintainVoiceConnectionWhileIdle(audio, channel);
+            } else if (!stayConnectedWhilePaused && snapshot.preparing()) {
+                if (disconnectAfterIdle(audio)) {
+                    voiceWasConnected = false;
+                    hasEverConnected = false;
+                }
+            } else {
+                noPlaybackSinceNanos = 0L;
+                if (!audio.isConnected()) voiceWasConnected = false;
+            }
             return;
         }
 
@@ -228,9 +248,14 @@ public final class DiscordBroadcastService implements AutoCloseable {
         if (selected.isEmpty() || selected.get().track() == null || !selected.get().clockStarted()) {
             streamer.stop();
             lastTimelineKey = null;
-            if (audio.isConnected()) audio.closeAudioConnection();
-            voiceWasConnected = false;
-            hasEverConnected = false;
+            if (connectOnlyWhenPlaying) {
+                if (disconnectAfterIdle(audio)) {
+                    voiceWasConnected = false;
+                    hasEverConnected = false;
+                }
+            } else {
+                maintainVoiceConnectionWhileIdle(audio, channel);
+            }
             return;
         }
 
@@ -270,13 +295,19 @@ public final class DiscordBroadcastService implements AutoCloseable {
 
         snapshot = selected.get();
         if (!snapshot.isAudible()) {
-            // Paused and resume-preparing sessions keep the bot in voice but
-            // stop sending PCM. A later resume starts a fresh decoder at the
-            // authoritative Minecraft timestamp.
+            // Never send PCM while paused. The voice connection can be retained
+            // or closed independently; resuming always starts from Minecraft's clock.
             streamer.stop();
             lastTimelineKey = timelineKey(snapshot) + ":paused:" + snapshot.preparing();
+            if (stayConnectedWhilePaused) {
+                noPlaybackSinceNanos = 0L;
+            } else if (disconnectAfterIdle(audio)) {
+                voiceWasConnected = false;
+                hasEverConnected = false;
+            }
             return;
         }
+        noPlaybackSinceNanos = 0L;
 
         if (!toolchain.isInitialized()) {
             streamer.stop();
@@ -377,6 +408,37 @@ public final class DiscordBroadcastService implements AutoCloseable {
         }
         lastPresenceIdentity = identity;
         lastPresenceUpdateNanos = now;
+    }
+
+    private void maintainVoiceConnectionWhileIdle(AudioManager audio, VoiceChannel channel) {
+        noPlaybackSinceNanos = 0L;
+        if (audio.isConnected()) return;
+        long now = System.nanoTime();
+        if (audio.getConnectionStatus() == ConnectionStatus.NOT_CONNECTED
+                && now - lastVoiceConnectAttemptNanos >= TimeUnit.SECONDS.toNanos(5)) {
+            audio.openAudioConnection(channel);
+            lastVoiceConnectAttemptNanos = now;
+        }
+    }
+
+    /**
+     * Returns true once the connection has been closed (or was already closed).
+     * This is only used when there is no audible playback to broadcast.
+     */
+    private boolean disconnectAfterIdle(AudioManager audio) {
+        if (!audio.isConnected()) {
+            noPlaybackSinceNanos = 0L;
+            return true;
+        }
+        long now = System.nanoTime();
+        if (noPlaybackSinceNanos == 0L) noPlaybackSinceNanos = now;
+        if (disconnectDelaySeconds > 0L
+                && now - noPlaybackSinceNanos < TimeUnit.SECONDS.toNanos(disconnectDelaySeconds)) {
+            return false;
+        }
+        audio.closeAudioConnection();
+        noPlaybackSinceNanos = 0L;
+        return true;
     }
 
     private String formatPresenceTime(long millis) {
