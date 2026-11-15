@@ -29,6 +29,8 @@ public final class PackManager {
     private final Set<UUID> acceptedLibraryPlayers = ConcurrentHashMap.newKeySet();
     private final Set<UUID> waitingForPublicAddress = ConcurrentHashMap.newKeySet();
     private final Set<UUID> removeLibraryWhenReady = ConcurrentHashMap.newKeySet();
+    // Explicit /music download requests are rate-limited; playback-driven ensureLibrary calls are not.
+    private final Map<UUID, Long> manualLibraryRequestAt = new ConcurrentHashMap<>();
 
     // Only temporary per-session remainder packs are sent separately.
     private final Map<UUID, Set<UUID>> ready = new ConcurrentHashMap<>();
@@ -109,9 +111,22 @@ public final class PackManager {
      */
     public boolean requestLibrary(Player player, boolean retry) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return false;
+        UUID playerId = player.getUniqueId();
         String hash = currentLibraryHash();
         if (hash == null) return false;
-        if (retry) libraryDeclinedHash.remove(player.getUniqueId(), hash);
+        if (hash.equals(libraryReadyHash.get(playerId))) return true;
+        // A request already in progress is not repeated and must not consume another slot.
+        if (hash.equals(libraryRequestedHash.get(playerId))) return false;
+
+        long cooldownSeconds = Math.max(0L,
+                plugin.getConfig().getLong("resource-packs.request-cooldown-seconds", 30L));
+        long now = System.currentTimeMillis();
+        Long lastRequest = manualLibraryRequestAt.get(playerId);
+        long cooldownMillis = Math.min(cooldownSeconds, 86_400L) * 1000L;
+        if (lastRequest != null && now - lastRequest < cooldownMillis) return false;
+
+        manualLibraryRequestAt.put(playerId, now);
+        if (retry) libraryDeclinedHash.remove(playerId, hash);
         return ensureLibrary(player);
     }
 
@@ -513,6 +528,7 @@ public final class PackManager {
         removeWhenReady.remove(playerId);
         pinnedTemporaryPacks.remove(playerId);
         inFlight.remove(playerId);
+        manualLibraryRequestAt.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
         cleanupLibraryArchivesAsync();
     }
