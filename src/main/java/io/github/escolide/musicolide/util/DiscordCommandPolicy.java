@@ -32,7 +32,17 @@ public final class DiscordCommandPolicy {
         if (normalized.startsWith("/")) normalized = normalized.substring(1).trim();
         String[] arguments = normalized.split("\\s+", 3);
         return arguments.length >= 2
-                && arguments[0].equalsIgnoreCase("playlist")
-                && arguments[1].equalsIgnoreCase("play");
+                && unquoteRoot(arguments[0]).equalsIgnoreCase("playlist")
+                && unquoteRoot(arguments[1]).equalsIgnoreCase("play");
+    }
+
+    private static String unquoteRoot(String token) {
+        if (token == null || token.length() < 2) return token == null ? "" : token;
+        char first = token.charAt(0);
+        char last = token.charAt(token.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\\'' && last == '\\'')) {
+            return token.substring(1, token.length() - 1);
+        }
+        return token;
     }
 }
