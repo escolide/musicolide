@@ -86,38 +86,64 @@ public final class PlaybackEngine {
     public synchronized PlaybackSession startSession(UUID owner, String ownerName, MusicZone zone,
                                                        boolean allPlayers, Collection<UUID> listeners,
                                                        Collection<MusicTrack> tracks, int priority) {
+        return startSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, false);
+    }
+
+    public synchronized PlaybackSession startSession(UUID owner, String ownerName, MusicZone zone,
+                                                       boolean allPlayers, Collection<UUID> listeners,
+                                                       Collection<MusicTrack> tracks, int priority,
+                                                       boolean mono) {
         int maximum = plugin.getConfig().getInt("limits.max-sessions", 20);
         if (sessions.size() >= maximum) throw new IllegalStateException("Maximum number of music sessions reached.");
-        PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority);
+        PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, mono);
         if (!session.isEmpty()) sessions.add(session);
         return session;
     }
 
-    public enum PlayDisposition { STARTED, QUEUED, QUEUE_FULL }
+    public enum PlayDisposition { STARTED, QUEUED, QUEUE_FULL, MODE_MISMATCH }
 
     /**
      * Starts a new playback session, or appends /play to the sender's existing
-     * session when its audience and listening zone are identical. This avoids
-     * accidental per-player overlap when the DJ simply wants the next song.
+     * session when its audience, listening zone, and audio mode are identical.
+     * This avoids accidental overlap when the DJ simply wants the next song.
      */
     public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
                                                       boolean allPlayers, Collection<UUID> listeners,
                                                       MusicTrack track, int priority) {
+        return playOrQueue(owner, ownerName, zone, allPlayers, listeners, track, priority, false);
+    }
+
+    public synchronized Optional<Boolean> activeSessionMono(UUID owner, String ownerName, MusicZone zone,
+                                                            boolean allPlayers, Collection<UUID> listeners) {
+        return sessions.stream()
+                .filter(session -> owner == null
+                        ? session.owner() == null && session.ownerName().equals(ownerName)
+                        : session.isOwner(owner))
+                .filter(session -> !session.paused() && !session.resumePreparing())
+                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
+                .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                .map(PlaybackSession::isMono);
+    }
+
+    public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
+                                                      boolean allPlayers, Collection<UUID> listeners,
+                                                      MusicTrack track, int priority, boolean mono) {
         PlaybackSession existing = sessions.stream()
                 .filter(session -> owner == null
                         ? session.owner() == null && session.ownerName().equals(ownerName)
                         : session.isOwner(owner))
                 .filter(session -> !session.paused() && !session.resumePreparing())
-                .filter(session -> session.matchesPlaybackRequest(allPlayers, listeners, zone))
+                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
                 .max(Comparator.comparingLong(PlaybackSession::startedAt))
                 .orElse(null);
         if (existing != null && !existing.isEmpty()) {
+            if (existing.isMono() != mono) return PlayDisposition.MODE_MISMATCH;
             int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
             if (existing.queueSize() >= maximumQueue) return PlayDisposition.QUEUE_FULL;
             existing.enqueue(track);
             return PlayDisposition.QUEUED;
         }
-        startSession(owner, ownerName, zone, allPlayers, listeners, List.of(track), priority);
+        startSession(owner, ownerName, zone, allPlayers, listeners, List.of(track), priority, mono);
         return PlayDisposition.STARTED;
     }
 
@@ -350,7 +376,7 @@ public final class PlaybackEngine {
     private void generateAndInstallRemainder(PlaybackSession session, MusicTrack original,
                                               long targetMs, long generation, String readyMessage,
                                               Consumer<String> completion) {
-        audioProcessor.createResumeTrack(original, targetMs).whenComplete((remainder, error) ->
+        audioProcessor.createResumeTrack(original, targetMs, session.isMono()).whenComplete((remainder, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (error != null) {
                         boolean currentOperation = session.failResumePreparation(generation);
@@ -484,7 +510,7 @@ public final class PlaybackEngine {
                     state.baseVolume = playbackBaseVolume(player);
                     state.segment = segment;
                     state.fading = candidate.mode == MusicZone.AudioMode.FADE;
-                    state.sound = track.soundKey(segment);
+                    state.sound = track.soundKey(segment, session.isMono());
                     float adjusted = playbackVolume(state.baseVolume, candidate.session, state.fading, player);
                     if (adjusted > 0) {
                         player.playSound(player.getLocation(), state.sound, SOUND_CATEGORY,
@@ -635,7 +661,7 @@ public final class PlaybackEngine {
         pending.fading = candidate.mode == MusicZone.AudioMode.FADE;
         playerPlayback.put(playerId, pending);
 
-        audioProcessor.createResumeTrack(sourceTrack, targetMs).whenComplete((remainder, error) ->
+        audioProcessor.createResumeTrack(sourceTrack, targetMs, session.isMono()).whenComplete((remainder, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     boolean currentRequest = syncGenerations.getOrDefault(playerId, 0L) == generation
                             && playerPlayback.get(playerId) == pending;
@@ -1061,7 +1087,7 @@ public final class PlaybackEngine {
                 continue;
             }
 
-            String sound = track.soundKey(segment);
+            String sound = track.soundKey(segment, session.isMono());
             if (state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
             player.playSound(player.getLocation(), sound, SOUND_CATEGORY, volume, (float) session.speed());
             state.segment = segment;
@@ -1215,7 +1241,7 @@ public final class PlaybackEngine {
             return;
         }
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
-        String sound = track.soundKey(segment);
+        String sound = track.soundKey(segment, session.isMono());
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
                 || state.segment != segment || state.fading != fading || state.sound == null;
         if (changed) {

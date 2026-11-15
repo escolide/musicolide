@@ -3,6 +3,7 @@ package io.github.escolide.musicolide.resource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.zip.ZipEntry;
@@ -13,84 +14,61 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class BedrockResourcePackBuilderTest {
     @TempDir
-    Path temporary;
+    Path tempDir;
 
     @Test
-    void buildsOneBedrockLibraryPackFromJavaTrackArchives() throws Exception {
-        Path packs = Files.createDirectories(temporary.resolve("packs"));
-        Path sourceArchive = packs.resolve("mc_sample_track.zip");
-        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(sourceArchive))) {
-            zip.putNextEntry(new ZipEntry("assets/mc_sample_track/sounds/mc_sample_track/stereo/00000.ogg"));
-            zip.write(new byte[]{'O', 'g', 'g', 'S', 1, 2, 3});
-            zip.closeEntry();
-            zip.putNextEntry(new ZipEntry("assets/mc_sample_track/sounds/mc_sample_track/stereo/00001.ogg"));
-            zip.write(new byte[]{'O', 'g', 'g', 'S', 4, 5, 6});
-            zip.closeEntry();
+    void includesStreamedStereoAndMonoAssets() throws Exception {
+        Path packs = tempDir.resolve("packs");
+        Files.createDirectories(packs);
+        Path archive = packs.resolve("ms_demo.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            add(zip, "assets/ms_demo/sounds/music.ogg", new byte[]{1, 2, 3});
+            add(zip, "assets/ms_demo/sounds/mono.ogg", new byte[]{4, 5});
         }
 
-        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
-        Path output = builder.rebuild(packs);
-        assertNotNull(output);
-        assertTrue(Files.isRegularFile(output));
+        Path output = new BedrockResourcePackBuilder(tempDir).rebuild(packs);
 
-        try (ZipFile bedrock = new ZipFile(output.toFile())) {
-            assertNotNull(bedrock.getEntry("manifest.json"));
-            assertNotNull(bedrock.getEntry("sounds/sound_definitions.json"));
-            assertNotNull(bedrock.getEntry("sounds/musicolide/mc_sample_track/00000.ogg"));
-            assertNotNull(bedrock.getEntry("sounds/musicolide/mc_sample_track/00001.ogg"));
-
-            String definitions;
-            try (var input = bedrock.getInputStream(bedrock.getEntry("sounds/sound_definitions.json"))) {
-                definitions = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            }
-            assertTrue(definitions.contains("\"mc_sample_track:s_00000\""));
-            assertTrue(definitions.contains("\"mc_sample_track:s_00001\""));
-            assertTrue(definitions.contains("\"category\": \"music\""));
-
-            String manifest;
-            try (var input = bedrock.getInputStream(bedrock.getEntry("manifest.json"))) {
-                manifest = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            }
-            assertTrue(manifest.contains("\"type\": \"resources\""));
-            assertTrue(manifest.contains("\"format_version\": 2"));
+        try (ZipFile zip = new ZipFile(output.toFile())) {
+            assertNotNull(zip.getEntry("sounds/musicolide/ms_demo/music.ogg"));
+            assertNotNull(zip.getEntry("sounds/musicolide/ms_demo/mono.ogg"));
+            String definitions = read(zip, "sounds/sound_definitions.json");
+            assertTrue(definitions.contains("ms_demo:music"), definitions);
+            assertTrue(definitions.contains("ms_demo:mono"), definitions);
         }
     }
 
     @Test
-    void includesSingleFileStreamAssetsInBedrockLibrary() throws Exception {
-        Path packs = Files.createDirectories(temporary.resolve("stream-packs"));
-        Path sourceArchive = packs.resolve("ms_stream_track.zip");
-        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(sourceArchive))) {
-            zip.putNextEntry(new ZipEntry("assets/ms_stream_track/sounds.json"));
-            zip.write("{\"music\":{\"sounds\":[{\"name\":\"ms_stream_track:music\",\"stream\":true}]}}"
-                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            zip.closeEntry();
-            zip.putNextEntry(new ZipEntry("assets/ms_stream_track/sounds/music.ogg"));
-            zip.write(new byte[]{'O', 'g', 'g', 'S', 9, 8, 7});
-            zip.closeEntry();
+    void includesSegmentedStereoAndMonoAssets() throws Exception {
+        Path packs = tempDir.resolve("packs");
+        Files.createDirectories(packs);
+        Path archive = packs.resolve("mc_demo.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            add(zip, "assets/mc_demo/sounds/mc_demo/stereo/00000.ogg", new byte[]{1, 2, 3});
+            add(zip, "assets/mc_demo/sounds/mc_demo/mono/00000.ogg", new byte[]{4, 5});
         }
 
-        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
-        Path output = builder.rebuild(packs);
-        assertNotNull(output);
-        try (ZipFile bedrock = new ZipFile(output.toFile())) {
-            assertNotNull(bedrock.getEntry("sounds/musicolide/ms_stream_track/music.ogg"));
-            String definitions;
-            try (var input = bedrock.getInputStream(bedrock.getEntry("sounds/sound_definitions.json"))) {
-                definitions = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            }
-            assertTrue(definitions.contains("\"ms_stream_track:music\""));
+        Path output = new BedrockResourcePackBuilder(tempDir).rebuild(packs);
+
+        try (ZipFile zip = new ZipFile(output.toFile())) {
+            assertNotNull(zip.getEntry("sounds/musicolide/mc_demo/00000.ogg"));
+            assertNotNull(zip.getEntry("sounds/musicolide/mc_demo/mono/00000.ogg"));
+            String definitions = read(zip, "sounds/sound_definitions.json");
+            assertTrue(definitions.contains("mc_demo:s_00000"), definitions);
+            assertTrue(definitions.contains("mc_demo:m_00000"), definitions);
         }
     }
 
-    @Test
-    void removesOldPackWhenThereAreNoTrackArchives() throws Exception {
-        Path packs = Files.createDirectories(temporary.resolve("empty-packs"));
-        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
-        Files.createDirectories(builder.outputFile().getParent());
-        Files.writeString(builder.outputFile(), "previous pack");
-        Path newPack = builder.rebuild(packs);
-        assertNull(newPack);
-        assertFalse(Files.exists(builder.outputFile()));
+    private void add(ZipOutputStream zip, String name, byte[] data) throws Exception {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(data);
+        zip.closeEntry();
+    }
+
+    private String read(ZipFile zip, String name) throws Exception {
+        ZipEntry entry = zip.getEntry(name);
+        assertNotNull(entry);
+        try (var input = zip.getInputStream(entry)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 }

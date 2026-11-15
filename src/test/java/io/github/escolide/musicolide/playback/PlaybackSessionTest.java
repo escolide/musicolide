@@ -32,6 +32,36 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void audioModeIsSessionScopedAndPartOfQueueIdentity() {
+        UUID listener = UUID.randomUUID();
+        MusicZone zone = MusicZone.global();
+        MusicTrack streamed = new MusicTrack("mode-stream", "Mode stream", "", "ms_mode_stream",
+                "mode-stream.zip", "0000000000000000000000000000000000000000",
+                60000, 60000, 1, 1000);
+        PlaybackSession stereo = new PlaybackSession(UUID.randomUUID(), "tester",
+                zone, false, List.of(listener), List.of(streamed), 0);
+        PlaybackSession mono = new PlaybackSession(UUID.randomUUID(), "tester",
+                zone, false, List.of(listener), List.of(streamed), 0, true);
+
+        assertFalse(stereo.isMono(), "Existing constructor overloads must remain stereo by default.");
+        assertTrue(mono.isMono());
+        assertTrue(stereo.matchesPlaybackAudienceAndZone(false, List.of(listener), zone));
+        assertTrue(mono.matchesPlaybackAudienceAndZone(false, List.of(listener), zone));
+        assertTrue(stereo.matchesPlaybackRequest(false, List.of(listener), zone));
+        assertFalse(stereo.matchesPlaybackRequest(false, List.of(listener), zone, true));
+        assertTrue(mono.matchesPlaybackRequest(false, List.of(listener), zone, true));
+        assertFalse(mono.matchesPlaybackRequest(false, List.of(listener), zone));
+        assertEquals("ms_mode_stream:music", streamed.soundKey(0));
+        assertEquals("ms_mode_stream:mono", streamed.soundKey(0, true));
+
+        MusicTrack segmented = new MusicTrack("mode-segmented", "Mode segmented", "", "mc_mode_segmented",
+                "mode-segmented.zip", "0000000000000000000000000000000000000000",
+                10000, 1000, 10, 1000);
+        assertEquals("mc_mode_segmented:s_00007", segmented.soundKey(7));
+        assertEquals("mc_mode_segmented:m_00007", segmented.soundKey(7, true));
+    }
+
+    @Test
     void onlyAllPlayerGlobalSessionsQualifyAsServerWideDiscordPlayback() {
         MusicTrack track = sampleTrack("discord-scope");
         PlaybackSession globalAll = new PlaybackSession(UUID.randomUUID(), "tester",

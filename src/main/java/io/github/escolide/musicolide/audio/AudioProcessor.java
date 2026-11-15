@@ -15,6 +15,9 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -32,6 +35,9 @@ public final class AudioProcessor implements AutoCloseable {
     private final NativeToolchain toolchain;
     private final ThreadPoolExecutor worker;
     private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightUrlImports =
+            new ConcurrentHashMap<>();
+    private final Set<String> monoVariantsReady = ConcurrentHashMap.newKeySet();
+    private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightMonoVariants =
             new ConcurrentHashMap<>();
 
     public AudioProcessor(JavaPlugin plugin, TrackRepository repository, ResourcePackBuilder packBuilder,
@@ -287,33 +293,40 @@ public final class AudioProcessor implements AutoCloseable {
 
             trackDirectory = data.resolve("tracks").resolve(id);
             Files.createDirectories(trackDirectory);
-            int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            int stereoQuality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            int monoQuality = bounded(plugin.getConfig().getInt("audio.mono-quality", stereoQuality), 0, 10);
             int segmentMs;
             int segmentCount;
             if (segmented) {
-                // Legacy mode: encode independently playable OGG chunks.
+                // Legacy mode: create matching stereo and mono chunks from the same source timestamps.
                 segmentMs = bounded(plugin.getConfig().getInt("audio.segment-duration-ms", 1000), 250, 60000);
                 segmentCount = (int) Math.max(1L, (durationMs + segmentMs - 1L) / segmentMs);
                 Path stereo = trackDirectory.resolve("stereo");
+                Path mono = trackDirectory.resolve("mono");
                 Files.createDirectories(stereo);
+                Files.createDirectories(mono);
                 for (int i = 0; i < segmentCount; i++) {
                     long startMs = (long) i * segmentMs;
                     long lengthMs = Math.min(segmentMs, durationMs - startMs);
-                    runFfmpeg(ffmpeg, source, stereo.resolve(String.format(Locale.ROOT, "%05d.ogg", i)),
-                            startMs / 1000.0, lengthMs / 1000.0, quality);
+                    String segment = String.format(Locale.ROOT, "%05d.ogg", i);
+                    runFfmpeg(ffmpeg, source, stereo.resolve(segment),
+                            startMs / 1000.0, lengthMs / 1000.0, stereoQuality, 2);
+                    runFfmpeg(ffmpeg, source, mono.resolve(segment),
+                            startMs / 1000.0, lengthMs / 1000.0, monoQuality, 1);
                 }
                 generatedPack = packBuilder.build(namespace, trackDirectory, segmentCount, segmentMs);
             } else {
-                // Both continuous and resumable modes start as one streamed OGG.
-                // Resumable mode regenerates a timestamped remainder when resumed.
+                // Both continuous and resumable modes contain one OGG per channel layout.
                 Path streamedAudio = trackDirectory.resolve("music.ogg");
-                runFfmpegStreamed(ffmpeg, source, streamedAudio, quality);
-                // Base the playback clock on the encoded OGG's actual duration.
+                Path monoAudio = trackDirectory.resolve("mono.ogg");
+                runFfmpegStreamed(ffmpeg, source, streamedAudio, stereoQuality, 2);
+                runFfmpegStreamed(ffmpeg, source, monoAudio, monoQuality, 1);
+                // Base the playback clock on the stereo encoding's actual duration.
                 durationMs = probeDuration(ffmpeg, streamedAudio, data);
                 if (durationMs <= 0) throw new IOException("The streamed OGG has an invalid duration.");
                 segmentMs = (int) Math.min(Integer.MAX_VALUE, durationMs);
                 segmentCount = 1;
-                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio);
+                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio, monoAudio);
             }
 
             // Audio files are build intermediates; the finished ZIP is retained.
@@ -344,6 +357,7 @@ public final class AudioProcessor implements AutoCloseable {
             } else {
                 repository.saveTrack(track);
             }
+            monoVariantsReady.add(track.id());
             try {
                 packBuilder.rebuildBedrockLibrary();
             } catch (IOException bedrockError) {
@@ -422,7 +436,165 @@ public final class AudioProcessor implements AutoCloseable {
      * This runs on the audio worker and is not saved to the catalogue or the
      * Bedrock aggregate pack.
      */
+    /**
+     * Ensures an older stereo-only import has a matching one-channel variant.
+     * New imports already contain both variants, so they complete without re-encoding.
+     */
+    public CompletableFuture<MusicTrack> ensureMonoVariant(MusicTrack track) {
+        if (track == null) return CompletableFuture.failedFuture(
+                new IllegalArgumentException("A track is required for mono preparation."));
+        if (monoVariantsReady.contains(track.id())) return CompletableFuture.completedFuture(track);
+        CompletableFuture<MusicTrack> result = new CompletableFuture<>();
+        CompletableFuture<MusicTrack> current = inFlightMonoVariants.putIfAbsent(track.id(), result);
+        if (current != null) return current;
+        try {
+            worker.execute(() -> {
+                try {
+                    MusicTrack prepared = prepareMonoVariant(track);
+                    monoVariantsReady.add(track.id());
+                    result.complete(prepared);
+                } catch (Throwable error) {
+                    result.completeExceptionally(error);
+                } finally {
+                    inFlightMonoVariants.remove(track.id(), result);
+                }
+            });
+        } catch (RejectedExecutionException error) {
+            inFlightMonoVariants.remove(track.id(), result);
+            result.completeExceptionally(new IllegalStateException(
+                    "The Musicolide audio queue is full; mono preparation could not be queued.", error));
+        }
+        return result;
+    }
+
+    private MusicTrack prepareMonoVariant(MusicTrack track) throws Exception {
+        Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+        Path packs = data.resolve("packs").normalize();
+        Path sourcePack = packs.resolve(track.packFileName()).normalize();
+        if (!sourcePack.startsWith(packs) || !Files.isRegularFile(sourcePack)) {
+            throw new IOException("The original track resource pack is missing; mono audio cannot be prepared.");
+        }
+        boolean streamed = track.isStreamed();
+        try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+            boolean complete = true;
+            if (streamed) {
+                ZipEntry monoEntry = zip.getEntry("assets/" + track.namespace() + "/sounds/mono.ogg");
+                complete = monoEntry != null && !monoEntry.isDirectory() && monoEntry.getSize() > 0;
+            } else {
+                for (int i = 0; i < track.segmentCount(); i++) {
+                    String id = String.format(Locale.ROOT, "%05d", i);
+                    ZipEntry monoEntry = zip.getEntry("assets/" + track.namespace() + "/sounds/" + track.namespace()
+                            + "/mono/" + id + ".ogg");
+                    if (monoEntry == null || monoEntry.isDirectory() || monoEntry.getSize() <= 0) {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+            if (complete) {
+                // A complete variant is already represented in the archive. Refresh
+                // only its catalogue checksum if needed; do not publish another pack.
+                return refreshPackMetadata(track, sourcePack);
+            }
+        }
+
+        if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            throw new IllegalStateException("FFmpeg is not ready; mono audio cannot be generated yet.");
+        }
+        Path incoming = data.resolve("incoming");
+        Files.createDirectories(incoming);
+        Path work = Files.createTempDirectory(incoming, ".musicolide-mono-");
+        try {
+            String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
+            int quality = bounded(plugin.getConfig().getInt("audio.mono-quality",
+                    plugin.getConfig().getInt("audio.stereo-quality", 5)), 0, 10);
+            long maximumBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+            Path monoDirectory = work.resolve("mono");
+            Files.createDirectories(monoDirectory);
+            if (streamed) {
+                Path stereo = work.resolve("source.ogg");
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    copyZipEntry(zip, "assets/" + track.namespace() + "/sounds/music.ogg",
+                            stereo, maximumBytes);
+                }
+                runFfmpegRechannel(ffmpeg, stereo, monoDirectory.resolve("mono.ogg"), quality, 1);
+            } else {
+                long extractedBytes = 0L;
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    for (int i = 0; i < track.segmentCount(); i++) {
+                        String id = String.format(Locale.ROOT, "%05d", i);
+                        Path stereo = work.resolve("stereo-" + id + ".ogg");
+                        copyZipEntry(zip, "assets/" + track.namespace() + "/sounds/" + track.namespace()
+                                + "/stereo/" + id + ".ogg", stereo, maximumBytes);
+                        extractedBytes += Files.size(stereo);
+                        if (extractedBytes > maximumBytes) {
+                            throw new IOException("The source track exceeds the configured input-size limit.");
+                        }
+                        runFfmpegRechannel(ffmpeg, stereo, monoDirectory.resolve(id + ".ogg"), quality, 1);
+                    }
+                }
+            }
+            packBuilder.addMonoVariant(track.namespace(), sourcePack, monoDirectory, streamed, track.segmentCount());
+            MusicTrack refreshed = refreshPackMetadata(track, sourcePack);
+            publishAudioVariants();
+            return refreshed;
+        } finally {
+            deleteQuietly(work);
+        }
+    }
+
+    private void copyZipEntry(ZipFile zip, String entryName, Path destination, long maximumBytes)
+            throws IOException {
+        ZipEntry entry = zip.getEntry(entryName);
+        if (entry == null || entry.isDirectory()) {
+            throw new IOException("The stereo source asset is missing: " + entryName);
+        }
+        if (entry.getSize() > maximumBytes) {
+            throw new IOException("The stereo source asset exceeds the configured input-size limit.");
+        }
+        long copied = 0L;
+        try (InputStream input = zip.getInputStream(entry);
+             OutputStream output = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                copied += read;
+                if (copied > maximumBytes) {
+                    throw new IOException("The stereo source asset exceeds the configured input-size limit.");
+                }
+                output.write(buffer, 0, read);
+            }
+        }
+    }
+
+    private MusicTrack refreshPackMetadata(MusicTrack track, Path pack) throws Exception {
+        String checksum = sha1(pack);
+        long size = Files.size(pack);
+        if (checksum.equals(track.sha1Hex()) && size == track.packSizeBytes()) return track;
+        MusicTrack updated = new MusicTrack(track.id(), track.title(), track.artist(), track.namespace(),
+                track.packFileName(), checksum, track.durationMs(), track.segmentMs(),
+                track.segmentCount(), size);
+        repository.updatePackMetadata(track.id(), checksum, size);
+        return updated;
+    }
+
+    private void publishAudioVariants() throws IOException {
+        packBuilder.buildBasePack();
+        try {
+            packBuilder.rebuildBedrockLibrary();
+        } catch (IOException error) {
+            plugin.getLogger().warning("Mono audio is ready for Java, but the Bedrock library could not be refreshed: "
+                    + error.getMessage());
+        }
+    }
+
     public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs) {
+        return createResumeTrack(sourceTrack, startMs, false);
+    }
+
+    /** Generate a mono tail only when the requesting session is mono. */
+    public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs,
+                                                            boolean includeMono) {
         if (sourceTrack == null) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "A source track is required for timestamp-based synchronization."));
@@ -434,7 +606,7 @@ public final class AudioProcessor implements AutoCloseable {
         try {
             return CompletableFuture.supplyAsync(() -> {
                 try {
-                    return processResumeTrack(sourceTrack, startMs);
+                    return processResumeTrack(sourceTrack, startMs, includeMono);
                 } catch (Exception ex) {
                     throw new CompletionException(ex);
                 }
@@ -445,7 +617,8 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private MusicTrack processResumeTrack(MusicTrack sourceTrack, long requestedStartMs) throws Exception {
+    private MusicTrack processResumeTrack(MusicTrack sourceTrack, long requestedStartMs,
+                                          boolean includeMono) throws Exception {
         Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
         Path packs = data.resolve("packs").normalize();
         Path sourcePack = packs.resolve(sourceTrack.packFileName()).normalize();
@@ -464,7 +637,11 @@ public final class AudioProcessor implements AutoCloseable {
         try {
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
             Path remainder = work.resolve("remainder.ogg");
-            int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            Path monoRemainder = includeMono ? work.resolve("mono-remainder.ogg") : null;
+            int stereoQuality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            int monoQuality = includeMono
+                    ? bounded(plugin.getConfig().getInt("audio.mono-quality", stereoQuality), 0, 10)
+                    : stereoQuality;
             if (sourceTrack.isStreamed()) {
                 Path input = work.resolve("source.ogg");
                 String entryName = "assets/" + sourceTrack.namespace() + "/sounds/music.ogg";
@@ -481,7 +658,10 @@ public final class AudioProcessor implements AutoCloseable {
                         Files.copy(stream, input, StandardCopyOption.REPLACE_EXISTING);
                     }
                 }
-                runFfmpegRemainder(ffmpeg, input, remainder, startMs, quality);
+                runFfmpegRemainder(ffmpeg, input, remainder, startMs, stereoQuality, 2);
+                if (includeMono) {
+                    runFfmpegRemainder(ffmpeg, input, monoRemainder, startMs, monoQuality, 1);
+                }
             } else {
                 Path concatList = work.resolve("segments.txt");
                 List<String> entries = new ArrayList<>();
@@ -520,14 +700,21 @@ public final class AudioProcessor implements AutoCloseable {
                 }
                 if (entries.isEmpty()) throw new IOException("The segmented resource pack contains no audio segments.");
                 Files.writeString(concatList, String.join("\n", entries) + "\n", StandardCharsets.UTF_8);
-                runFfmpegSegmentedRemainder(ffmpeg, concatList, remainder, offsetWithinFirstSegmentMs, quality);
+                runFfmpegSegmentedRemainder(ffmpeg, concatList, remainder,
+                        offsetWithinFirstSegmentMs, stereoQuality, 2);
+                if (includeMono) {
+                    runFfmpegSegmentedRemainder(ffmpeg, concatList, monoRemainder,
+                            offsetWithinFirstSegmentMs, monoQuality, 1);
+                }
             }
             long durationMs = probeDuration(ffmpeg, remainder, data);
             if (durationMs <= 0) throw new IOException("FFmpeg produced an empty audio remainder.");
 
             String token = UUID.randomUUID().toString().replace("-", "");
             String namespace = "mr_" + token;
-            outputPack = packBuilder.buildStreamed(namespace, remainder);
+            outputPack = includeMono
+                    ? packBuilder.buildStreamed(namespace, remainder, monoRemainder)
+                    : packBuilder.buildStreamed(namespace, remainder);
             String id = "resume_" + token;
             String checksum = sha1(outputPack);
             int remainderDuration = (int) Math.min(Integer.MAX_VALUE, durationMs);
@@ -542,7 +729,8 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private void runFfmpegRemainder(String executable, Path source, Path output, long startMs, int quality)
+    private void runFfmpegRemainder(String executable, Path source, Path output, long startMs,
+                                    int quality, int channels)
             throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
@@ -551,7 +739,8 @@ public final class AudioProcessor implements AutoCloseable {
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error",
                 "-nostdin", "-y", "-i", source.toString(),
                 "-ss", String.format(Locale.ROOT, "%.3f", startMs / 1000.0),
-                "-vn", "-map", "0:a:0", "-ac", "2", "-ar", Integer.toString(sampleRate),
+                "-map_metadata", "-1", "-map_chapters", "-1", "-vn", "-sn", "-dn",
+                "-map", "0:a:0", "-ac", Integer.toString(channels), "-ar", Integer.toString(sampleRate),
                 "-c:a", "libvorbis", "-q:a", Integer.toString(quality),
                 "-threads", Integer.toString(threads), output.toString())
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -568,14 +757,15 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private void runFfmpegSegmentedRemainder(String executable, Path concatList, Path output,
-                                               long startMs, int quality)
+                                               long startMs, int quality, int channels)
             throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error",
                 "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", concatList.toString(),
                 "-ss", String.format(Locale.ROOT, "%.3f", startMs / 1000.0),
-                "-vn", "-map", "0:a:0", "-ac", "2", "-ar", Integer.toString(sampleRate),
+                "-map_metadata", "-1", "-map_chapters", "-1", "-vn", "-sn", "-dn",
+                "-map", "0:a:0", "-ac", Integer.toString(channels), "-ar", Integer.toString(sampleRate),
                 "-c:a", "libvorbis", "-q:a", Integer.toString(quality),
                 "-threads", Integer.toString(threads), output.toString())
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -613,12 +803,13 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private void runFfmpegStreamed(String executable, Path source, Path output, int quality)
+    private void runFfmpegStreamed(String executable, Path source, Path output, int quality, int channels)
             throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
-                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-i", source.toString(), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", Integer.toString(channels),
                 "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
                 "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
                 output.toString())
@@ -637,13 +828,14 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private void runFfmpeg(String executable, Path source, Path output, double start,
-                           double length, int quality) throws IOException, InterruptedException {
+                           double length, int quality, int channels) throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", String.format(Locale.ROOT, "%.3f", start),
                 "-t", String.format(Locale.ROOT, "%.3f", length),
-                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-i", source.toString(), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", Integer.toString(channels),
                 "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
                 "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
                 output.toString())
@@ -658,6 +850,28 @@ public final class AudioProcessor implements AutoCloseable {
         }
         if (!Files.isRegularFile(output) || Files.size(output) == 0) {
             throw new IOException("FFmpeg completed without producing a valid OGG segment.");
+        }
+    }
+
+    private void runFfmpegRechannel(String executable, Path source, Path output, int quality, int channels)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", source.toString(), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", Integer.toString(channels),
+                "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
+                "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads), output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg mono variant encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing a valid mono OGG.");
         }
     }
 

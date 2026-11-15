@@ -110,18 +110,22 @@ public final class BedrockResourcePackBuilder {
     private SoundAsset toAsset(Path archive, String entryName) {
         String[] parts = entryName.split("/");
         if (parts.length == 4 && parts[0].equals("assets") && parts[2].equals("sounds")
-                && NAMESPACE.matcher(parts[1]).matches() && parts[3].equals("music.ogg")) {
-            return new SoundAsset(archive, entryName, parts[1] + ":music",
-                    "sounds/musicolide/" + parts[1] + "/music.ogg");
+                && NAMESPACE.matcher(parts[1]).matches()
+                && (parts[3].equals("music.ogg") || parts[3].equals("mono.ogg"))) {
+            boolean mono = parts[3].equals("mono.ogg");
+            return new SoundAsset(archive, entryName, parts[1] + (mono ? ":mono" : ":music"),
+                    "sounds/musicolide/" + parts[1] + (mono ? "/mono.ogg" : "/music.ogg"));
         }
 
         if (parts.length != 6 || !parts[0].equals("assets") || !parts[2].equals("sounds")
-                || !parts[1].equals(parts[3]) || !parts[4].equals("stereo")
-                || !NAMESPACE.matcher(parts[1]).matches() || !parts[5].endsWith(".ogg")) return null;
+                || !parts[1].equals(parts[3]) || !NAMESPACE.matcher(parts[1]).matches()
+                || !parts[5].endsWith(".ogg")) return null;
         String segment = parts[5].substring(0, parts[5].length() - 4);
         if (!SEGMENT.matcher(segment).matches()) return null;
-        String soundId = parts[1] + ":s_" + segment;
-        String bedrockPath = "sounds/musicolide/" + parts[1] + "/" + segment + ".ogg";
+        if (!parts[4].equals("stereo") && !parts[4].equals("mono")) return null;
+        boolean mono = parts[4].equals("mono");
+        String soundId = parts[1] + (mono ? ":m_" : ":s_") + segment;
+        String bedrockPath = "sounds/musicolide/" + parts[1] + (mono ? "/mono/" : "/") + segment + ".ogg";
         return new SoundAsset(archive, entryName, soundId, bedrockPath);
     }
 

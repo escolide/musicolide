@@ -509,7 +509,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <track-id, title, YouTube URL or search query> [--target selector] [--id custom_id] [--circle radius|--square WxL|--region id] [--mode mono|stereo]"));
+            sender.sendMessage(msg("&eUsage: /play <track-id, title, YouTube URL or search query> [@a/@p/@s/player] [--target selector] [--id custom_id] [--circle radius/--square WxL/--region id] [--mode mono/stereo]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -893,6 +893,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         boolean circle = false;
         boolean square = false;
         boolean fadeEnabled = false;
+        boolean fadeSpecified = false;
         double fade = 0;
         String customId = null;
         String audioMode = "stereo";
@@ -934,6 +935,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 }
                 case "--fade" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--fade requires a distance.");
+                    fadeSpecified = true;
                     fade = Double.parseDouble(args[i]);
                     fadeEnabled = fade > 0;
                     if (fadeEnabled && !circle && !square && region == null) circle = true;
@@ -954,6 +956,18 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     selector = args[i];
                 }
             }
+        }
+
+        // Mono has a default outer attenuation band for geometries where distance
+        // from the zone edge is well-defined. An explicit --fade (including 0)
+        // always overrides this default. WorldGuard polygon regions do not expose
+        // a reliable edge-distance here, so their boundary remains hard.
+        if (audioMode.equals("mono") && (circle || square) && !fadeSpecified) {
+            fade = plugin.getConfig().getDouble("playback.mono.fade-distance", 10.0);
+            fadeEnabled = fade > 0;
+        }
+        if (region != null && fadeEnabled) {
+            throw new IllegalArgumentException("Distance fade is supported for circle and square zones, not WorldGuard regions.");
         }
 
         boolean spatialOption = circle || square || region != null || fadeEnabled;
@@ -1035,16 +1049,41 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void start(CommandSender sender, MusicTrack track, PlayRequest request) {
-        if ("mono".equalsIgnoreCase(request.audioMode)) {
-            sender.sendMessage(msg("&eMono mode is reserved for a future audio mode; playback currently remains stereo."));
+        boolean mono = "mono".equalsIgnoreCase(request.audioMode);
+        UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
+        Optional<Boolean> activeMode = playback.activeSessionMono(owner, sender.getName(),
+                request.zone, request.all, request.listeners);
+        if (activeMode.isPresent() && activeMode.get() != mono) {
+            sender.sendMessage(msg("&cAn active session for this target and zone is already using "
+                    + (activeMode.get() ? "mono" : "stereo") + ". Stop it before switching audio modes."));
+            return;
         }
+        if (mono) {
+            sender.sendMessage(msg("&ePreparing mono audio for &f" + track.title() + "&e."));
+            processor.ensureMonoVariant(track).whenComplete((readyTrack, error) ->
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (sender instanceof Player player && !player.isOnline()) return;
+                        if (error != null) {
+                            sender.sendMessage(msg("&cMono audio could not be prepared: " + rootMessage(error)));
+                            return;
+                        }
+                        startPrepared(sender, readyTrack, request, true);
+                    }));
+            return;
+        }
+        startPrepared(sender, track, request, false);
+    }
+
+    private void startPrepared(CommandSender sender, MusicTrack track, PlayRequest request, boolean mono) {
         UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
         PlaybackEngine.PlayDisposition disposition = playback.playOrQueue(owner, sender.getName(),
-                request.zone, request.all, request.listeners, track, request.priority);
+                request.zone, request.all, request.listeners, track, request.priority, mono);
+        String mode = mono ? " &7(mono)" : "";
         switch (disposition) {
-            case STARTED -> sender.sendMessage(msg("&aStarted &f" + track.title() + "."));
-            case QUEUED -> sender.sendMessage(msg("&aAdded &f" + track.title() + " &ato your current playback queue."));
+            case STARTED -> sender.sendMessage(msg("&aStarted &f" + track.title() + mode + "."));
+            case QUEUED -> sender.sendMessage(msg("&aAdded &f" + track.title() + mode + " &ato your current playback queue."));
             case QUEUE_FULL -> sender.sendMessage(msg("&cYour playback queue is full. The new track was not added."));
+            case MODE_MISMATCH -> sender.sendMessage(msg("&cAn active session for this target and zone uses another audio mode. Stop it before switching modes."));
         }
     }
 
@@ -1238,7 +1277,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void playlist(CommandSender sender, String[] args) throws SQLException {
         if (!plugin.getConfig().getBoolean("playlists.enabled", true)) throw new IllegalArgumentException("Playlists are disabled.");
-        if (args.length < 2) throw new IllegalArgumentException("Usage: /music playlist <create|add|list|play> ...");
+        if (args.length < 2) throw new IllegalArgumentException("Usage: /music playlist <create/add/list/play> ...");
         switch (args[1].toLowerCase(Locale.ROOT)) {
             case "create" -> {
                 if (!dj(sender)) return;
@@ -1348,12 +1387,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music page <2-" + configuredSearchMaxPages() + "> &7- load the next six results only when requested"));
         sender.sendMessage(msg("&f/music import <file> [title] [--id id] &7- set a stable custom track ID/name"));
         sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] [--id id] &7- import with a custom ID/name"));
-        sender.sendMessage(msg("&f/play <track, query or URL> [--target selector] [--id custom_id] [--circle r|--square WxL|--region id] [--mode mono|stereo] [--fade n]"));
-        sender.sendMessage(msg("&7Spatial play/search defaults to @a inside the zone; without a zone it defaults to @s."));
+        sender.sendMessage(msg("&f/play <track, query or URL> [@a/@p/@s/player] [--target selector] [--id custom_id] [--circle r/--square WxL/--region id] [--mode mono/stereo] [--fade n]"));
+        sender.sendMessage(msg("&7Stereo is the default. Mono uses one-channel audio; circle/square mono zones fade over 10 blocks by default (set playback.mono.fade-distance or override with --fade)."));
+        sender.sendMessage(msg("&7Spatial play/search defaults to @a inside the zone; without a zone it defaults to @s. WorldGuard regions do not support distance fade."));
         sender.sendMessage(msg("&f/music search <query> [target] [zone options] &7- search with the same zone/target options"));
-        sender.sendMessage(msg("&f/music pause|resume|skip|stop|queue <track>"));
-        sender.sendMessage(msg("&f/music playlist create|add|list|play ..."));
-        sender.sendMessage(msg("&f/music volume <0-100>|speed <0.5-2.0>|mute|unmute|seek <seconds>|nowplaying"));
+        sender.sendMessage(msg("&f/music pause/resume/skip/stop/queue <track>"));
+        sender.sendMessage(msg("&f/music playlist create/add/list/play ..."));
+        sender.sendMessage(msg("&f/music volume <0-100>/speed <0.5-2.0>/mute/unmute/seek <seconds>/nowplaying"));
         sender.sendMessage(msg("&f/music sync &7- re-synchronize your own audio with the active session"));
         sender.sendMessage(msg("&f/music sync <seconds> &7- set the shared sync offset (admin)"));
         sender.sendMessage(msg("&f/music alias add <url> <track-id> &7- map a URL to local audio"));

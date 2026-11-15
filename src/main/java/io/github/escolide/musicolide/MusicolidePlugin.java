@@ -170,6 +170,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("audio.yt-dlp.search.max-pages", 4);
             migratedConfig = true;
         }
+        if (!getConfig().contains("audio.mono-quality")) {
+            getConfig().set("audio.mono-quality", getConfig().getInt("audio.stereo-quality", 5));
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("playback.mono.fade-distance")) {
+            getConfig().set("playback.mono.fade-distance", 10.0);
+            migratedConfig = true;
+        }
         if (migratedConfig) saveConfig();
         try {
             Path data = getDataFolder().toPath();

@@ -63,6 +63,80 @@ class ResourcePackBuilderTest {
         }
     }
 
+    @Test
+    void createsStreamedStereoAndMonoAssetsWithSeparateSoundEvents() throws Exception {
+        Path stereo = tempDir.resolve("streamed-stereo.ogg");
+        Path mono = tempDir.resolve("streamed-mono.ogg");
+        Files.write(stereo, new byte[]{1, 2, 3});
+        Files.write(mono, new byte[]{4, 5});
+        ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
+                ResourcePackFormat.forMinecraftVersion("1.21.1"));
+        Path pack = builder.buildStreamed("ms_demo", stereo, mono);
+
+        try (ZipFile zip = new ZipFile(pack.toFile())) {
+            assertNotNull(zip.getEntry("assets/ms_demo/sounds/music.ogg"));
+            assertNotNull(zip.getEntry("assets/ms_demo/sounds/mono.ogg"));
+            String sounds = readSoundDefinitions(zip, "ms_demo");
+            assertTrue(sounds.contains("music"), sounds);
+            assertTrue(sounds.contains("mono"), sounds);
+            assertTrue(sounds.contains("ms_demo:music"), sounds);
+            assertTrue(sounds.contains("ms_demo:mono"), sounds);
+        }
+    }
+
+    @Test
+    void createsSegmentedStereoAndMonoAssetsWithDistinctSoundKeys() throws Exception {
+        Path track = tempDir.resolve("dual-segmented");
+        Files.createDirectories(track.resolve("stereo"));
+        Files.createDirectories(track.resolve("mono"));
+        Files.write(track.resolve("stereo/00000.ogg"), new byte[]{1, 2, 3});
+        Files.write(track.resolve("mono/00000.ogg"), new byte[]{4, 5});
+        ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
+                ResourcePackFormat.forMinecraftVersion("1.21.1"));
+        Path pack = builder.build("mc_dual", track, 1, 1000);
+
+        try (ZipFile zip = new ZipFile(pack.toFile())) {
+            assertNotNull(zip.getEntry("assets/mc_dual/sounds/mc_dual/stereo/00000.ogg"));
+            assertNotNull(zip.getEntry("assets/mc_dual/sounds/mc_dual/mono/00000.ogg"));
+            String sounds = readSoundDefinitions(zip, "mc_dual");
+            assertTrue(sounds.contains("s_00000"), sounds);
+            assertTrue(sounds.contains("m_00000"), sounds);
+            assertTrue(sounds.contains("mc_dual:mc_dual/mono/00000"), sounds);
+        }
+    }
+
+    @Test
+    void canAddMonoAssetsToAnOlderStereoOnlyArchiveWithoutDroppingExistingFiles() throws Exception {
+        Path track = tempDir.resolve("legacy-segmented");
+        Files.createDirectories(track.resolve("stereo"));
+        Files.write(track.resolve("stereo/00000.ogg"), new byte[]{1, 2, 3});
+        ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
+                ResourcePackFormat.forMinecraftVersion("1.21.1"));
+        Path pack = builder.build("mc_legacy", track, 1, 1000);
+        Path mono = tempDir.resolve("legacy-mono");
+        Files.createDirectories(mono);
+        Files.write(mono.resolve("00000.ogg"), new byte[]{7, 8, 9});
+
+        builder.addMonoVariant("mc_legacy", pack, mono, false, 1);
+
+        try (ZipFile zip = new ZipFile(pack.toFile())) {
+            assertNotNull(zip.getEntry("pack.mcmeta"));
+            assertNotNull(zip.getEntry("assets/mc_legacy/sounds/mc_legacy/stereo/00000.ogg"));
+            assertNotNull(zip.getEntry("assets/mc_legacy/sounds/mc_legacy/mono/00000.ogg"));
+            String sounds = readSoundDefinitions(zip, "mc_legacy");
+            assertTrue(sounds.contains("s_00000"), sounds);
+            assertTrue(sounds.contains("m_00000"), sounds);
+        }
+    }
+
+    private String readSoundDefinitions(ZipFile zip, String namespace) throws Exception {
+        ZipEntry entry = zip.getEntry("assets/" + namespace + "/sounds.json");
+        assertNotNull(entry);
+        try (InputStream input = zip.getInputStream(entry)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     private Path buildPack(String serverVersion) throws Exception {
         Path track = tempDir.resolve("track-" + serverVersion.replaceAll("[^A-Za-z0-9]", "_"));
         Files.createDirectories(track.resolve("stereo"));

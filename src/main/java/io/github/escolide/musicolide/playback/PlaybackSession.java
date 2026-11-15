@@ -13,6 +13,7 @@ public final class PlaybackSession {
     private final MusicZone zone;
     private final Set<UUID> explicitListeners;
     private final boolean allPlayers;
+    private final boolean monoAudio;
     private final Deque<MusicTrack> queue = new ArrayDeque<>();
     private final List<MusicTrack> repeatSource;
     private MusicTrack current;
@@ -34,10 +35,17 @@ public final class PlaybackSession {
 
     public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
                            Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority) {
+        this(owner, ownerName, zone, allPlayers, listeners, tracks, priority, false);
+    }
+
+    public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
+                           Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority,
+                           boolean monoAudio) {
         this.owner = owner;
         this.ownerName = ownerName;
         this.zone = zone;
         this.allPlayers = allPlayers;
+        this.monoAudio = monoAudio;
         this.explicitListeners = new HashSet<>(listeners);
         this.queue.addAll(tracks);
         this.repeatSource = List.copyOf(tracks);
@@ -51,6 +59,7 @@ public final class PlaybackSession {
     public String ownerName() { return ownerName; }
     public long startedAt() { return startedAt; }
     public MusicZone zone() { return zone; }
+    public boolean isMono() { return monoAudio; }
     /** True only for sessions explicitly addressed to all players in the global zone. */
     public boolean isServerWideGlobalSession() {
         return allPlayers && zone.shape() == MusicZone.Shape.GLOBAL;
@@ -99,10 +108,24 @@ public final class PlaybackSession {
     public synchronized boolean matchesPlaybackRequest(boolean requestedAllPlayers,
                                                        Collection<UUID> requestedListeners,
                                                        MusicZone requestedZone) {
+        return matchesPlaybackRequest(requestedAllPlayers, requestedListeners, requestedZone, false);
+    }
+
+    public synchronized boolean matchesPlaybackAudienceAndZone(boolean requestedAllPlayers,
+                                                                 Collection<UUID> requestedListeners,
+                                                                 MusicZone requestedZone) {
         Set<UUID> listeners = new HashSet<>(requestedListeners == null ? List.of() : requestedListeners);
         return allPlayers == requestedAllPlayers
                 && explicitListeners.equals(listeners)
                 && zone.sameAs(requestedZone);
+    }
+
+    public synchronized boolean matchesPlaybackRequest(boolean requestedAllPlayers,
+                                                       Collection<UUID> requestedListeners,
+                                                       MusicZone requestedZone,
+                                                       boolean requestedMono) {
+        return matchesPlaybackAudienceAndZone(requestedAllPlayers, requestedListeners, requestedZone)
+                && monoAudio == requestedMono;
     }
 
     public synchronized boolean referencesTrack(String trackId) {
