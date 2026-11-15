@@ -375,6 +375,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
             return;
         }
+        if (YtDlpDownloader.isYouTubePlaylistUrl(args[1])) {
+            throw new IllegalArgumentException("The admin single-track importer does not accept playlist URLs. Use /play with audio.yt-dlp.allow-playlists enabled.");
+        }
         String customId = optionValue(args, 3, "--id");
         String title = joinWithoutOption(args, 3, "--id");
         // Reusing a previously imported URL is a catalogue lookup, not a new download.
@@ -556,6 +559,51 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
                 input, parsed.customId, parsed.audioMode);
+
+        if (YtDlpDownloader.isYouTubePlaylistUrl(rawInput)) {
+            if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
+                sender.sendMessage(msg("&cYouTube playlist URLs are disabled by the server administrator."));
+                sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.allow-playlists and set audio.yt-dlp.max-playlist-items in config.yml."));
+                return;
+            }
+            if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)
+                    || !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+                sender.sendMessage(msg("&cYouTube playlist importing requires audio.yt-dlp.enabled and audio.yt-dlp.auto-import-on-play."));
+                return;
+            }
+            if (request.customId != null && !request.customId.isBlank()) {
+                sender.sendMessage(msg("&cA custom track ID cannot be applied to a multi-track playlist import."));
+                return;
+            }
+            if (!admitHeavyRequest(sender, "import",
+                    "audio.processing.import-cooldown-seconds", 10,
+                    "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
+
+            int maximumItems = Math.max(1, Math.min(20,
+                    plugin.getConfig().getInt("audio.yt-dlp.max-playlist-items", 10)));
+            sender.sendMessage(msg("&eImporting up to &f" + maximumItems
+                    + " &eauthorized YouTube playlist tracks. Downloads and audio processing run one at a time."));
+            processor.importPlaylistUrl(rawInput).whenComplete((result, error) ->
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (error != null) {
+                            sender.sendMessage(msg("&cYouTube playlist import failed: " + rootMessage(error)));
+                            return;
+                        }
+                        String summary = "&aPlaylist ready: &f" + result.tracks().size()
+                                + " &atrack(s) imported or reused.";
+                        if (result.failedEntries() > 0) {
+                            summary += " &eSkipped: &f" + result.failedEntries() + ".";
+                        }
+                        if (result.truncated()) {
+                            summary += " &7The source playlist exceeds the configured item limit ("
+                                    + maximumItems + "); only the first allowed entries were considered.";
+                        }
+                        sender.sendMessage(msg(summary));
+                        startImportedPlaylist(sender, result.tracks(), request);
+                    }));
+            return;
+        }
+
         Optional<MusicTrack> track = resolvePlayTrack(rawInput, input);
         if (track.isPresent()) {
             offerMatch(sender, track.get(), request, isExternal(rawInput) ? -1.0 : 1.0);
@@ -1119,6 +1167,30 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
         startPrepared(sender, track, request, false);
+    }
+
+    private void startImportedPlaylist(CommandSender sender, List<MusicTrack> tracks, PlayRequest request) {
+        if (tracks == null || tracks.isEmpty()) return;
+        boolean mono = "mono".equalsIgnoreCase(request.audioMode);
+        if (!mono) {
+            for (MusicTrack track : tracks) startPrepared(sender, track, request, false);
+            return;
+        }
+
+        List<MusicTrack> prepared = new ArrayList<>();
+        CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+        for (MusicTrack track : tracks) {
+            chain = chain.thenCompose(ignored ->
+                    processor.ensureMonoVariant(track).thenAccept(prepared::add));
+        }
+        chain.whenComplete((ignored, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (sender instanceof Player player && !player.isOnline()) return;
+            if (error != null) {
+                sender.sendMessage(msg("&cCould not prepare the mono playlist: " + rootMessage(error)));
+                return;
+            }
+            for (MusicTrack track : prepared) startPrepared(sender, track, request, true);
+        }));
     }
 
     private void startPrepared(CommandSender sender, MusicTrack track, PlayRequest request, boolean mono) {
