@@ -245,7 +245,7 @@ public final class PlaybackEngine {
             discordSnapshot = Optional.of(new DiscordPlaybackSnapshot(
                     selected.id(), selected.timelineGeneration(), selected.current(),
                     selected.elapsedMs(), selected.paused(), selected.resumePreparing(),
-                    selected.clockStarted(), selected.speed()));
+                    selected.clockStarted(), selected.speed(), selected.isMono()));
         }
     }
 

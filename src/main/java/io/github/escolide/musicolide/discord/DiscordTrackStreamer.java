@@ -99,7 +99,7 @@ final class DiscordTrackStreamer implements AutoCloseable {
             }
             Files.createDirectories(temporaryDirectory);
             workDirectory = Files.createTempDirectory(temporaryDirectory, "track-");
-            Path input = prepareInput(initial.track(), workDirectory);
+            Path input = prepareInput(initial.track(), initial.mono(), workDirectory);
 
             Optional<DiscordPlaybackSnapshot> refreshed = latestSnapshot.get();
             if (refreshed.isEmpty() || !sameTimeline(initial, refreshed.get())
@@ -176,7 +176,7 @@ final class DiscordTrackStreamer implements AutoCloseable {
         }
     }
 
-    private Path prepareInput(MusicTrack track, Path workDirectory) throws IOException {
+    private Path prepareInput(MusicTrack track, boolean mono, Path workDirectory) throws IOException {
         if (track == null || !SAFE_NAMESPACE.matcher(track.namespace()).matches()) {
             throw new IOException("The active track metadata is invalid.");
         }
@@ -192,7 +192,8 @@ final class DiscordTrackStreamer implements AutoCloseable {
 
         try (ZipFile zip = new ZipFile(archive.toFile())) {
             if (track.isStreamed()) {
-                String entryName = "assets/" + track.namespace() + "/sounds/music.ogg";
+                String entryName = "assets/" + track.namespace() + "/sounds/"
+                        + (mono ? "mono.ogg" : "music.ogg");
                 Path output = workDirectory.resolve("music.ogg");
                 extract(zip, entryName, output, 0L);
                 return output;
@@ -207,7 +208,8 @@ final class DiscordTrackStreamer implements AutoCloseable {
             for (int index = 0; index < count; index++) {
                 String segment = String.format(Locale.ROOT, "%05d", index);
                 String entryName = "assets/" + track.namespace() + "/sounds/"
-                        + track.namespace() + "/stereo/" + segment + ".ogg";
+                        + track.namespace() + "/" + (mono ? "mono" : "stereo")
+                        + "/" + segment + ".ogg";
                 Path output = workDirectory.resolve("segment-" + segment + ".ogg");
                 extracted = extract(zip, entryName, output, extracted);
                 concat.append("file '").append(escapeConcatPath(output.toAbsolutePath().toString()))

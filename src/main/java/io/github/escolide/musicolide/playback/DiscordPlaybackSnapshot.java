@@ -17,7 +17,8 @@ public record DiscordPlaybackSnapshot(
         boolean paused,
         boolean preparing,
         boolean clockStarted,
-        double speed
+        double speed,
+        boolean mono
 ) {
     public boolean isAudible() {
         return track != null && clockStarted && !paused && !preparing;
