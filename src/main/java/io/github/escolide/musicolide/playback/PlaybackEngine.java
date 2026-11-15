@@ -827,7 +827,7 @@ public final class PlaybackEngine {
             if (candidate != null && !isPlayerMuted(player)
                     && (geyser == null || !geyser.isBedrockPlayer(player.getUniqueId()))) {
                 int prefetch = Math.max(0, plugin.getConfig().getInt(
-                        "resource-packs.prefetch.tracks-ahead", 4));
+                        "resource-packs.prefetch.tracks-ahead", 2));
                 MusicTrack playingTrack = candidate.session.playbackTrack();
                 boolean alreadyPlaying = isAlreadyPlayingTrack(player, candidate.session, playingTrack);
                 // A resumed tail is a private, disposable pack. It may have been
