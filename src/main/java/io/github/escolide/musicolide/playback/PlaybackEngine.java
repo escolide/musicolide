@@ -294,22 +294,28 @@ public final class PlaybackEngine {
             }
             case "resume" -> session.resume();
             case "skip" -> {
-                MusicTrack previous = session.playbackTrack();
-                if (session.owner() != null && previous != null) lastPlayedByOwner.put(session.owner(), previous);
+                MusicTrack playedTrack = session.current();
+                MusicTrack previousPlaybackTrack = session.playbackTrack();
+                if (session.owner() != null && playedTrack != null) {
+                    lastPlayedByOwner.put(session.owner(), playedTrack);
+                }
                 stopPlayersInSession(session);
                 session.advance();
                 if (session.owner() != null && session.current() != null) {
                     lastPlayedByOwner.put(session.owner(), session.current());
                 }
-                releaseGeneratedTrack(previous);
+                releaseGeneratedTrack(previousPlaybackTrack);
                 if (session.isEmpty()) sessions.remove(session);
             }
             case "stop" -> {
-                MusicTrack previous = session.playbackTrack();
-                if (session.owner() != null && previous != null) lastPlayedByOwner.put(session.owner(), previous);
+                MusicTrack playedTrack = session.current();
+                MusicTrack previousPlaybackTrack = session.playbackTrack();
+                if (session.owner() != null && playedTrack != null) {
+                    lastPlayedByOwner.put(session.owner(), playedTrack);
+                }
                 sessions.remove(session);
                 stopPlayersInSession(session);
-                releaseGeneratedTrack(previous);
+                releaseGeneratedTrack(previousPlaybackTrack);
                 session.cancelResumePreparation();
             }
             default -> { return false; }
@@ -780,15 +786,16 @@ public final class PlaybackEngine {
         synchronized (this) {
             for (PlaybackSession session : sessions) {
                 if (session.finished()) {
-                    MusicTrack previous = session.playbackTrack();
-                    if (session.owner() != null && previous != null) {
-                        lastPlayedByOwner.put(session.owner(), previous);
+                    MusicTrack playedTrack = session.current();
+                    MusicTrack previousPlaybackTrack = session.playbackTrack();
+                    if (session.owner() != null && playedTrack != null) {
+                        lastPlayedByOwner.put(session.owner(), playedTrack);
                     }
                     session.advance();
                     if (session.owner() != null && session.current() != null) {
                         lastPlayedByOwner.put(session.owner(), session.current());
                     }
-                    releaseGeneratedTrack(previous);
+                    releaseGeneratedTrack(previousPlaybackTrack);
                 }
             }
             sessions.removeIf(PlaybackSession::isEmpty);
