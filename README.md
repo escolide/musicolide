@@ -107,6 +107,8 @@ discord:
     otp-global-attempts-per-minute: 30
     link-code-cooldown-seconds: 30
     global-link-code-cooldown-seconds: 1
+    playlist-play-cooldown-seconds: 30
+    global-playlist-play-cooldown-seconds: 2
 ```
 
 Keep the real token private. Do not commit it to a repository or share it in logs/screenshots. The bot needs only **View Channel**, **Connect**, and **Speak** in the configured voice channel, plus the normal application-command integration and access to DMs for account pairing. Do not grant the bot Administrator, Manage Server, Manage Roles, Manage Messages, Kick Members, Ban Members or other moderation permissions. Musicolide's Discord code does not implement moderation actions or arbitrary Bukkit command dispatch; its gateway intents are limited to voice states and direct messages; it does not request guild-message, guild-member or message-content intents. Slash commands are registered only in trusted guilds: `allowed-guild-ids` takes precedence and supports an explicit multi-guild allowlist; otherwise `guild-id` is used, then the guild containing `voice-channel-id`. The bot refuses global slash-command registration when no trusted guild can be resolved. Restart the Minecraft server after changing the bot token or voice channel. The runtime bootstrap/download occurs on a background thread.
