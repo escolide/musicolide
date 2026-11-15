@@ -1303,8 +1303,16 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
 
         boolean spatialOption = circle || square || region != null || fadeEnabled || centeredMono;
+        boolean hasAdmin = sender.hasPermission(plugin.getConfig().getString(
+                "permissions.admin", "musicolide.admin"));
+        boolean allowSelfZones = plugin.getConfig().getBoolean("permissions.allow-player-self-zones", true);
+        boolean allowAllTargets = plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
         if (selector == null) {
-            selector = PlayTargetDefaults.defaultSelector(sender instanceof Player, spatialOption);
+            if (sender instanceof Player && spatialOption && !hasAdmin && allowSelfZones) {
+                selector = "@s";
+            } else {
+                selector = PlayTargetDefaults.defaultSelector(sender instanceof Player, spatialOption);
+            }
         }
 
         boolean all = selector.equalsIgnoreCase("@a");
@@ -1336,12 +1344,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         boolean isSelfTarget = sender instanceof Player source && !all && !targets.isEmpty()
                 && targets.get(0).getUniqueId().equals(source.getUniqueId());
-        boolean hasAdmin = sender.hasPermission(plugin.getConfig().getString(
-                "permissions.admin", "musicolide.admin"));
-        boolean allowSelfZones = plugin.getConfig().getBoolean("permissions.allow-player-self-zones", true);
-        boolean allowAllTargets = plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
-        if (!(sender instanceof Player)) {
-            throw new IllegalArgumentException("Playback commands must be run by an in-game player.");
+        if (!(sender instanceof Player) && !hasAdmin) {
+            throw new IllegalArgumentException("Console requires the Musicolide admin permission.");
+        }
+        if (spatialOption && !(sender instanceof Player)) {
+            throw new IllegalArgumentException("Spatial zones require an in-game player so Musicolide can use the execution location as their center.");
         }
         if (!hasAdmin && all && !allowAllTargets) {
             throw new IllegalArgumentException("Using target:@a requires the Musicolide admin permission.");
