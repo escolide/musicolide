@@ -204,6 +204,9 @@ resource-packs:
   # Minimum delay between a player's explicit /music download requests.
   # Playback-triggered pack delivery is not subject to this manual-command cooldown.
   request-cooldown-seconds: 30
+  # Server-wide spacing between explicit /music download requests.
+  # Playback-triggered pack delivery is never subject to this manual cooldown.
+  global-request-cooldown-seconds: 1
   prefetch:
     enabled: true
     # Keep up to two temporary playback packs ahead of the current track.
