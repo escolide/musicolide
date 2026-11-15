@@ -9,6 +9,7 @@ import moe.kyokobot.libdave.NativeDaveFactory;
 import moe.kyokobot.libdave.jda.LDJDADaveSessionFactory;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.OnlineStatus;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.audio.AudioModuleConfig;
 import net.dv8tion.jda.api.audio.hooks.ConnectionStatus;
@@ -66,6 +67,7 @@ public final class DiscordBroadcastService implements AutoCloseable {
     private long lastPresenceUpdateNanos;
     private String lastPresenceText = "";
     private String lastPresenceIdentity = "";
+    private OnlineStatus lastPresenceStatus = null;
 
     public DiscordBroadcastService(org.bukkit.plugin.java.JavaPlugin plugin,
                                    PlaybackEngine playback, NativeToolchain toolchain,
@@ -317,50 +319,57 @@ public final class DiscordBroadcastService implements AutoCloseable {
         }
     }
 
+    /**
+     * Updates Discord profile metadata only. This method does not touch the
+     * voice connection, audio sender, decoder, or Minecraft playback engine.
+     */
     private void updatePresence(JDA client, Optional<DiscordPlaybackSnapshot> selected) {
-        if (!plugin.getConfig().getBoolean("discord.presence.enabled", true)) {
-            if (!lastPresenceText.isEmpty()) {
-                client.getPresence().setActivity(null);
-                lastPresenceText = "";
-                lastPresenceIdentity = "";
-                lastPresenceUpdateNanos = System.nanoTime();
-            }
-            return;
+        boolean enabled = plugin.getConfig().getBoolean("discord.presence.enabled", true);
+        DiscordPlaybackSnapshot snapshot = selected
+                .filter(value -> value.track() != null && value.isAudible())
+                .orElse(null);
+        boolean activelyPlaying = enabled && snapshot != null;
+        OnlineStatus desiredStatus = activelyPlaying ? OnlineStatus.ONLINE : OnlineStatus.IDLE;
+
+        if (!enabled) {
+            // If presence updates are disabled, clear our activity and leave the
+            // bot in a predictable online state rather than retaining stale metadata.
+            desiredStatus = OnlineStatus.ONLINE;
         }
+
         long now = System.nanoTime();
         long intervalSeconds = Math.max(15L,
                 plugin.getConfig().getLong("discord.presence.update-interval-seconds", 15L));
-        String identity = selected.filter(snapshot -> snapshot.track() != null)
-                .map(snapshot -> snapshot.sessionId() + ":" + snapshot.track().id()
-                        + ":" + snapshot.paused() + ":" + snapshot.preparing()
-                        + ":" + snapshot.clockStarted())
-                .orElse("idle");
-        boolean stateChanged = !identity.equals(lastPresenceIdentity);
+        String identity = activelyPlaying
+                ? snapshot.sessionId() + ":" + snapshot.track().id()
+                : "idle";
+        boolean stateChanged = !identity.equals(lastPresenceIdentity)
+                || desiredStatus != lastPresenceStatus;
         if (!stateChanged && now - lastPresenceUpdateNanos < TimeUnit.SECONDS.toNanos(intervalSeconds)) return;
 
-        String text;
-        if (selected.isPresent() && selected.get().track() != null) {
-            DiscordPlaybackSnapshot snapshot = selected.get();
+        String activityText = "";
+        if (activelyPlaying) {
             String template = plugin.getConfig().getString(
-                    "discord.presence.template", "{title} • {elapsed}");
-            text = template
+                    "discord.presence.template", "🎵 {title} • {elapsed}");
+            activityText = template
                     .replace("{title}", snapshot.track().title() == null ? "Unknown" : snapshot.track().title())
                     .replace("{artist}", snapshot.track().artist() == null ? "" : snapshot.track().artist())
                     .replace("{elapsed}", formatPresenceTime(snapshot.elapsedMs()))
                     .replace("{duration}", formatPresenceTime(snapshot.track().durationMs()))
-                    .replace("{state}", snapshot.paused() ? "Paused"
-                            : snapshot.preparing() ? "Preparing" : snapshot.isAudible() ? "Playing" : "Waiting");
-        } else {
-            text = plugin.getConfig().getString("discord.presence.idle-text", "").trim();
+                    .replace("{state}", "Playing")
+                    .trim();
+            if (activityText.length() > 128) activityText = activityText.substring(0, 127) + "…";
         }
-        if (text.length() > 128) text = text.substring(0, 127) + "…";
-        if (text.equals(lastPresenceText)) {
-            lastPresenceIdentity = identity;
-            lastPresenceUpdateNanos = now;
-            return;
+
+        if (!activityText.equals(lastPresenceText) || stateChanged) {
+            client.getPresence().setActivity(activityText.isBlank()
+                    ? null : Activity.playing(activityText));
+            lastPresenceText = activityText;
         }
-        client.getPresence().setActivity(text.isBlank() ? null : Activity.listening(text));
-        lastPresenceText = text;
+        if (desiredStatus != lastPresenceStatus) {
+            client.getPresence().setStatus(desiredStatus);
+            lastPresenceStatus = desiredStatus;
+        }
         lastPresenceIdentity = identity;
         lastPresenceUpdateNanos = now;
     }
