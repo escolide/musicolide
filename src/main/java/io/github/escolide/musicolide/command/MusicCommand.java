@@ -2061,14 +2061,16 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/play <track> @a &8- &7play for everyone (admin)"));
         sender.sendMessage(msg("&f/music pause &8• &fresume &8• &fskip &8• &fstop &8• &fqueue"));
         sender.sendMessage(msg("&f/music nowplaying &8• &fprogress &8• &fvolume <0-100> &8• &fspeed <0.5-2>"));
-        sender.sendMessage(msg("&f/music mute &8• &funmute &8• &fseek <seconds> &8• &fsync"));
+        sender.sendMessage(msg("&f/music mute &8• &funmute [player] &8• &f/deafen &8• &f/undeafen"));
+        sender.sendMessage(msg("&f/music speed <0.5-2> &8- &7sets a personal default when no session is active"));
         sender.sendMessage(msg("&dLIBRARY &8| &7Search and manage audio"));
         sender.sendMessage(msg("&f/music list [query] &8- &7browse tracks and their short TrackIDs"));
         sender.sendMessage(msg("&f/music search <song/artist> &8- &7search local library and YouTube metadata"));
         sender.sendMessage(msg("&f/music select <number> &8- &7save the selected result permanently, then play"));
         sender.sendMessage(msg("&f/music page <number> &8- &7load the next result page"));
-        sender.sendMessage(msg("&f/music save <TrackID> &8- &7keep a temporary track permanently (DJ/admin)"));
+        sender.sendMessage(msg("&f/music save [TrackID] &8- &7save a temporary track, or your current/recent track when omitted"));
         sender.sendMessage(msg("&f/music delete <TrackID> &8- &7delete a track and its saved files (admin)"));
+        sender.sendMessage(msg("&f/music clear &8- &7clear unused temporary tracks (admin)"));
         sender.sendMessage(msg("&f/music playlist create/add/list/play ... &8- &7manage playlists"));
         sender.sendMessage(msg("&dIMPORTS &8| &7Server library files"));
         sender.sendMessage(msg("&f/music import <file> [title] [id:name] &8- &7import from SavedMusic/"));
@@ -2078,12 +2080,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
         sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10"));
-        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f id:custom_name"));
+        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f center &8• &f id:custom_name"));
         sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:stereo"));
         sender.sendMessage(msg("&7Stereo is default. Mono circle/square zones use configured fade unless fadeN overrides it."));
-        sender.sendMessage(msg("&7A spatial option defaults to @a inside the zone; without one, /play defaults to @s."));
+        sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
+        sender.sendMessage(msg("&7The center option is mono-only and places the sound origin at the zone center."));
         sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
         sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
+        sender.sendMessage(msg("&f/music disable &8• &fenable &8• &funload &8- &7manage your own music packs"));
+        sender.sendMessage(msg("&f/music discord enable|disable &8- &7toggle Discord broadcasting (admin)"));
         sender.sendMessage(msg("&f/music sync <seconds> &8• &f/music priority <number> &8• &f/music alias add <URL> <TrackID>"));
         sender.sendMessage(msg("&f/link &8• &f/unlink &8- &7connect or disconnect your Discord account"));
         sender.sendMessage(msg("&8TrackIDs use a00-f99 (600 active slots); delete/expiry frees a code. Existing long internal IDs remain accepted."));
@@ -2136,7 +2141,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             String prefix = args[args.length - 1];
             String previous = args.length >= 2 ? args[args.length - 2].toLowerCase(Locale.ROOT) : "";
             if (previous.equals("--target")) {
-                List<String> targets = new ArrayList<>(List.of("@s", "@p", "@a"));
+                List<String> targets = new ArrayList<>(List.of("@s", "@p"));
+                boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
+                        "permissions.admin", "musicolide.admin"))
+                        || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
+                if (canTargetAll) targets.add("@a");
                 Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
                 return partial(targets, prefix);
             }
@@ -2147,10 +2156,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             if (prefix.startsWith("--")) {
                 return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"), prefix);
             }
+            boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
+                    "permissions.admin", "musicolide.admin"))
+                    || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
             List<String> options = new ArrayList<>(List.of(
-                    "target:@s", "target:@p", "target:@a", "id:", "circle:", "square:",
+                    "target:@s", "target:@p", "id:", "circle:", "square:",
                     "region:", "fade10", "fade0", "mode:mono", "mode:stereo", "center",
-                    "@s", "@p", "@a", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"));
+                    "@s", "@p", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"));
+            if (canTargetAll) {
+                options.add("target:@a");
+                options.add("@a");
+            }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(options::add);
             return partial(options, prefix);
         }
