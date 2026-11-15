@@ -81,20 +81,55 @@ public final class DiscordCommandService extends ListenerAdapter {
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
         );
 
+        List<String> allowedGuildIds = plugin.getConfig().getStringList("discord.commands.allowed-guild-ids")
+                .stream().filter(value -> value != null && value.matches("[0-9]{5,25}")).distinct().toList();
+        if (!allowedGuildIds.isEmpty()) {
+            int registered = 0;
+            for (String allowedGuildId : allowedGuildIds) {
+                var guild = event.getJDA().getGuildById(allowedGuildId);
+                if (guild == null) {
+                    plugin.getLogger().warning("Configured Discord allowed guild " + allowedGuildId
+                            + " is not visible to the bot; skipping command registration for it.");
+                    continue;
+                }
+                registered++;
+                guild.updateCommands().addCommands(commands).queue(
+                        ignored -> plugin.getLogger().info(
+                                "Registered Musicolide Discord commands in allowed guild " + allowedGuildId + "."),
+                        error -> plugin.getLogger().log(Level.WARNING,
+                                "Could not register Musicolide Discord commands in allowed guild " + allowedGuildId + ".", error));
+            }
+            if (registered == 0) {
+                plugin.getLogger().warning("No configured Discord allowed guild is visible to the bot; "
+                        + "Musicolide slash commands were not registered.");
+            }
+            return;
+        }
+
         String guildId = plugin.getConfig().getString("discord.commands.guild-id", "").trim();
+        if (guildId.isBlank()) {
+            // A blank explicit command guild defaults to the configured voice
+            // channel's guild instead of global registration. This keeps the
+            // command surface inside the Minecraft server's Discord community.
+            String voiceChannelId = plugin.getConfig().getString("discord.voice-channel-id", "").trim();
+            var voiceChannel = event.getJDA().getVoiceChannelById(voiceChannelId);
+            guildId = voiceChannel == null ? "" : voiceChannel.getGuild().getId();
+        }
         if (!guildId.isBlank()) {
             var guild = event.getJDA().getGuildById(guildId);
             if (guild == null) {
-                plugin.getLogger().warning("Discord command-guild-id is not visible to the bot; slash commands were not registered.");
+                plugin.getLogger().warning("Discord command guild is not visible to the bot; slash commands were not registered.");
                 return;
             }
-            CommandListUpdateAction update = guild.updateCommands().addCommands(commands);
-            update.queue(ignored -> plugin.getLogger().info("Registered Musicolide Discord commands in guild " + guildId + "."),
-                    error -> plugin.getLogger().log(Level.WARNING, "Could not register Musicolide Discord guild commands.", error));
+            String registeredGuildId = guildId;
+            guild.updateCommands().addCommands(commands).queue(
+                    ignored -> plugin.getLogger().info(
+                            "Registered Musicolide Discord commands in trusted guild " + registeredGuildId + "."),
+                    error -> plugin.getLogger().log(Level.WARNING,
+                            "Could not register Musicolide Discord guild commands.", error));
         } else {
-            event.getJDA().updateCommands().addCommands(commands).queue(
-                    ignored -> plugin.getLogger().info("Registered global Musicolide Discord commands."),
-                    error -> plugin.getLogger().log(Level.WARNING, "Could not register Musicolide Discord commands.", error));
+            plugin.getLogger().warning("Could not resolve a trusted guild from discord.commands.guild-id "
+                    + "or discord.voice-channel-id; global slash command registration was refused.");
         }
     }
 
