@@ -161,6 +161,11 @@ public final class PlaybackEngine {
 
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
 
+    public Optional<MusicTrack> currentPlaybackTrackFor(Player player) {
+        Candidate candidate = findCandidate(player);
+        return candidate == null ? Optional.empty() : Optional.ofNullable(candidate.session.playbackTrack());
+    }
+
     public synchronized boolean isSessionActive(PlaybackSession session) {
         return session != null && sessions.contains(session);
     }
