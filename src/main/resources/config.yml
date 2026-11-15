@@ -49,6 +49,19 @@ discord:
     # discord-administrator checks Discord Administrator permission or a configured role ID.
     admin-authorization: "minecraft-op"
     admin-role-ids: []
+    # Allowed guild IDs. Empty means only discord.commands.guild-id, or the guild
+    # containing discord.voice-channel-id when commands are globally registered.
+    # This prevents a bot invited to another server from accepting control commands there.
+    allowed-guild-ids: []
+    # Per-user Discord slash-command cooldown and a small global request spacing.
+    user-cooldown-ms: 1000
+    global-cooldown-ms: 100
+    # Remote autocomplete is metadata-only but uses yt-dlp; local results remain available during cooldown.
+    autocomplete-cooldown-seconds: 5
+    autocomplete-global-cooldown-seconds: 1
+    # Pairing-code guesses are limited both per Discord user and globally.
+    otp-user-attempts-per-minute: 5
+    otp-global-attempts-per-minute: 30
     # Slash command response visibility: requester (ephemeral/private) or everyone (public).
     # Existing installations default to requester so current privacy is preserved.
     visibility:
