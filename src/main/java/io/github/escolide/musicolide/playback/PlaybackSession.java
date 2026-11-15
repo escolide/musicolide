@@ -29,6 +29,7 @@ public final class PlaybackSession {
     private long timelineGeneration;
     private boolean clockStarted;
     private boolean repeat;
+    private boolean queuePending;
     private int priority;
     private double speed = 1.0;
     private Double pendingSpeed;
@@ -68,6 +69,8 @@ public final class PlaybackSession {
     /** Original catalogue track or the temporary OGG tail currently being played. */
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
     public synchronized boolean paused() { return paused; }
+    public synchronized boolean queuePending() { return queuePending; }
+    public synchronized void queuePending(boolean pending) { queuePending = pending; }
     public synchronized boolean resumePreparing() { return resumePreparing; }
     public synchronized boolean clockStarted() { return clockStarted; }
     /** Changes whenever this session starts a new track timeline, including a restart of the same track. */
@@ -98,7 +101,7 @@ public final class PlaybackSession {
     }
 
     public void repeat(boolean repeat) { this.repeat = repeat; }
-    public boolean isEmpty() { return current == null && queue.isEmpty(); }
+    public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending; }
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
@@ -136,7 +139,13 @@ public final class PlaybackSession {
         return repeat && repeatSource.stream().anyMatch(track -> track.id().equals(trackId));
     }
 
-    public synchronized void enqueue(MusicTrack track) { queue.addLast(track); }
+    public synchronized void enqueue(MusicTrack track) {
+        if (track == null) return;
+        queue.addLast(track);
+        // An asynchronous playlist may have reached the end of its current
+        // track while waiting for this import. Start the new item immediately.
+        if (current == null && !paused && !resumePreparing) advance();
+    }
 
     public synchronized boolean advance() {
         timelineGeneration++;
