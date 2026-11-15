@@ -9,6 +9,7 @@ import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.playback.PlaybackSession;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import io.github.escolide.musicolide.util.CatalogMatcher;
+import io.github.escolide.musicolide.util.DiscordCommandPolicy;
 import io.github.escolide.musicolide.util.ExternalMetadataResolver;
 import io.github.escolide.musicolide.util.LinkNormalizer;
 import io.github.escolide.musicolide.util.RequestCooldowns;
@@ -44,11 +45,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final Map<UUID, PendingPlay> pending = new ConcurrentHashMap<>();
     private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
     private static final long SEARCH_RESULT_TTL_MILLIS = 5 * 60 * 1000L;
-    private static final Set<String> DISCORD_COMMAND_ALLOWLIST = Set.of(
-            "help", "import", "import-url", "diagnostics", "download", "list", "search",
-            "select", "page", "play", "confirm", "pause", "resume", "skip", "stop",
-            "queue", "nowplaying", "progress", "volume", "speed", "mute", "unmute",
-            "seek", "sync", "playlist", "alias", "priority", "reload");
     private final RequestCooldowns requestCooldowns = new RequestCooldowns();
 
 
@@ -225,8 +221,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     static boolean isDiscordCommandAllowed(String command) {
-        return command != null
-                && DISCORD_COMMAND_ALLOWLIST.contains(command.trim().toLowerCase(Locale.ROOT));
+        return DiscordCommandPolicy.isAllowedRoot(command);
     }
 
     /** YouTube metadata-only suggestions for Discord's 3-second autocomplete response. */
