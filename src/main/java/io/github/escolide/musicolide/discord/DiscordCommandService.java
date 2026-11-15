@@ -5,6 +5,7 @@ import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import io.github.escolide.musicolide.playback.DiscordPlaybackSnapshot;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.util.TextUtil;
+import io.github.escolide.musicolide.util.RequestCooldowns;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.Permission;
@@ -33,7 +34,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -49,6 +49,11 @@ public final class DiscordCommandService extends ListenerAdapter {
     private final MusicCommand musicCommand;
     private final DiscordAccountLinkManager accountLinks;
     private final Map<String, AttemptWindow> otpAttempts = new HashMap<>();
+    private final RequestCooldowns autocompleteCooldowns = new RequestCooldowns();
+    private final Map<String, Long> slashCommandLastAttempt = new HashMap<>();
+    private long slashCommandGlobalLastAttemptNanos;
+    private long otpGlobalWindowStartedAtNanos;
+    private int otpGlobalAttempts;
 
     public DiscordCommandService(JavaPlugin plugin, PlaybackEngine playback,
                                  MusicCommand musicCommand,
@@ -99,6 +104,14 @@ public final class DiscordCommandService extends ListenerAdapter {
             reply(event, "Discord commands are disabled on this server.");
             return;
         }
+        if (!isAllowedGuild(event)) {
+            reply(event, "Musicolide Discord commands are restricted to the configured server.");
+            return;
+        }
+        if (!allowSlashCommand(event.getUser().getId())) {
+            reply(event, "Please wait a moment before using another Musicolide command.");
+            return;
+        }
         switch (event.getName()) {
             case "info" -> showInfo(event);
             case "help" -> showHelp(event);
@@ -114,7 +127,8 @@ public final class DiscordCommandService extends ListenerAdapter {
     @Override
     public void onCommandAutoCompleteInteraction(CommandAutoCompleteInteractionEvent event) {
         if (!event.getName().equals("play") || !event.getFocusedOption().getName().equals("query")
-                || !plugin.getConfig().getBoolean("discord.commands.enabled", true)) {
+                || !plugin.getConfig().getBoolean("discord.commands.enabled", true)
+                || !isAllowedGuild(event)) {
             event.replyChoices(List.of()).queue();
             return;
         }
@@ -130,7 +144,14 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
 
         String query = event.getFocusedOption().getValue();
-        musicCommand.discordPlaySuggestions(query)
+        long autocompleteCooldown = Math.max(0L,
+                plugin.getConfig().getLong("discord.commands.autocomplete-cooldown-seconds", 5L));
+        long autocompleteGlobalCooldown = Math.max(0L,
+                plugin.getConfig().getLong("discord.commands.autocomplete-global-cooldown-seconds", 1L));
+        boolean allowRemoteSearch = autocompleteCooldowns.tryAcquire(
+                "discord-autocomplete", event.getUser().getId(),
+                autocompleteCooldown, autocompleteGlobalCooldown) == 0L;
+        musicCommand.discordPlaySuggestions(query, allowRemoteSearch)
                 .completeOnTimeout(List.of(), 2200, TimeUnit.MILLISECONDS)
                 .exceptionally(error -> List.of())
                 .thenAccept(suggestions -> {
@@ -155,10 +176,9 @@ public final class DiscordCommandService extends ListenerAdapter {
         if (!code.matches("[0-9]{8}")) return;
 
         String discordUserId = event.getAuthor().getId();
-        if (!allowOtpAttempt(discordUserId)) {
-            sendDmNotice(event, "Too many code attempts. Wait one minute before trying again.");
-            return;
-        }
+        // Silently discard excess attempts. Replying to every blocked message
+        // would itself let an attacker turn the bot into a Discord DM spammer.
+        if (!allowOtpAttempt(discordUserId)) return;
         try {
             DiscordAccountLinkManager.Completion completion =
                     accountLinks.completeLink(discordUserId, code);
@@ -188,18 +208,86 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     private boolean allowOtpAttempt(String discordUserId) {
         long now = System.nanoTime();
+        long oneMinute = TimeUnit.MINUTES.toNanos(1);
+        int perUserLimit = Math.max(1, Math.min(20,
+                plugin.getConfig().getInt("discord.commands.otp-user-attempts-per-minute", 5)));
+        int globalLimit = Math.max(1, Math.min(500,
+                plugin.getConfig().getInt("discord.commands.otp-global-attempts-per-minute", 30)));
         synchronized (otpAttempts) {
-            AttemptWindow window = otpAttempts.get(discordUserId);
-            if (window == null || now - window.startedAtNanos >= TimeUnit.MINUTES.toNanos(1)) {
-                otpAttempts.put(discordUserId, new AttemptWindow(now, 1));
-                if (otpAttempts.size() > 10_000) {
-                    otpAttempts.entrySet().removeIf(entry ->
-                            now - entry.getValue().startedAtNanos >= TimeUnit.MINUTES.toNanos(1));
-                }
-                return true;
+            if (otpGlobalWindowStartedAtNanos == 0L
+                    || now - otpGlobalWindowStartedAtNanos >= oneMinute) {
+                otpGlobalWindowStartedAtNanos = now;
+                otpGlobalAttempts = 0;
             }
-            if (window.attempts >= 5) return false;
-            otpAttempts.put(discordUserId, new AttemptWindow(window.startedAtNanos, window.attempts + 1));
+            if (otpGlobalAttempts >= globalLimit) return false;
+
+            AttemptWindow window = otpAttempts.get(discordUserId);
+            if (window == null || now - window.startedAtNanos >= oneMinute) {
+                otpAttempts.put(discordUserId, new AttemptWindow(now, 1));
+            } else {
+                if (window.attempts >= perUserLimit) return false;
+                otpAttempts.put(discordUserId, new AttemptWindow(window.startedAtNanos, window.attempts + 1));
+            }
+            otpGlobalAttempts++;
+            if (otpAttempts.size() > 10_000) {
+                otpAttempts.entrySet().removeIf(entry ->
+                        now - entry.getValue().startedAtNanos >= oneMinute);
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Resolves the bot's trusted Musicolide guild. Explicit allowed-guild-ids
+     * take precedence; otherwise the configured slash-command guild or the
+     * guild containing the configured broadcast voice channel is trusted.
+     * Global command registration does not make every guild an authority.
+     */
+    private boolean isAllowedGuild(SlashCommandInteractionEvent event) {
+        if (event.getGuild() == null) return false;
+        return isGuildAllowed(event.getGuild().getId(), event.getJDA());
+    }
+
+    private boolean isAllowedGuild(CommandAutoCompleteInteractionEvent event) {
+        if (event.getGuild() == null) return false;
+        return isGuildAllowed(event.getGuild().getId(), event.getJDA());
+    }
+
+    private boolean isGuildAllowed(String guildId, JDA jda) {
+        List<String> configured = plugin.getConfig().getStringList("discord.commands.allowed-guild-ids")
+                .stream().filter(value -> value != null && value.matches("[0-9]{5,25}")).toList();
+        if (!configured.isEmpty()) return configured.contains(guildId);
+
+        String commandGuild = plugin.getConfig().getString("discord.commands.guild-id", "").trim();
+        if (!commandGuild.isBlank()) return commandGuild.equals(guildId);
+
+        String voiceChannelId = plugin.getConfig().getString("discord.voice-channel-id", "").trim();
+        if (!voiceChannelId.isBlank()) {
+            var voiceChannel = jda.getVoiceChannelById(voiceChannelId);
+            return voiceChannel != null && voiceChannel.getGuild().getId().equals(guildId);
+        }
+        return false;
+    }
+
+    private boolean allowSlashCommand(String discordUserId) {
+        long now = System.nanoTime();
+        long userCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                Math.min(60_000L, plugin.getConfig().getLong(
+                        "discord.commands.user-cooldown-ms", 1000L))));
+        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                Math.min(10_000L, plugin.getConfig().getLong(
+                        "discord.commands.global-cooldown-ms", 100L))));
+        synchronized (slashCommandLastAttempt) {
+            Long previous = slashCommandLastAttempt.get(discordUserId);
+            if (previous != null && now - previous < userCooldown) return false;
+            if (globalCooldown > 0 && slashCommandGlobalLastAttemptNanos != 0L
+                    && now - slashCommandGlobalLastAttemptNanos < globalCooldown) return false;
+            slashCommandLastAttempt.put(discordUserId, now);
+            if (globalCooldown > 0) slashCommandGlobalLastAttemptNanos = now;
+            if (slashCommandLastAttempt.size() > 10_000) {
+                slashCommandLastAttempt.entrySet().removeIf(entry -> now - entry.getValue()
+                        >= TimeUnit.MINUTES.toNanos(10));
+            }
             return true;
         }
     }
@@ -221,20 +309,41 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
 
         boolean discordAdmin = isDiscordAdministrator(event.getMember());
+        boolean discordAdmin = isDiscordAdministrator(event.getMember());
         event.deferReply(isEphemeral(event.getName())).queue(hook -> {
-            List<String> lines = new CopyOnWriteArrayList<>();
+            List<String> lines = new ArrayList<>();
+            Object linesLock = new Object();
             AtomicBoolean first = new AtomicBoolean(true);
+            AtomicBoolean flushScheduled = new AtomicBoolean(false);
             Consumer<String> output = message -> {
                 if (message == null || message.isBlank()) return;
-                lines.add(safe(stripLegacyColors(message)));
-                while (lines.size() > 24) lines.remove(0);
-                String description = String.join("\n", lines);
-                if (first.getAndSet(false)) {
-                    hook.editOriginalEmbeds(embed().setDescription(truncate(description, 3900)).build()).queue();
-                } else {
+                String description;
+                synchronized (linesLock) {
+                    lines.add(safe(stripLegacyColors(message)));
+                    while (lines.size() > 24) lines.remove(0);
+                    description = String.join("\n", lines);
+                }
+                if (first.compareAndSet(true, false)) {
                     hook.editOriginalEmbeds(embed().setDescription(truncate(description, 3900)).build()).queue(
                             ignored -> {}, error -> plugin.getLogger().log(Level.FINE,
                                     "Discord command response update failed.", error));
+                    return;
+                }
+                // Bulk imports and other multi-message operations can emit many
+                // callbacks. Coalesce those into at most one Discord edit per second.
+                if (flushScheduled.compareAndSet(false, true)) {
+                    try {
+                        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                            flushScheduled.set(false);
+                            String latest;
+                            synchronized (linesLock) { latest = String.join("\n", lines); }
+                            hook.editOriginalEmbeds(embed().setDescription(truncate(latest, 3900)).build()).queue(
+                                    ignored -> {}, error -> plugin.getLogger().log(Level.FINE,
+                                            "Discord command response update failed.", error));
+                        }, 20L);
+                    } catch (IllegalStateException shutdown) {
+                        flushScheduled.set(false);
+                    }
                 }
             };
 
@@ -247,7 +356,8 @@ public final class DiscordCommandService extends ListenerAdapter {
                             + "**) must be online to run game commands through Discord.");
                     return;
                 }
-                boolean elevateAdmin = authorizeAdmin(player, discordAdmin);
+                boolean elevateAdmin = authorizeAdmin(player,
+                        isDiscordAdministrator(event.getMember()) && isAllowedGuild(event));
                 try {
                     musicCommand.executeDiscordCommand(player, commandLine, elevateAdmin, output);
                     if (lines.isEmpty()) output.accept("Command processed.");
@@ -260,7 +370,11 @@ public final class DiscordCommandService extends ListenerAdapter {
     }
 
     private boolean isDiscordAdministrator(Member member) {
-        if (member == null) return false;
+        if (member == null || member.getGuild() == null) return false;
+        // Only roles/administrator status in the explicitly trusted Musicolide
+        // guild can grant Musicolide admin access.
+        String trustedGuildId = member.getGuild().getId();
+        if (!isGuildAllowed(trustedGuildId, member.getJDA())) return false;
         if (member.hasPermission(Permission.ADMINISTRATOR)) return true;
         Set<String> configured = Set.copyOf(plugin.getConfig().getStringList(
                 "discord.commands.admin-role-ids"));
