@@ -28,6 +28,11 @@ discord:
   embed-color: "#9B59B6"
   info:
     enabled: true
+    # Adds a YouTube thumbnail to Discord /info only when the current track has a saved YouTube source ID.
+    # Thumbnail URLs are sent to Discord; no image is added to Java or Bedrock player resource packs.
+    show-thumbnail: true
+    # Appended after the standard info fields. Placeholders: {state}, {track}, {title}, {artist}, {position}, {duration}, {server}.
+    custom-message: ""
     server-name: "Minecraft Server"
     # Server address is hidden unless explicitly enabled.
     show-server-address: false
@@ -42,6 +47,13 @@ discord:
     # discord-administrator checks Discord Administrator permission or a configured role ID.
     admin-authorization: "minecraft-op"
     admin-role-ids: []
+    # Slash command response visibility: requester (ephemeral/private) or everyone (public).
+    # Existing installations default to requester so current privacy is preserved.
+    visibility:
+      info: "requester"
+      help: "requester"
+      play: "requester"
+      music: "requester"
 
 geyser:
   # Completely exclude Geyser-identified Bedrock players from Musicolide:
@@ -112,8 +124,11 @@ audio:
       - "soundcloud.com"
     # YouTube search returns metadata only. Audio is downloaded only after /music select.
     search:
-      # Number of results shown to players (1-20).
+      # Number of results returned by ordinary/autocomplete searches (1-20).
       result-count: 6
+      # Search pages show six results each. Default maximum is four pages; administrators may raise this to eight.
+      # Later pages are queried only when /music page <number> is requested.
+      max-pages: 4
       # Prefer official audio/music videos, lyrics and Topic-channel uploads.
       # This is heuristic ranking, not a strict filter; disable to keep YouTube's order.
       prioritize-songs: true

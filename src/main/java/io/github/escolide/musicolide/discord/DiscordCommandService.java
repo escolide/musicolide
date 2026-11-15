@@ -64,8 +64,14 @@ public final class DiscordCommandService extends ListenerAdapter {
         if (!plugin.getConfig().getBoolean("discord.commands.enabled", true)) return;
         List<CommandData> commands = List.of(
                 Commands.slash("info", "Show the current Musicolide track, timestamp and server information"),
+                Commands.slash("help", "Explain Musicolide Discord commands and playback options"),
                 Commands.slash("play", "Search for and play a track from the server's authorized audio sources")
-                        .addOption(OptionType.STRING, "query", "Song, artist or NCS search", true, true),
+                        .addOption(OptionType.STRING, "query", "Song, artist or NCS search", true, true)
+                        .addOption(OptionType.STRING, "target", "Optional target: @s, @p, @a, or an online player name", false)
+                        .addOption(OptionType.STRING, "id", "Optional custom track ID/name for a new import", false)
+                        .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
+                        .addOption(OptionType.STRING, "mode", "Audio mode: stereo or reserved mono mode", false)
+                        .addOption(OptionType.NUMBER, "fade", "Optional spatial fade distance", false),
                 Commands.slash("music", "Run an existing Musicolide game command as your linked Minecraft account")
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
         );
@@ -95,7 +101,11 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
         switch (event.getName()) {
             case "info" -> showInfo(event);
-            case "play" -> runLinkedCommand(event, "play " + event.getOption("query").getAsString());
+            case "help" -> showHelp(event);
+            case "play" -> {
+                try { runLinkedCommand(event, buildPlayCommand(event)); }
+                catch (IllegalArgumentException error) { reply(event, error.getMessage()); }
+            }
             case "music" -> runLinkedCommand(event, event.getOption("command").getAsString());
             default -> reply(event, "Unknown Musicolide command.");
         }
@@ -211,7 +221,7 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
 
         boolean discordAdmin = isDiscordAdministrator(event.getMember());
-        event.deferReply(true).queue(hook -> {
+        event.deferReply(isEphemeral(event.getName())).queue(hook -> {
             List<String> lines = new CopyOnWriteArrayList<>();
             AtomicBoolean first = new AtomicBoolean(true);
             Consumer<String> output = message -> {
@@ -284,22 +294,29 @@ public final class DiscordCommandService extends ListenerAdapter {
                 .setTitle(plugin.getConfig().getString("discord.info.server-name", "Minecraft Server")
                         + " — Musicolide status");
         Optional<DiscordPlaybackSnapshot> selected = playback.discordBroadcastSnapshot();
-        if (selected.isEmpty() || selected.get().track() == null) {
-            builder.setDescription("No eligible Musicolide session is currently selected for this Discord channel. "
-                    + "The server may still have local or spatial playback outside the configured broadcast scope.");
+        DiscordPlaybackSnapshot snapshot = selected.filter(value -> value.track() != null).orElse(null);
+        String state = "No eligible playback";
+        String description;
+        if (snapshot == null) {
+            description = "No eligible Musicolide session is currently selected for this Discord channel. "
+                    + "The server may still have local or spatial playback outside the configured broadcast scope.";
         } else {
-            DiscordPlaybackSnapshot snapshot = selected.get();
-            String state = snapshot.paused() ? "Paused"
+            state = snapshot.paused() ? "Paused"
                     : snapshot.preparing() ? "Preparing to resume"
                     : snapshot.isAudible() ? "Playing" : "Waiting to start";
-            builder.setDescription("**" + state + "**");
+            description = "**" + state + "**";
             builder.addField("Track", truncate(safe(snapshot.track().title()), 1024), false);
             if (snapshot.track().artist() != null && !snapshot.track().artist().isBlank()) {
                 builder.addField("Artist", truncate(safe(snapshot.track().artist()), 1024), true);
             }
             builder.addField("Position", formatTime(snapshot.elapsedMs()) + " / "
                     + formatTime(snapshot.track().durationMs()), true);
+            if (plugin.getConfig().getBoolean("discord.info.show-thumbnail", true)) {
+                musicCommand.discordThumbnailUrl(snapshot.track().id()).ifPresent(builder::setThumbnail);
+            }
         }
+        String customMessage = plugin.getConfig().getString("discord.info.custom-message", "").trim();
+        builder.setDescription(truncate(description, 4096));
 
         if (plugin.getConfig().getBoolean("discord.info.show-server-address", false)) {
             String host = plugin.getConfig().getString("discord.info.server-ip", "").trim();
@@ -310,11 +327,89 @@ public final class DiscordCommandService extends ListenerAdapter {
                 builder.addField("Minecraft server", "Server address is not configured.", false);
             }
         }
-        event.replyEmbeds(builder.build()).setEphemeral(true).queue();
+        if (!customMessage.isBlank()) {
+            builder.addField("Additional message",
+                    truncate(safe(expandInfoMessage(customMessage, snapshot, state)), 1024), false);
+        }
+        event.replyEmbeds(builder.build()).setEphemeral(isEphemeral("info")).queue();
+    }
+
+    private String expandInfoMessage(String message, DiscordPlaybackSnapshot snapshot, String state) {
+        String title = snapshot == null ? "No track playing" : snapshot.track().title();
+        String artist = snapshot == null || snapshot.track().artist() == null ? "" : snapshot.track().artist();
+        String position = snapshot == null ? "—" : formatTime(snapshot.elapsedMs());
+        String duration = snapshot == null ? "—" : formatTime(snapshot.track().durationMs());
+        return message.replace("{state}", state).replace("{track}", title).replace("{title}", title)
+                .replace("{artist}", artist).replace("{position}", position).replace("{duration}", duration)
+                .replace("{server}", plugin.getConfig().getString("discord.info.server-name", "Minecraft Server"));
+    }
+
+    private void showHelp(SlashCommandInteractionEvent event) {
+        EmbedBuilder builder = embed().setTitle("Musicolide Discord help")
+                .setDescription("Use /link in Minecraft and DM the one-time code to this bot before running player commands.");
+        builder.addField("/play query", "Searches saved server tracks first, then YouTube. Choose a result using /music command with select <number>.", false);
+        builder.addField("Optional /play options", "target: @s, @p, @a or an online player. Other-player targets and zones require Minecraft admin permission. id: custom ID for a new import. zone: circle 50, square 50x50, or region <id>. fade: optional fade distance. mode: stereo or reserved mono.", false);
+        builder.addField("/music command", "Runs an existing Musicolide command as your linked Minecraft player, such as pause, resume, queue <id>, page 2, select 1, or playlist list.", false);
+        builder.addField("/info", "Shows current broadcast playback, optional server details and the YouTube thumbnail when available.", false);
+        builder.addField("Search pages", "After a search, request page 2, then page 3, and so on. Pages contain six results and must be opened in order.", false);
+        event.replyEmbeds(builder.build()).setEphemeral(isEphemeral("help")).queue();
+    }
+
+    private String buildPlayCommand(SlashCommandInteractionEvent event) {
+        String query = event.getOption("query").getAsString();
+        StringBuilder command = new StringBuilder("play ").append(quoteCommandArgument(query));
+        String target = option(event, "target");
+        String customId = option(event, "id");
+        String zone = option(event, "zone");
+        String mode = option(event, "mode");
+        Double fade = event.getOption("fade") == null ? null : event.getOption("fade").getAsDouble();
+        if (target != null && !target.isBlank()) command.append(" --target ").append(quoteCommandArgument(target.trim()));
+        if (customId != null && !customId.isBlank()) command.append(" --id ").append(quoteCommandArgument(customId.trim()));
+        if (zone != null && !zone.isBlank()) command.append(' ').append(parseZoneOption(zone));
+        if (mode != null && !mode.isBlank()) {
+            String normalized = mode.trim().toLowerCase(Locale.ROOT);
+            if (!normalized.equals("mono") && !normalized.equals("stereo")) {
+                throw new IllegalArgumentException("Audio mode must be mono or stereo.");
+            }
+            command.append(" --mode ").append(normalized);
+        }
+        if (fade != null) {
+            if (!Double.isFinite(fade) || fade < 0) throw new IllegalArgumentException("Fade distance must be a finite, non-negative number.");
+            command.append(" --fade ").append(fade);
+        }
+        return command.toString();
+    }
+
+    private String parseZoneOption(String value) {
+        String[] parts = value.trim().split("\\s+", 2);
+        if (parts.length != 2 || parts[1].isBlank()) {
+            throw new IllegalArgumentException("Zone must look like circle 50, square 50x50, or region <id>.");
+        }
+        return switch (parts[0].toLowerCase(Locale.ROOT)) {
+            case "circle" -> "--circle " + quoteCommandArgument(parts[1]);
+            case "square" -> "--square " + quoteCommandArgument(parts[1]);
+            case "region" -> "--region " + quoteCommandArgument(parts[1]);
+            default -> throw new IllegalArgumentException("Supported zones are circle, square, and region.");
+        };
+    }
+
+    private static String option(SlashCommandInteractionEvent event, String name) {
+        return event.getOption(name) == null ? null : event.getOption(name).getAsString();
+    }
+
+    private static String quoteCommandArgument(String value) {
+        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private boolean isEphemeral(String commandName) {
+        String visibility = plugin.getConfig().getString("discord.commands.visibility."
+                + commandName.toLowerCase(Locale.ROOT), "requester");
+        return !visibility.equalsIgnoreCase("everyone") && !visibility.equalsIgnoreCase("public");
     }
 
     private void reply(SlashCommandInteractionEvent event, String description) {
-        event.replyEmbeds(embed().setDescription(safe(description)).build()).setEphemeral(true).queue();
+        event.replyEmbeds(embed().setDescription(safe(description)).build())
+                .setEphemeral(isEphemeral(event.getName())).queue();
     }
 
     private void sendDmNotice(MessageReceivedEvent event, String description) {

@@ -387,7 +387,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return String.join(" ", values).trim();
     }
 
-    private void diagnostics(CommandSender sender) {    private void diagnostics(CommandSender sender) {
+    private void diagnostics(CommandSender sender) {
         if (!admin(sender)) return;
         sender.sendMessage(msg("&bMusicolide native tool diagnostics:"));
         if (processor.toolStatuses().isEmpty()) {
@@ -497,7 +497,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
-        String input = normalizeSearchQuery(String.join(" ", Arrays.copyOfRange(args, 1, modifierStart)));
+        String rawInput = String.join(" ", Arrays.copyOfRange(args, 1, modifierStart)).trim();
+        String input = isExternal(rawInput) ? rawInput : normalizeSearchQuery(rawInput);
         if (input.isBlank()) {
             sender.sendMessage(msg("&eEnter a track title, YouTube URL or search query."));
             return;
@@ -506,12 +507,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
                 input, parsed.customId, parsed.audioMode);
-        Optional<MusicTrack> track = resolvePlayTrack(input);
+        Optional<MusicTrack> track = resolvePlayTrack(rawInput, input);
         if (track.isPresent()) {
-            offerMatch(sender, track.get(), request, isExternal(input) ? -1.0 : 1.0);
+            offerMatch(sender, track.get(), request, isExternal(rawInput) ? -1.0 : 1.0);
             return;
         }
-        if (!isExternal(input)) {
+        if (!isExternal(rawInput)) {
             beginYouTubeSearch(sender, input, request);
             return;
         }
@@ -521,7 +522,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 return;
             }
             sender.sendMessage(msg("&eImporting this allowlisted URL. Confirm that your server may distribute this audio."));
-            processor.importUrl(input, null, request.customId).whenComplete((imported, error) ->
+            processor.importUrl(rawInput, null, request.customId).whenComplete((imported, error) ->
                     Bukkit.getScheduler().runTask(plugin, () -> {
                         if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
                         else {
@@ -531,7 +532,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     }));
             return;
         }
-        if (isYouTubeUrl(input)) {
+        if (isYouTubeUrl(rawInput)) {
             sender.sendMessage(msg("&cYouTube URL auto-import is disabled."));
             sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play and allow youtube.com/youtu.be in config.yml."));
             sender.sendMessage(msg("&7For a one-time authorized import, use /music import-url <url> --rights-confirmed, then /music play <track-id>."));
@@ -611,16 +612,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return;
         }
         String query = normalizeSearchQuery(rawQuery);
-        List<MusicTrack> localTracks;
-        try {
-            localTracks = repository.searchForPlayback(query, configuredSearchMaxPages() * SEARCH_PAGE_SIZE, 0);
-        } catch (SQLException error) {
-            sender.sendMessage(msg("&cLocal catalogue search failed: " + error.getMessage()));
-            return;
-        }
         long now = System.currentTimeMillis();
         pendingSearches.entrySet().removeIf(entry -> now - entry.getValue().createdAtMillis > SEARCH_RESULT_TTL_MILLIS);
-        PendingSearch search = new PendingSearch(query, List.copyOf(localTracks), request, now);
+        PendingSearch search = new PendingSearch(query, request, now);
         pendingSearches.put(player.getUniqueId(), search);
         sender.sendMessage(msg("&eSearching the local catalogue first, then YouTube for: &f" + safeChat(query)));
         loadSearchPage(player, search, 1);
@@ -651,8 +645,21 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void loadSearchPage(Player player, PendingSearch search, int page) {
+        int localRequired = Math.max(0, page * SEARCH_PAGE_SIZE - search.localTracks.size());
+        if (localRequired > 0 && !search.localExhausted) {
+            try {
+                List<MusicTrack> nextLocal = repository.searchForPlayback(
+                        search.query, localRequired, search.localTracks.size());
+                search.localTracks.addAll(nextLocal);
+                if (nextLocal.size() < localRequired) search.localExhausted = true;
+            } catch (SQLException error) {
+                player.sendMessage(msg("&cLocal catalogue search failed: " + error.getMessage()));
+                return;
+            }
+        }
         int remoteRequired = Math.max(0, page * SEARCH_PAGE_SIZE - search.localTracks.size());
         if (remoteRequired == 0 || search.remoteResults.size() >= remoteRequired
+                || search.remoteExhausted
                 || !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             renderSearchPage(player, search, page, null);
             return;
@@ -662,7 +669,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || pendingSearches.get(player.getUniqueId()) != search) return;
                     search.loading = false;
-                    if (error == null && results != null) search.remoteResults = List.copyOf(results);
+                    if (error == null && results != null) {
+                        search.remoteResults = List.copyOf(results);
+                        if (results.size() < remoteRequired) search.remoteExhausted = true;
+                    }
                     renderSearchPage(player, search, page, error);
                 }));
     }
@@ -709,7 +719,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 && entries.stream().anyMatch(entry -> entry.remoteResult != null)) {
             player.sendMessage(msg("&7YouTube selection imports audio; an admin must enable audio.yt-dlp.auto-import-on-play first."));
         }
-        if (page < configuredSearchMaxPages()) {
+        boolean moreLocal = !search.localExhausted;
+        boolean moreRemote = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
+                && !search.remoteExhausted;
+        if (page < configuredSearchMaxPages() && (moreLocal || moreRemote)) {
             player.sendMessage(msg("&7Next page: &f/music page " + (page + 1) + " &8(loaded only when requested)."));
         }
         if (searchError != null) player.sendMessage(msg("&eYouTube results could not be refreshed; local results remain available."));
@@ -813,13 +826,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         start(sender, value.track, value.request);
     }
 
-    private Optional<MusicTrack> resolvePlayTrack(String token) throws SQLException {
-        if (isExternal(token)) {
-            Optional<String> normalized = LinkNormalizer.normalize(token);
+    private Optional<MusicTrack> resolvePlayTrack(String rawToken, String normalizedToken) throws SQLException {
+        if (isExternal(rawToken)) {
+            Optional<String> normalized = LinkNormalizer.normalize(rawToken);
             return normalized.isEmpty() ? Optional.empty() : repository.resolveAlias(normalized.get());
         }
-        Optional<MusicTrack> exactId = repository.getTrack(token);
-        return exactId.isPresent() ? exactId : repository.findExactTitle(token);
+        Optional<MusicTrack> exactId = repository.getTrack(rawToken);
+        return exactId.isPresent() ? exactId : repository.findExactTitle(normalizedToken);
     }
 
     private Optional<MusicTrack> resolveTrack(String token) throws SQLException {
@@ -1354,6 +1367,16 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) return partial(List.of("help", "link", "unlink", "import", "import-url", "diagnostics", "download", "list", "search", "select", "page", "play", "confirm", "pause", "resume",
                 "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
                 "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
+        if (args.length >= 4 && args[0].equalsIgnoreCase("play")
+                && args[args.length - 2].equalsIgnoreCase("--target")) {
+            List<String> targets = new ArrayList<>(List.of("@s", "@p", "@a"));
+            Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
+            return partial(targets, args[args.length - 1]);
+        }
+        if (args.length >= 4 && args[0].equalsIgnoreCase("play")
+                && args[args.length - 2].equalsIgnoreCase("--mode")) {
+            return partial(List.of("stereo", "mono"), args[args.length - 1]);
+        }
         if (args.length == 2 && args[0].equalsIgnoreCase("page")) {
             return partial(java.util.stream.IntStream.rangeClosed(2, configuredSearchMaxPages())
                     .mapToObj(Integer::toString).toList(), args[1]);
@@ -1362,7 +1385,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             PendingSearch search = pendingSearches.get(player.getUniqueId());
             if (search != null && System.currentTimeMillis() - search.createdAtMillis <= SEARCH_RESULT_TTL_MILLIS) {
                 List<String> numbers = new ArrayList<>();
-                for (int i = 1; i <= search.results.size(); i++) numbers.add(Integer.toString(i));
+                for (int i = 1; i <= search.pageResults.size(); i++) numbers.add(Integer.toString(i));
                 return partial(numbers, args[1]);
             }
         }
@@ -1383,12 +1406,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER)
                     .forEach(targets::add);
-            targets.addAll(List.of("--circle", "--square", "--region", "--fade"));
+            targets.addAll(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"));
             return partial(targets, args[2]);
         }
         if (args.length >= 4 && args[0].equalsIgnoreCase("play")
                 && args[args.length - 1].startsWith("--")) {
-            return partial(List.of("--circle", "--square", "--region", "--fade"), args[args.length - 1]);
+            return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"), args[args.length - 1]);
         }
         return List.of();
     }
@@ -1403,7 +1426,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private static final int SEARCH_PAGE_SIZE = 6;
     private static final class PendingSearch {
         private final String query;
-        private final List<MusicTrack> localTracks;
+        private final List<MusicTrack> localTracks = new ArrayList<>();
         private final PlayRequest request;
         private final long createdAtMillis;
         private List<YtDlpDownloader.SearchResult> remoteResults = List.of();
@@ -1411,10 +1434,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         private int currentPage;
         private boolean loading;
         private boolean selecting;
+        private boolean remoteExhausted;
+        private boolean localExhausted;
 
-        private PendingSearch(String query, List<MusicTrack> localTracks, PlayRequest request, long createdAtMillis) {
+        private PendingSearch(String query, PlayRequest request, long createdAtMillis) {
             this.query = query;
-            this.localTracks = localTracks;
             this.request = request;
             this.createdAtMillis = createdAtMillis;
         }

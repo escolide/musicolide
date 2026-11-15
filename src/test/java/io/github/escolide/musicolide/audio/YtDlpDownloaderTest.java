@@ -55,6 +55,38 @@ class YtDlpDownloaderTest {
     }
 
     @Test
+    void searchCommandSupportsLaterPagesBeyondTheOldThirtyResultCap() {
+        List<String> command = YtDlpDownloader.buildSearchCommand(
+                "yt-dlp", "qjs", Path.of("cache/yt-dlp"), 48, "artist album");
+        int playlistEnd = command.indexOf("--playlist-end");
+        assertTrue(playlistEnd >= 0);
+        assertEquals("48", command.get(playlistEnd + 1));
+        assertEquals("ytsearch48:artist album", command.get(command.size() - 1));
+    }
+
+    @Test
+    void parserAcceptsSingleVideoResponseWhenPlaylistWrapperIsAbsent() throws Exception {
+        String json = """
+                {"id":"single1234","title":"A Single Result","uploader":"Artist","duration":210}
+                """;
+        List<YtDlpDownloader.SearchResult> results = YtDlpDownloader.parseSearchResults(json, 6, false);
+        assertEquals(1, results.size());
+        assertEquals("single1234", results.get(0).videoId());
+    }
+
+    @Test
+    void parserAllowsMoreThanTwentyResultsForOnDemandPages() throws Exception {
+        StringBuilder json = new StringBuilder("{\"entries\":[");
+        for (int i = 0; i < 36; i++) {
+            if (i > 0) json.append(',');
+            json.append("{\"id\":\"video").append(String.format("%04d", i))
+                    .append("\",\"title\":\"Track ").append(i).append("\",\"duration\":200}");
+        }
+        json.append("]}");
+        assertEquals(36, YtDlpDownloader.parseSearchResults(json.toString(), 36, false).size());
+    }
+
+    @Test
     void songPriorityPrefersOfficialAudioButCanBeDisabled() throws Exception {
         String json = """
                 {

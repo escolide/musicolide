@@ -119,6 +119,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("discord.info.enabled", true);
             migratedConfig = true;
         }
+        if (!getConfig().contains("discord.info.show-thumbnail")) {
+            getConfig().set("discord.info.show-thumbnail", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("discord.info.custom-message")) {
+            getConfig().set("discord.info.custom-message", "");
+            migratedConfig = true;
+        }
         if (!getConfig().contains("discord.info.server-name")) {
             getConfig().set("discord.info.server-name", "Minecraft Server");
             migratedConfig = true;
@@ -149,6 +157,17 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         }
         if (!getConfig().contains("discord.commands.admin-role-ids")) {
             getConfig().set("discord.commands.admin-role-ids", List.of());
+            migratedConfig = true;
+        }
+        for (String commandName : List.of("info", "help", "play", "music")) {
+            String visibilityPath = "discord.commands.visibility." + commandName;
+            if (!getConfig().contains(visibilityPath)) {
+                getConfig().set(visibilityPath, "requester");
+                migratedConfig = true;
+            }
+        }
+        if (!getConfig().contains("audio.yt-dlp.search.max-pages")) {
+            getConfig().set("audio.yt-dlp.search.max-pages", 4);
             migratedConfig = true;
         }
         if (migratedConfig) saveConfig();

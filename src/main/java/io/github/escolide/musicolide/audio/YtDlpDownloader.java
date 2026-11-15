@@ -151,7 +151,7 @@ public final class YtDlpDownloader {
             throw new IOException("QuickJS is unavailable; YouTube search cannot start.");
         }
 
-        String normalizedQuery = query == null ? "" : query.trim().replaceAll("[\\r\\n\\t]+", " ");
+        String normalizedQuery = query == null ? "" : query.trim().replace('_', ' ').replaceAll("[\\r\\n\\t]+", " ");
         if (normalizedQuery.isBlank()) throw new IOException("Enter a YouTube search query.");
         if (normalizedQuery.length() > 180) throw new IOException("Search queries must be 180 characters or fewer.");
 
@@ -168,7 +168,7 @@ public final class YtDlpDownloader {
         int resultCount = bounded(maximumResults, 1, 160);
         boolean prioritizeSongs = plugin.getConfig().getBoolean(
                 "audio.yt-dlp.search.prioritize-songs", true);
-        int fetchCount = prioritizeSongs ? Math.min(30, Math.max(resultCount, resultCount * 3)) : resultCount;
+        int fetchCount = prioritizeSongs ? Math.min(160, Math.max(resultCount, resultCount * 3)) : resultCount;
 
         Path temporaryDirectory = plugin.getDataFolder().toPath().resolve("temp");
         Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
@@ -257,11 +257,19 @@ public final class YtDlpDownloader {
         }
         if (!root.isJsonObject()) throw new IOException("yt-dlp returned an unexpected YouTube search response.");
         JsonElement entriesElement = root.getAsJsonObject().get("entries");
-        if (entriesElement == null || entriesElement.isJsonNull()) return List.of();
-        if (!entriesElement.isJsonArray()) {
+        JsonArray entries;
+        if (entriesElement == null || entriesElement.isJsonNull()) {
+            // Some extractors return a single video object instead of a playlist
+            // wrapper; preserve that usable result rather than silently showing none.
+            JsonObject single = root.getAsJsonObject();
+            if (!single.has("id") || !single.has("title")) return List.of();
+            entries = new JsonArray();
+            entries.add(single.deepCopy());
+        } else if (!entriesElement.isJsonArray()) {
             throw new IOException("yt-dlp returned an unexpected YouTube search result list.");
+        } else {
+            entries = entriesElement.getAsJsonArray();
         }
-        JsonArray entries = entriesElement.getAsJsonArray();
 
         List<RankedSearchResult> results = new ArrayList<>();
         Set<String> seenIds = new HashSet<>();

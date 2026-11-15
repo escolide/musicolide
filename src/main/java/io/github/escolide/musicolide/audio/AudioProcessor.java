@@ -54,6 +54,12 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle, String customId) {
+        final String normalizedCustomId;
+        try {
+            normalizedCustomId = validateCustomId(customId);
+        } catch (IOException error) {
+            return CompletableFuture.failedFuture(error);
+        }
         if (!toolchain.isInitialized()) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
@@ -63,7 +69,7 @@ public final class AudioProcessor implements AutoCloseable {
                     "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
-            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false, customId), worker);
+            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false, normalizedCustomId), worker);
         } catch (RejectedExecutionException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
@@ -138,6 +144,13 @@ public final class AudioProcessor implements AutoCloseable {
                     "Could not check the existing URL catalogue entry.", ex));
         }
 
+        final String normalizedCustomId;
+        try {
+            normalizedCustomId = validateCustomId(customId);
+        } catch (IOException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+
         if (!toolchain.isInitialized()) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Native audio tools are still being checked during startup. Try again in a moment."));
@@ -170,7 +183,7 @@ public final class AudioProcessor implements AutoCloseable {
                             new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
                     String relative = incoming.relativize(download.audioFile()).toString();
                     MusicTrack imported = processFile(relative, requestedTitle, true,
-                            download.title(), download.artist(), customId);
+                            download.title(), download.artist(), normalizedCustomId);
 
                     // LinkNormalizer maps YouTube watch, youtu.be, music.youtube.com,
                     // and Shorts URLs to the same youtube:<video-id> key.
@@ -365,11 +378,26 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
+    private String validateCustomId(String requestedId) throws IOException {
+        String normalized = normalizeCustomId(requestedId);
+        if (normalized == null) return null;
+        try {
+            if (repository.getTrack(normalized).isPresent()) {
+                throw new IOException("The custom track ID '" + normalized + "' is already in use.");
+            }
+        } catch (SQLException error) {
+            throw new IOException("Could not check whether custom track ID '" + normalized + "' is already in use.", error);
+        }
+        return normalized;
+    }
+
     private static String normalizeCustomId(String requestedId) throws IOException {
         if (requestedId == null || requestedId.isBlank()) return null;
         String normalized = requestedId.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "_");
-        if (!SAFE_ID.matcher(normalized).matches()) {
-            throw new IOException("Custom track IDs must be 1-48 characters using lowercase letters, numbers, and underscores.");
+        if (!SAFE_ID.matcher(normalized).matches() || normalized.length() > 45) {
+            // The ms_/mc_ sound namespace prefix adds three characters; keep
+            // the complete namespace within the same 48-character limit.
+            throw new IOException("Custom track IDs must be 1-45 characters using lowercase letters, numbers, and underscores.");
         }
         return normalized;
     }
