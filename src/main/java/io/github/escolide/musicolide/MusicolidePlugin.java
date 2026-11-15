@@ -19,6 +19,7 @@ import io.github.escolide.musicolide.runtime.DiscordRuntimeBundle;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -628,7 +629,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     public void unloadPlayerMusic(Player player) {
         if (player == null || packManager == null) return;
         String currentTrackId = playback == null ? null
-                : playback.currentTrackFor(player).map(MusicTrack::id).orElse(null);
+                : playback.currentPlaybackTrackFor(player).map(MusicTrack::id).orElse(null);
         if (playback != null) playback.unloadPlayerAudio(player);
         packManager.unloadPlayer(player, currentTrackId);
     }
