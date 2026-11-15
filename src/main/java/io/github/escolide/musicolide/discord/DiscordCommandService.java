@@ -543,7 +543,24 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     private static String safe(String value) {
         if (value == null) return "";
-        return value.replace("@", "@\u200B");
+        // Player-controlled track names and remote metadata are untrusted text.
+        // Escape Discord markdown as well as mentions so titles cannot forge links
+        // or visually impersonate bot instructions in command replies.
+        StringBuilder escaped = new StringBuilder(value.length() + 16);
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '@') {
+                escaped.append("@\u200B");
+                continue;
+            }
+            if (ch == '\\' || ch == '`' || ch == '*' || ch == '_' || ch == '~'
+                    || ch == '|' || ch == '>' || ch == '[' || ch == ']' || ch == '(' || ch == ')'
+                    || ch == '#' || ch == '+' || ch == '-' || ch == '!') {
+                escaped.append('\\');
+            }
+            escaped.append(ch);
+        }
+        return escaped.toString();
     }
 
     private static String stripLegacyColors(String value) {
