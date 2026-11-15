@@ -182,6 +182,9 @@ audio:
     # Remote metadata searches share the same bounded audio worker.
     search-cooldown-seconds: 3
     global-search-cooldown-seconds: 1
+    # Fixed-provider oEmbed metadata lookups for external URLs; no media is downloaded.
+    metadata-cooldown-seconds: 5
+    global-metadata-cooldown-seconds: 1
     # Manual seek/sync audio-tail generation; automatic playback synchronization is unaffected.
     transform-cooldown-seconds: 3
     global-transform-cooldown-seconds: 1
