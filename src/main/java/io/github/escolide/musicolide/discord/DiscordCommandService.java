@@ -359,20 +359,6 @@ public final class DiscordCommandService extends ListenerAdapter {
     }
 
     private void runLinkedCommand(SlashCommandInteractionEvent event, String commandLine) {
-        if (io.github.escolide.musicolide.util.DiscordCommandPolicy
-                .requiresPlaylistPlayCooldown(commandLine)) {
-            long userCooldown = Math.max(0L, plugin.getConfig().getLong(
-                    "discord.commands.playlist-play-cooldown-seconds", 30L));
-            long globalCooldown = Math.max(0L, plugin.getConfig().getLong(
-                    "discord.commands.global-playlist-play-cooldown-seconds", 2L));
-            long remaining = playlistPlaybackCooldowns.tryAcquire(
-                    "discord-playlist-session", event.getUser().getId(), userCooldown, globalCooldown);
-            if (remaining > 0) {
-                reply(event, "Please wait " + remaining
-                        + " second(s) before starting another playlist session.");
-                return;
-            }
-        }
         final DiscordAccountLinkManager.LinkedAccount link;
         try {
             Optional<DiscordAccountLinkManager.LinkedAccount> found =
@@ -436,6 +422,22 @@ public final class DiscordCommandService extends ListenerAdapter {
                     return;
                 }
                 boolean elevateAdmin = authorizeAdmin(player, discordAdmin);
+                String djPermission = plugin.getConfig().getString("permissions.dj", "musicolide.dj");
+                if (io.github.escolide.musicolide.util.DiscordCommandPolicy
+                        .requiresPlaylistPlayCooldown(commandLine)
+                        && (elevateAdmin || player.hasPermission(djPermission))) {
+                    long userCooldown = Math.max(0L, plugin.getConfig().getLong(
+                            "discord.commands.playlist-play-cooldown-seconds", 30L));
+                    long globalCooldown = Math.max(0L, plugin.getConfig().getLong(
+                            "discord.commands.global-playlist-play-cooldown-seconds", 2L));
+                    long remaining = playlistPlaybackCooldowns.tryAcquire(
+                            "discord-playlist-session", event.getUser().getId(), userCooldown, globalCooldown);
+                    if (remaining > 0) {
+                        output.accept("Please wait " + remaining
+                                + " second(s) before starting another playlist session.");
+                        return;
+                    }
+                }
                 try {
                     musicCommand.executeDiscordCommand(player, commandLine, elevateAdmin, output);
                     if (lines.isEmpty()) output.accept("Command processed.");
