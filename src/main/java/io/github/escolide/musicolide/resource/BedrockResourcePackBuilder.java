@@ -115,6 +115,11 @@ public final class BedrockResourcePackBuilder {
         try (var files = Files.list(javaPacksDirectory)) {
             for (Path archive : files.filter(Files::isRegularFile)
                     .filter(path -> path.getFileName().toString().endsWith(".zip"))
+                    .filter(path -> !path.getFileName().toString().equals("musicolide-base.zip"))
+                    .filter(path -> !path.getFileName().toString().startsWith("musicolide-library-"))
+                    .filter(path -> !path.getFileName().toString().startsWith(".musicolide-library-"))
+                    // Per-session Java resume tails are never part of the stable Bedrock library.
+                    .filter(path -> !path.getFileName().toString().startsWith("mr_"))
                     .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                     .toList()) {
                 try (ZipFile zip = new ZipFile(archive.toFile())) {
