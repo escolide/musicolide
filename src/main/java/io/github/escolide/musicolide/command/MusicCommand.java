@@ -151,6 +151,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&cDiscord account linking is disabled on this server."));
             return;
         }
+        if (!admitHeavyRequest(sender, "discord-link-code",
+                "discord.commands.link-code-cooldown-seconds", 30,
+                "discord.commands.global-link-code-cooldown-seconds", 1, "another Discord link code")) return;
         try {
             String code = accountLinks.createCode(player.getUniqueId(), player.getName());
             sender.sendMessage(msg("&aYour one-time Discord link code is: &f&l" + code));
