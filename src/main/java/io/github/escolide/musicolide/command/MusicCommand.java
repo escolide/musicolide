@@ -957,7 +957,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         YtDlpDownloader.SearchResult remote = selected.remoteResult;
         List<MusicTrack> metadataCandidates = repository.searchForPlayback(remote.title(), 25, 0);
-        Optional<CatalogMatcher.Match> metadataMatch = findStrongMetadataMatch(
+        Optional<CatalogMatcher.Match> metadataMatch = CatalogMatcher.bestCompatibleArtistMatch(
                 remote.title(), remote.uploader(), metadataCandidates);
         if (metadataMatch.isPresent()) {
             pendingSearches.remove(player.getUniqueId(), search);
