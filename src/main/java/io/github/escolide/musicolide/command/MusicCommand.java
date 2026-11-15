@@ -652,6 +652,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&cNo saved alias exists for this URL. Ask an administrator to add one."));
             return;
         }
+        if (!admitHeavyRequest(sender, "metadata",
+                "audio.processing.metadata-cooldown-seconds", 5,
+                "audio.processing.global-metadata-cooldown-seconds", 1,
+                "another external metadata lookup")) return;
         sender.sendMessage(msg("&eLooking up public metadata and searching your local catalogue. No audio is downloaded from the streaming service."));
         metadataResolver.resolve(input).thenAccept(metadata -> Bukkit.getScheduler().runTask(plugin, () -> {
             if (metadata.isEmpty()) {
