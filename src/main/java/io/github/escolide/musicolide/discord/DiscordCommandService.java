@@ -50,6 +50,7 @@ public final class DiscordCommandService extends ListenerAdapter {
     private final DiscordAccountLinkManager accountLinks;
     private final Map<String, AttemptWindow> otpAttempts = new HashMap<>();
     private final RequestCooldowns autocompleteCooldowns = new RequestCooldowns();
+    private final RequestCooldowns playlistPlaybackCooldowns = new RequestCooldowns();
     private final Map<String, Long> slashCommandLastAttempt = new HashMap<>();
     private long slashCommandGlobalLastAttemptNanos;
     private long otpGlobalWindowStartedAtNanos;
@@ -358,6 +359,20 @@ public final class DiscordCommandService extends ListenerAdapter {
     }
 
     private void runLinkedCommand(SlashCommandInteractionEvent event, String commandLine) {
+        if (io.github.escolide.musicolide.util.DiscordCommandPolicy
+                .requiresPlaylistPlayCooldown(commandLine)) {
+            long userCooldown = Math.max(0L, plugin.getConfig().getLong(
+                    "discord.commands.playlist-play-cooldown-seconds", 30L));
+            long globalCooldown = Math.max(0L, plugin.getConfig().getLong(
+                    "discord.commands.global-playlist-play-cooldown-seconds", 2L));
+            long remaining = playlistPlaybackCooldowns.tryAcquire(
+                    "discord-playlist-session", event.getUser().getId(), userCooldown, globalCooldown);
+            if (remaining > 0) {
+                reply(event, "Please wait " + remaining
+                        + " second(s) before starting another playlist session.");
+                return;
+            }
+        }
         final DiscordAccountLinkManager.LinkedAccount link;
         try {
             Optional<DiscordAccountLinkManager.LinkedAccount> found =
