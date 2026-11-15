@@ -298,27 +298,57 @@ public final class TrackRepository implements AutoCloseable {
     }
 
     public synchronized void addPlaylistTrack(String name, String trackId) throws SQLException {
+        addPlaylistTrack(name, trackId, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Adds a catalogue track only when the playlist remains within its configured
+     * maximum. The count and insert share one transaction so repeated commands
+     * cannot race past the limit.
+     */
+    public synchronized void addPlaylistTrack(String name, String trackId, int maximumTracks) throws SQLException {
+        String normalizedName = name.toLowerCase(Locale.ROOT);
+        int limit = Math.max(1, maximumTracks);
         try (Connection c = open()) {
             c.setAutoCommit(false);
-            try (PreparedStatement exists = c.prepareStatement("SELECT 1 FROM playlists WHERE name=?");
-                 PreparedStatement insert = c.prepareStatement(
-                         "INSERT INTO playlist_entries(playlist_name,position,track_id) VALUES(?,?,?)")) {
-                exists.setString(1, name.toLowerCase(Locale.ROOT));
-                try (ResultSet rs = exists.executeQuery()) {
-                    if (!rs.next()) throw new SQLException("Playlist does not exist.");
+            try {
+                try (PreparedStatement exists = c.prepareStatement("SELECT 1 FROM playlists WHERE name=?")) {
+                    exists.setString(1, normalizedName);
+                    try (ResultSet rs = exists.executeQuery()) {
+                        if (!rs.next()) throw new SQLException("Playlist does not exist.");
+                    }
                 }
+
+                int count = 0;
+                try (PreparedStatement countQuery = c.prepareStatement(
+                        "SELECT COUNT(*) FROM playlist_entries WHERE playlist_name=?")) {
+                    countQuery.setString(1, normalizedName);
+                    try (ResultSet rs = countQuery.executeQuery()) {
+                        if (rs.next()) count = rs.getInt(1);
+                    }
+                }
+                if (count >= limit) {
+                    throw new IllegalArgumentException("Playlist has reached its maximum of "
+                            + limit + " tracks. Remove a track before adding another.");
+                }
+
                 int position = 0;
-                try (PreparedStatement count = c.prepareStatement(
+                try (PreparedStatement positionQuery = c.prepareStatement(
                         "SELECT COALESCE(MAX(position),-1)+1 FROM playlist_entries WHERE playlist_name=?")) {
-                    count.setString(1, name.toLowerCase(Locale.ROOT));
-                    try (ResultSet rs = count.executeQuery()) { if (rs.next()) position = rs.getInt(1); }
+                    positionQuery.setString(1, normalizedName);
+                    try (ResultSet rs = positionQuery.executeQuery()) {
+                        if (rs.next()) position = rs.getInt(1);
+                    }
                 }
-                insert.setString(1, name.toLowerCase(Locale.ROOT));
-                insert.setInt(2, position);
-                insert.setString(3, trackId);
-                insert.executeUpdate();
+                try (PreparedStatement insert = c.prepareStatement(
+                        "INSERT INTO playlist_entries(playlist_name,position,track_id) VALUES(?,?,?)")) {
+                    insert.setString(1, normalizedName);
+                    insert.setInt(2, position);
+                    insert.setString(3, trackId);
+                    insert.executeUpdate();
+                }
                 c.commit();
-            } catch (SQLException ex) {
+            } catch (SQLException | RuntimeException ex) {
                 c.rollback();
                 throw ex;
             }
