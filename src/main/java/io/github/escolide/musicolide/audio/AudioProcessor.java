@@ -411,6 +411,8 @@ public final class AudioProcessor implements AutoCloseable {
                         throw new IOException("The generated audio archive is missing or has an unsafe path.");
                     }
                     if (!destinationPack.startsWith(saved)) throw new IOException("Unsafe SavedMusic destination.");
+                    long additionalBytes = Files.exists(destinationPack) ? 0L : Files.size(sourcePack) + 4096L;
+                    ensureSavedMusicCapacity(saved, additionalBytes);
                     Files.copy(sourcePack, destinationPack, StandardCopyOption.REPLACE_EXISTING);
                     writeSavedMetadata(saved.resolve(code + ".yml"), track, code, destinationPack.getFileName().toString());
                     repository.saveTrack(track); // Clears expiry without changing internal IDs or aliases.
@@ -480,6 +482,9 @@ public final class AudioProcessor implements AutoCloseable {
         if (!extension.matches("\\.[a-z0-9]{1,8}")) extension = ".audio";
         Path savedAudio = saved.resolve(code + extension).normalize();
         if (!savedAudio.startsWith(saved)) throw new IOException("Unsafe SavedMusic source destination.");
+        boolean sourceAlreadyInLibrary = source.toAbsolutePath().normalize().startsWith(saved);
+        long additionalBytes = (sourceAlreadyInLibrary ? 0L : Files.size(source)) + 4096L;
+        ensureSavedMusicCapacity(saved, additionalBytes);
         if (!source.toAbsolutePath().normalize().equals(savedAudio)) {
             if (source.toAbsolutePath().normalize().getParent().equals(saved)) {
                 Files.move(source, savedAudio, StandardCopyOption.REPLACE_EXISTING);
@@ -591,8 +596,8 @@ public final class AudioProcessor implements AutoCloseable {
 
             trackDirectory = data.resolve("tracks").resolve(id);
             Files.createDirectories(trackDirectory);
-            int stereoQuality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
-            int monoQuality = bounded(plugin.getConfig().getInt("audio.mono-quality", stereoQuality), 0, 10);
+            int stereoQuality = configuredQuality("stereo", 5);
+            int monoQuality = configuredQuality("mono", stereoQuality);
             int segmentMs;
             int segmentCount;
             if (segmented) {
@@ -649,7 +654,8 @@ public final class AudioProcessor implements AutoCloseable {
                     sha1, durationMs, segmentMs, segmentCount, Files.size(generatedPack));
             if (temporaryUrlImport) {
                 long retentionMinutes = bounded(
-                        plugin.getConfig().getInt("audio.yt-dlp.url-import-retention-minutes", 15), 1, 1440);
+                        plugin.getConfig().getInt("storage.temporary.track-retention-minutes",
+                                plugin.getConfig().getInt("audio.yt-dlp.url-import-retention-minutes", 15)), 1, 1440);
                 long expiresAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(retentionMinutes);
                 repository.saveTemporaryTrack(track, expiresAt);
             } else {
@@ -836,8 +842,7 @@ public final class AudioProcessor implements AutoCloseable {
         Path work = Files.createTempDirectory(temporaryRoot, ".musicolide-mono-");
         try {
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
-            int quality = bounded(plugin.getConfig().getInt("audio.mono-quality",
-                    plugin.getConfig().getInt("audio.stereo-quality", 5)), 0, 10);
+            int quality = configuredQuality("mono", configuredQuality("stereo", 5));
             long maximumBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
             Path monoDirectory = work.resolve("mono");
             Files.createDirectories(monoDirectory);
@@ -968,9 +973,9 @@ public final class AudioProcessor implements AutoCloseable {
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
             Path remainder = work.resolve("remainder.ogg");
             Path monoRemainder = includeMono ? work.resolve("mono-remainder.ogg") : null;
-            int stereoQuality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            int stereoQuality = configuredQuality("stereo", 5);
             int monoQuality = includeMono
-                    ? bounded(plugin.getConfig().getInt("audio.mono-quality", stereoQuality), 0, 10)
+                    ? configuredQuality("mono", stereoQuality)
                     : stereoQuality;
             if (sourceTrack.isStreamed()) {
                 Path input = work.resolve("source.ogg");
@@ -1221,6 +1226,30 @@ public final class AudioProcessor implements AutoCloseable {
         }
         if (process.exitValue() != 0) {
             throw new IOException(label + " exited with code " + process.exitValue() + ".");
+        }
+    }
+
+    private int configuredQuality(String layout, int fallback) {
+        String profile = plugin.getConfig().getString("audio.profiles.active", "custom");
+        profile = profile == null ? "custom" : profile.trim().toLowerCase(Locale.ROOT);
+        if (!profile.isBlank() && !profile.equals("custom")) {
+            String profilePath = "audio.profiles.presets." + profile + "." + layout + "-quality";
+            if (plugin.getConfig().contains(profilePath)) {
+                return bounded(plugin.getConfig().getInt(profilePath, fallback), 0, 10);
+            }
+        }
+        return bounded(plugin.getConfig().getInt("audio." + layout + "-quality", fallback), 0, 10);
+    }
+
+    private void ensureSavedMusicCapacity(Path savedDirectory, long additionalBytes) throws IOException {
+        long maximumGb = Math.max(0L, Math.min(1024L,
+                plugin.getConfig().getLong("storage.saved-music.max-library-gb", 10L)));
+        if (maximumGb == 0L) return; // Zero explicitly disables this separate source-library limit.
+        long maximumBytes = maximumGb * 1024L * 1024L * 1024L;
+        long currentBytes = directorySize(savedDirectory);
+        long requiredBytes = Math.max(0L, additionalBytes);
+        if (currentBytes > maximumBytes || requiredBytes > maximumBytes - currentBytes) {
+            throw new IOException("The configured SavedMusic source-library size limit would be exceeded.");
         }
     }
 
