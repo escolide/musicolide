@@ -492,9 +492,14 @@ public final class AudioProcessor implements AutoCloseable {
                 }
             }
             if (complete) {
-                // A complete variant is already represented in the archive. Refresh
-                // only its catalogue checksum if needed; do not publish another pack.
-                return refreshPackMetadata(track, sourcePack);
+                // Normally startup has already incorporated this archive into the
+                // aggregate pack. If the stored checksum is stale, rebuild it once.
+                MusicTrack refreshed = refreshPackMetadata(track, sourcePack);
+                if (!refreshed.sha1Hex().equals(track.sha1Hex())
+                        || refreshed.packSizeBytes() != track.packSizeBytes()) {
+                    publishAudioVariants();
+                }
+                return refreshed;
             }
         }
 
