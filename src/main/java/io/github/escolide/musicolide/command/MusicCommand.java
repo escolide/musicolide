@@ -209,15 +209,24 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         } else if (args[0].startsWith("/")) {
             args[0] = args[0].substring(1);
         }
+        if (args.length == 0) {
+            output.accept("Enter a Musicolide command, such as: pause, queue <track-id>, or playlist list.");
+            return;
+        }
         // Discord can invoke Musicolide's own command surface only. Never route
         // arbitrary text into Bukkit's general command dispatcher; account-link
         // management also remains Minecraft-only.
-        if (!DISCORD_COMMAND_ALLOWLIST.contains(args[0].toLowerCase(Locale.ROOT))) {
+        if (!isDiscordCommandAllowed(args[0])) {
             output.accept("That command is not available through the Musicolide Discord bot.");
             return;
         }
         Player linkedSender = createDiscordPlayerProxy(actualPlayer, elevateAdmin, output);
         onCommand(linkedSender, null, "music", args);
+    }
+
+    static boolean isDiscordCommandAllowed(String command) {
+        return command != null
+                && DISCORD_COMMAND_ALLOWLIST.contains(command.trim().toLowerCase(Locale.ROOT));
     }
 
     /** YouTube metadata-only suggestions for Discord's 3-second autocomplete response. */
