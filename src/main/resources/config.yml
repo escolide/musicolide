@@ -145,7 +145,18 @@ audio:
   max-input-mb: 100
   delete-source-after-import: true
   processing:
+    # The audio worker remains single-threaded; this bounds waiting jobs as well.
     max-queued-jobs: 8
+    # New imports: per-requester delay plus a server-wide admission interval.
+    # Bulk import counts as one request and continues sequentially.
+    import-cooldown-seconds: 10
+    global-import-cooldown-seconds: 2
+    # Remote metadata searches share the same bounded audio worker.
+    search-cooldown-seconds: 3
+    global-search-cooldown-seconds: 1
+    # Manual seek/sync audio-tail generation; automatic playback synchronization is unaffected.
+    transform-cooldown-seconds: 3
+    global-transform-cooldown-seconds: 1
     timeout-seconds: 1800
     probe-timeout-seconds: 30
     yt-dlp-timeout-seconds: 600
@@ -159,9 +170,14 @@ resource-packs:
   # on-join: send it as the player joins, even when no music is currently playing.
   # The Java library is one pack containing all imported tracks; new imports publish a new revision.
   download-mode: "on-play"
+  # Minimum delay between a player's explicit /music download requests.
+  # Playback-triggered pack delivery is not subject to this manual-command cooldown.
+  request-cooldown-seconds: 30
   prefetch:
     enabled: true
-    tracks-ahead: 4
+    # Keep up to two temporary playback packs ahead of the current track.
+    # Ordinary catalogue songs are already in the aggregate library pack.
+    tracks-ahead: 2
     max-concurrent-downloads: 2
   cache:
     # false keeps the music library active for the entire connection and lets
