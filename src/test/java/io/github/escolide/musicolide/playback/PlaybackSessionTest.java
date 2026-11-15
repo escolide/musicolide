@@ -294,6 +294,27 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void pendingPlaylistKeepsAnEmptySessionAliveUntilTheNextImportArrives() {
+        MusicTrack first = sampleTrack("playlist-pending-first");
+        MusicTrack second = sampleTrack("playlist-pending-second");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first), 0);
+
+        assertFalse(session.isEmpty());
+        session.advance();
+        assertNull(session.current());
+        assertTrue(session.isEmpty());
+
+        session.queuePending(true);
+        assertFalse(session.isEmpty(), "An asynchronous playlist must not be removed while the next import is pending.");
+        session.enqueue(second);
+
+        assertEquals("playlist-pending-second", session.current().id());
+        assertFalse(session.isEmpty());
+        session.queuePending(false);
+    }
+
+    @Test
     void enqueueDoesNotReplaceTheCurrentTrackOrResetItsTimeline() throws Exception {
         MusicTrack current = sampleTrack("queue-current-track");
         MusicTrack queued = sampleTrack("queue-next-track");
