@@ -100,16 +100,16 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
+        if (!allowSlashCommand(event.getUser().getId())) {
+            reply(event, "Please wait a moment before using another Musicolide command.");
+            return;
+        }
         if (!plugin.getConfig().getBoolean("discord.commands.enabled", true)) {
             reply(event, "Discord commands are disabled on this server.");
             return;
         }
         if (!isAllowedGuild(event)) {
             reply(event, "Musicolide Discord commands are restricted to the configured server.");
-            return;
-        }
-        if (!allowSlashCommand(event.getUser().getId())) {
-            reply(event, "Please wait a moment before using another Musicolide command.");
             return;
         }
         switch (event.getName()) {
@@ -126,6 +126,10 @@ public final class DiscordCommandService extends ListenerAdapter {
 
     @Override
     public void onCommandAutoCompleteInteraction(CommandAutoCompleteInteractionEvent event) {
+        if (!allowAutocompleteResponse(event.getUser().getId())) {
+            event.replyChoices(List.of()).queue();
+            return;
+        }
         if (!event.getName().equals("play") || !event.getFocusedOption().getName().equals("query")
                 || !plugin.getConfig().getBoolean("discord.commands.enabled", true)
                 || !isAllowedGuild(event)) {
@@ -267,6 +271,32 @@ public final class DiscordCommandService extends ListenerAdapter {
             return voiceChannel != null && voiceChannel.getGuild().getId().equals(guildId);
         }
         return false;
+    }
+
+    private final Map<String, Long> autocompleteLastReply = new HashMap<>();
+    private long autocompleteGlobalLastReplyNanos;
+
+    private boolean allowAutocompleteResponse(String discordUserId) {
+        long now = System.nanoTime();
+        long userCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                Math.min(5_000L, plugin.getConfig().getLong(
+                        "discord.commands.autocomplete-response-cooldown-ms", 250L))));
+        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                Math.min(1_000L, plugin.getConfig().getLong(
+                        "discord.commands.autocomplete-global-response-cooldown-ms", 50L))));
+        synchronized (autocompleteLastReply) {
+            Long previous = autocompleteLastReply.get(discordUserId);
+            if (previous != null && now - previous < userCooldown) return false;
+            if (globalCooldown > 0 && autocompleteGlobalLastReplyNanos != 0L
+                    && now - autocompleteGlobalLastReplyNanos < globalCooldown) return false;
+            autocompleteLastReply.put(discordUserId, now);
+            if (globalCooldown > 0) autocompleteGlobalLastReplyNanos = now;
+            if (autocompleteLastReply.size() > 10_000) {
+                autocompleteLastReply.entrySet().removeIf(entry -> now - entry.getValue()
+                        >= TimeUnit.MINUTES.toNanos(10));
+            }
+            return true;
+        }
     }
 
     private boolean allowSlashCommand(String discordUserId) {
@@ -546,9 +576,13 @@ public final class DiscordCommandService extends ListenerAdapter {
         // Player-controlled track names and remote metadata are untrusted text.
         // Escape Discord markdown as well as mentions so titles cannot forge links
         // or visually impersonate bot instructions in command replies.
-        StringBuilder escaped = new StringBuilder(value.length() + 16);
-        for (int i = 0; i < value.length(); i++) {
+        StringBuilder escaped = new StringBuilder(Math.min(value.length(), 1024) + 16);
+        for (int i = 0; i < value.length() && escaped.length() < 1000; i++) {
             char ch = value.charAt(i);
+            if (Character.isISOControl(ch) && ch != '\\t') {
+                escaped.append(' ');
+                continue;
+            }
             if (ch == '@') {
                 escaped.append("@\u200B");
                 continue;
