@@ -294,7 +294,25 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (migratedConfig) saveConfig();
         try {
             Path data = getDataFolder().toPath();
-            Files.createDirectories(data.resolve("incoming"));
+            Path savedMusic = data.resolve("SavedMusic");
+            Files.createDirectories(savedMusic);
+            Files.createDirectories(data.resolve("temp"));
+            // Migrate old user-supplied files from incoming/ without overwriting anything.
+            Path legacyIncoming = data.resolve("incoming");
+            if (Files.isDirectory(legacyIncoming)) {
+                try (var legacyFiles = Files.list(legacyIncoming)) {
+                    for (Path legacyFile : legacyFiles.filter(Files::isRegularFile)
+                            .filter(path -> !path.getFileName().toString().startsWith(".")).toList()) {
+                        Path destination = savedMusic.resolve(legacyFile.getFileName().toString());
+                        if (Files.exists(destination)) {
+                            getLogger().warning("Kept legacy incoming file because SavedMusic already contains the same name: "
+                                    + legacyFile.getFileName());
+                            continue;
+                        }
+                        Files.move(legacyFile, destination);
+                    }
+                }
+            }
             Files.createDirectories(data.resolve("tracks"));
             Files.createDirectories(data.resolve("packs"));
             TemporaryStorageCleaner.Report cleanup = TemporaryStorageCleaner.clean(data);
@@ -459,7 +477,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 });
             }
             Bukkit.getPluginManager().registerEvents(this, this);
-            getLogger().info("Musicolide enabled. Import rights-cleared audio into plugins/Musicolide/incoming/.");
+            getLogger().info("Musicolide enabled. Place local audio files in plugins/Musicolide/SavedMusic/. Permanent imports and metadata are stored there.");
         } catch (Exception ex) {
             getLogger().severe("Musicolide could not start: " + ex.getMessage());
             ex.printStackTrace();
@@ -480,6 +498,17 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
      * Java player is still downloading their pack. File deletion and Bedrock
      * library rebuilding are then performed asynchronously.
      */
+    private void deleteTemporaryTrackDirectory(MusicTrack track) throws java.io.IOException {
+        Path tracksRoot = getDataFolder().toPath().resolve("tracks").toAbsolutePath().normalize();
+        Path directory = tracksRoot.resolve(track.id()).normalize();
+        if (!directory.startsWith(tracksRoot) || !Files.exists(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+        try (var walk = Files.walk(directory)) {
+            for (Path path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
+
     private void cleanupExpiredTemporaryTracks() {
         if (repository == null || playback == null || packManager == null || resourcePackBuilder == null) return;
 
@@ -515,6 +544,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 Path packFile = packsDirectory.resolve(track.packFileName()).normalize();
                 try {
                     if (packFile.startsWith(packsDirectory)) Files.deleteIfExists(packFile);
+                    deleteTemporaryTrackDirectory(track);
                 } catch (Exception ex) {
                     getLogger().warning("Could not delete expired resource pack for " + track.id() + ": " + ex.getMessage());
                 }
@@ -559,6 +589,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getLogger().warning("Could not unregister Geyser event listeners: " + ex.getMessage());
         }
         geyserPackIntegration = null;
+    }
+
+    public boolean isTrackPackDownloadInProgress(java.util.UUID packId) {
+        return packManager != null && packManager.isDownloadInProgress(packId);
     }
 
     @EventHandler

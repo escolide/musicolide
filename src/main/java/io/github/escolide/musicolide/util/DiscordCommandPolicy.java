@@ -12,7 +12,7 @@ public final class DiscordCommandPolicy {
             "help", "import", "import-url", "diagnostics", "download", "list", "search",
             "select", "page", "play", "confirm", "pause", "resume", "skip", "stop",
             "queue", "nowplaying", "progress", "volume", "speed", "mute", "unmute",
-            "seek", "sync", "playlist", "alias", "priority", "reload");
+            "seek", "sync", "playlist", "alias", "priority", "save", "delete", "reload");
 
     private DiscordCommandPolicy() {}
 

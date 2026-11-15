@@ -145,7 +145,7 @@ audio:
     url-import-retention-minutes: 15
     # Add only domains from which the server has permission to download and redistribute audio.
     # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
-    # For a one-time import, use /music import-url <url> --rights-confirmed.
+    # For a permanent authorized import, use /music import-url <url> rights.
     allowed-hosts:
       - "youtube.com"
       - "youtu.be"
@@ -171,6 +171,7 @@ audio:
   mono-quality: 5
   max-track-duration-seconds: 1800
   max-input-mb: 100
+  # Files in SavedMusic/ are retained, renamed by TrackID and given a metadata sidecar. This only removes transient sources.
   delete-source-after-import: true
   processing:
     # The audio worker remains single-threaded; this bounds waiting jobs as well.
@@ -249,7 +250,7 @@ playback:
     distance: 10
   mono:
     # Default extra attenuation band for mono circle/square play zones (blocks).
-    # Override per request with --fade <distance>; --fade 0 disables it.
+    # Override per request with fade10; fade0 disables it.
     # WorldGuard polygon regions do not currently support edge-distance fading.
     fade-distance: 10
   synchronization:

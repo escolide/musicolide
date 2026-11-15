@@ -27,6 +27,8 @@ class DiscordCommandPolicyTest {
         assertTrue(DiscordCommandPolicy.isAllowedRoot("playlist"));
         assertTrue(DiscordCommandPolicy.isAllowedRoot("import"));
         assertTrue(DiscordCommandPolicy.isAllowedRoot("reload"));
+        assertTrue(DiscordCommandPolicy.isAllowedRoot("save"));
+        assertTrue(DiscordCommandPolicy.isAllowedRoot("delete"));
         assertFalse(DiscordCommandPolicy.isAllowedRoot("MUSIC"));
 
         assertFalse(DiscordCommandPolicy.isAllowedRoot("op"));

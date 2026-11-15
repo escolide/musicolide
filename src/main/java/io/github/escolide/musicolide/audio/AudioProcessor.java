@@ -64,6 +64,24 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle, String customId) {
+        if (fileName != null) {
+            Path localName;
+            try {
+                localName = Path.of(fileName).getFileName();
+            } catch (RuntimeException invalidPath) {
+                return CompletableFuture.failedFuture(new IllegalArgumentException("Invalid SavedMusic filename."));
+            }
+            if (localName != null) {
+                String value = localName.toString();
+                int dot = value.lastIndexOf('.');
+                String base = dot > 0 ? value.substring(0, dot) : "";
+                Path saved = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("SavedMusic");
+                if (base.matches("[a-f][0-9]{2}") && Files.isRegularFile(saved.resolve(base + ".yml"))) {
+                    return CompletableFuture.failedFuture(new IllegalArgumentException(
+                            "That file is already imported as TrackID " + base + ". Use /music save or /music play instead of importing it again."));
+                }
+            }
+        }
         final String normalizedCustomId;
         try {
             normalizedCustomId = validateCustomId(customId);
@@ -138,6 +156,16 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle, String customId) {
+        return importUrlInternal(sourceUrl, requestedTitle, customId, true);
+    }
+
+    /** Imports an authorized URL into the permanent SavedMusic library. */
+    public CompletableFuture<MusicTrack> importUrlPermanent(String sourceUrl, String requestedTitle, String customId) {
+        return importUrlInternal(sourceUrl, requestedTitle, customId, false);
+    }
+
+    private CompletableFuture<MusicTrack> importUrlInternal(String sourceUrl, String requestedTitle,
+                                                              String customId, boolean temporaryTrack) {
         if (YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "YouTube playlist URLs are not accepted by the single-track importer. Use /play with audio.yt-dlp.allow-playlists enabled."));
@@ -150,7 +178,10 @@ public final class AudioProcessor implements AutoCloseable {
         // Check the persistent alias before checking native tools or queueing a job.
         try {
             Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
-            if (existing.isPresent()) return CompletableFuture.completedFuture(existing.get());
+            if (existing.isPresent()) {
+                return temporaryTrack ? CompletableFuture.completedFuture(existing.get())
+                        : saveTrackPermanently(existing.get().id());
+            }
         } catch (SQLException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Could not check the existing URL catalogue entry.", ex));
@@ -182,12 +213,14 @@ public final class AudioProcessor implements AutoCloseable {
 
         CompletableFuture<MusicTrack> result = new CompletableFuture<>();
         CompletableFuture<MusicTrack> active = inFlightUrlImports.putIfAbsent(sourceKey, result);
-        if (active != null) return active;
+        if (active != null) {
+            return temporaryTrack ? active : active.thenCompose(track -> saveTrackPermanently(track.id()));
+        }
 
         try {
             worker.execute(() -> {
                 try {
-                    result.complete(importUrlNow(sourceUrl, requestedTitle, normalizedCustomId));
+                    result.complete(importUrlNow(sourceUrl, requestedTitle, normalizedCustomId, temporaryTrack, true));
                 } catch (Throwable error) {
                     result.completeExceptionally(error instanceof CompletionException && error.getCause() != null
                             ? error.getCause() : error);
@@ -259,7 +292,7 @@ public final class AudioProcessor implements AutoCloseable {
                             continue;
                         }
                         try {
-                            imported.add(importUrlNow(entry.url(), entry.title(), null, false));
+                            imported.add(importUrlNow(entry.url(), entry.title(), null, true, false));
                             newlyImported++;
                         } catch (Exception itemError) {
                             failed++;
@@ -301,25 +334,30 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private MusicTrack importUrlNow(String sourceUrl, String requestedTitle, String customId) throws Exception {
-        return importUrlNow(sourceUrl, requestedTitle, customId, true);
+        return importUrlNow(sourceUrl, requestedTitle, customId, true, true);
     }
 
     private MusicTrack importUrlNow(String sourceUrl, String requestedTitle,
                                     String customId, boolean rebuildBedrockLibrary) throws Exception {
+        return importUrlNow(sourceUrl, requestedTitle, customId, true, rebuildBedrockLibrary);
+    }
+
+    private MusicTrack importUrlNow(String sourceUrl, String requestedTitle, String customId,
+                                    boolean temporaryTrack, boolean rebuildBedrockLibrary) throws Exception {
         String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
         if (sourceKey.isBlank()) throw new IOException("The source URL is invalid.");
         Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
         if (existing.isPresent()) return existing.get();
 
-        Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
-        Files.createDirectories(incoming);
-        Path temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
+        Path temporaryRoot = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("temp");
+        Files.createDirectories(temporaryRoot);
+        Path temporary = Files.createTempDirectory(temporaryRoot, ".musicolide-url-");
         try {
             YtDlpDownloader.DownloadResult download =
                     new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
-            String relative = incoming.relativize(download.audioFile()).toString();
-            MusicTrack imported = processFile(relative, requestedTitle, true,
-                    download.title(), download.artist(), customId, rebuildBedrockLibrary);
+            String relative = temporaryRoot.relativize(download.audioFile()).toString();
+            MusicTrack imported = processFile(relative, requestedTitle, temporaryTrack,
+                    download.title(), download.artist(), customId, rebuildBedrockLibrary, true);
 
             try {
                 repository.addAlias(sourceKey, imported.id());
@@ -355,6 +393,123 @@ public final class AudioProcessor implements AutoCloseable {
         return toolchain.statuses();
     }
 
+    public CompletableFuture<MusicTrack> saveTrackPermanently(String trackId) {
+        try {
+            MusicTrack track = repository.getTrack(trackId)
+                    .orElseThrow(() -> new IllegalArgumentException("Track not found: " + trackId));
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+                    Path saved = data.resolve("SavedMusic");
+                    Path packs = data.resolve("packs");
+                    Files.createDirectories(saved);
+                    String code = repository.getTrackCode(track.id())
+                            .orElseThrow(() -> new IOException("This track does not have an assigned TrackID."));
+                    Path sourcePack = packs.resolve(track.packFileName()).normalize();
+                    Path destinationPack = saved.resolve(code + ".zip").normalize();
+                    if (!sourcePack.startsWith(packs) || !Files.isRegularFile(sourcePack)) {
+                        throw new IOException("The generated audio archive is missing or has an unsafe path.");
+                    }
+                    if (!destinationPack.startsWith(saved)) throw new IOException("Unsafe SavedMusic destination.");
+                    Files.copy(sourcePack, destinationPack, StandardCopyOption.REPLACE_EXISTING);
+                    writeSavedMetadata(saved.resolve(code + ".yml"), track, code, destinationPack.getFileName().toString());
+                    repository.saveTrack(track); // Clears expiry without changing internal IDs or aliases.
+                    return track;
+                } catch (Exception error) {
+                    throw new CompletionException(error);
+                }
+            }, worker);
+        } catch (Exception error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
+    public CompletableFuture<Boolean> deleteTrack(String trackId) {
+        try {
+            MusicTrack track = repository.getTrack(trackId).orElse(null);
+            if (track == null) return CompletableFuture.completedFuture(false);
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    String code = repository.getTrackCode(track.id()).orElse(null);
+                    if (!repository.deleteTrack(track.id())) return false;
+                    monoVariantsReady.remove(track.id());
+                    inFlightMonoVariants.remove(track.id());
+                    Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+                    Path packs = data.resolve("packs");
+                    Path pack = packs.resolve(track.packFileName()).normalize();
+                    if (pack.startsWith(packs)) Files.deleteIfExists(pack);
+                    Path tracksRoot = data.resolve("tracks").normalize();
+                    Path trackDirectory = tracksRoot.resolve(track.id()).normalize();
+                    if (trackDirectory.startsWith(tracksRoot)) deleteTree(trackDirectory);
+                    if (code != null) {
+                        Path saved = data.resolve("SavedMusic").normalize();
+                        if (Files.isDirectory(saved)) {
+                            try (var files = Files.list(saved)) {
+                                for (Path file : files.filter(Files::isRegularFile)
+                                        .filter(path -> path.getFileName().toString().startsWith(code + "."))
+                                        .toList()) Files.deleteIfExists(file);
+                            }
+                        }
+                    }
+                    packBuilder.buildBasePack();
+                    try {
+                        packBuilder.rebuildBedrockLibrary();
+                    } catch (IOException bedrockError) {
+                        plugin.getLogger().warning("Track was deleted, but the Bedrock library could not be refreshed: "
+                                + bedrockError.getMessage());
+                    }
+                    return true;
+                } catch (Exception error) {
+                    throw new CompletionException(error);
+                }
+            }, worker);
+        } catch (Exception error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
+    private void persistSavedSource(Path data, Path source, MusicTrack track) throws Exception {
+        Path saved = data.resolve("SavedMusic").toAbsolutePath().normalize();
+        Files.createDirectories(saved);
+        String code = repository.getTrackCode(track.id())
+                .orElseThrow(() -> new IOException("This track does not have an assigned TrackID."));
+        String fileName = source.getFileName().toString();
+        int dot = fileName.lastIndexOf('.');
+        String extension = dot >= 0 && fileName.length() - dot <= 10
+                ? fileName.substring(dot).toLowerCase(Locale.ROOT) : ".audio";
+        if (!extension.matches("\\.[a-z0-9]{1,8}")) extension = ".audio";
+        Path savedAudio = saved.resolve(code + extension).normalize();
+        if (!savedAudio.startsWith(saved)) throw new IOException("Unsafe SavedMusic source destination.");
+        if (!source.toAbsolutePath().normalize().equals(savedAudio)) {
+            if (source.toAbsolutePath().normalize().getParent().equals(saved)) {
+                Files.move(source, savedAudio, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.copy(source, savedAudio, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        writeSavedMetadata(saved.resolve(code + ".yml"), track, code, savedAudio.getFileName().toString());
+    }
+
+    private void writeSavedMetadata(Path destination, MusicTrack track, String code, String audioFile)
+            throws IOException {
+        String yaml = "track-id: " + yamlQuote(code) + System.lineSeparator()
+                + "internal-id: " + yamlQuote(track.id()) + System.lineSeparator()
+                + "title: " + yamlQuote(track.title()) + System.lineSeparator()
+                + "artist: " + yamlQuote(track.artist() == null ? "" : track.artist()) + System.lineSeparator()
+                + "audio-file: " + yamlQuote(audioFile) + System.lineSeparator()
+                + "pack-file: " + yamlQuote(track.packFileName()) + System.lineSeparator()
+                + "duration-ms: " + track.durationMs() + System.lineSeparator()
+                + "sha1: " + yamlQuote(track.sha1Hex()) + System.lineSeparator();
+        Files.writeString(destination, yaml, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    private String yamlQuote(String value) {
+        String safe = value == null ? "" : value.replace("\\", "\\\\")
+                .replace("\"", "\\\"").replace("\r", " ").replace("\n", " ");
+        return "\"" + safe + "\"";
+    }
+
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport) {
         return processFile(fileName, requestedTitle, temporaryUrlImport, "", "", null);
     }
@@ -378,22 +533,30 @@ public final class AudioProcessor implements AutoCloseable {
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
                                    String metadataTitle, String metadataArtist, String requestedCustomId,
                                    boolean rebuildBedrockLibrary) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, metadataTitle,
+                metadataArtist, requestedCustomId, rebuildBedrockLibrary, false);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist, String requestedCustomId,
+                                   boolean rebuildBedrockLibrary, boolean sourceIsTemporary) {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
         boolean basePackPublished = false;
+        String persistedTrackId = null;
         try {
             Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
-            Path incoming = data.resolve("incoming");
-            Files.createDirectories(incoming);
-            source = incoming.resolve(fileName).normalize();
-            if (!source.startsWith(incoming) || !Files.isRegularFile(source)) {
-                throw new IOException("File not found in plugins/Musicolide/incoming.");
+            Path sourceRoot = data.resolve(sourceIsTemporary ? "temp" : "SavedMusic");
+            Files.createDirectories(sourceRoot);
+            source = sourceRoot.resolve(fileName).normalize();
+            if (!source.startsWith(sourceRoot) || !Files.isRegularFile(source)) {
+                throw new IOException("File not found in plugins/Musicolide/" + (sourceIsTemporary ? "temp" : "SavedMusic") + ".");
             }
-            Path realIncoming = incoming.toRealPath();
+            Path realSourceRoot = sourceRoot.toRealPath();
             source = source.toRealPath();
-            if (!source.startsWith(realIncoming)) {
-                throw new IOException("The selected file must remain inside the incoming directory.");
+            if (!source.startsWith(realSourceRoot)) {
+                throw new IOException("The selected file must remain inside its permitted Musicolide folder.");
             }
 
             long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
@@ -486,11 +649,13 @@ public final class AudioProcessor implements AutoCloseable {
                     sha1, durationMs, segmentMs, segmentCount, Files.size(generatedPack));
             if (temporaryUrlImport) {
                 long retentionMinutes = bounded(
-                        plugin.getConfig().getInt("audio.url-import-retention-minutes", 15), 1, 1440);
+                        plugin.getConfig().getInt("audio.yt-dlp.url-import-retention-minutes", 15), 1, 1440);
                 long expiresAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(retentionMinutes);
                 repository.saveTemporaryTrack(track, expiresAt);
             } else {
                 repository.saveTrack(track);
+                persistedTrackId = track.id();
+                persistSavedSource(data, source, track);
             }
             monoVariantsReady.add(track.id());
             if (rebuildBedrockLibrary) {
@@ -503,7 +668,9 @@ public final class AudioProcessor implements AutoCloseable {
             }
 
             // Keep the original input if processing or catalogue persistence failed.
-            if (plugin.getConfig().getBoolean("audio.delete-source-after-import", true)) {
+            Path savedDirectory = data.resolve("SavedMusic").toAbsolutePath().normalize();
+            if (plugin.getConfig().getBoolean("audio.delete-source-after-import", true)
+                    && !source.toAbsolutePath().normalize().startsWith(savedDirectory)) {
                 try {
                     Files.deleteIfExists(source);
                 } catch (IOException ex) {
@@ -513,6 +680,24 @@ public final class AudioProcessor implements AutoCloseable {
             }
             return track;
         } catch (Exception ex) {
+            if (persistedTrackId != null) {
+                try {
+                    String code = repository.getTrackCode(persistedTrackId).orElse(null);
+                    Path saved = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("SavedMusic");
+                    if (code != null && Files.isDirectory(saved)) {
+                        try (var files = Files.list(saved)) {
+                            for (Path file : files.filter(Files::isRegularFile)
+                                    .filter(path -> path.getFileName().toString().startsWith(code + "."))
+                                    .toList()) Files.deleteIfExists(file);
+                        }
+                    }
+                    repository.deleteTrack(persistedTrackId);
+                } catch (Exception rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                    plugin.getLogger().warning("Could not fully roll back a catalogue row after a failed SavedMusic write: "
+                            + rollbackError.getMessage());
+                }
+            }
             deleteQuietly(trackDirectory);
             deleteQuietly(generatedPack);
             // The Java library is built before the catalogue write so a track is
@@ -547,6 +732,9 @@ public final class AudioProcessor implements AutoCloseable {
     private static String normalizeCustomId(String requestedId) throws IOException {
         if (requestedId == null || requestedId.isBlank()) return null;
         String normalized = requestedId.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "_");
+        if (normalized.matches("[a-f][0-9]{2}")) {
+            throw new IOException("Names matching the reserved short TrackID format a00-f99 cannot be used as custom IDs.");
+        }
         if (!SAFE_ID.matcher(normalized).matches() || normalized.length() > 45) {
             // The ms_/mc_ sound namespace prefix adds three characters; keep
             // the complete namespace within the same 48-character limit.
@@ -643,9 +831,9 @@ public final class AudioProcessor implements AutoCloseable {
         if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             throw new IllegalStateException("FFmpeg is not ready; mono audio cannot be generated yet.");
         }
-        Path incoming = data.resolve("incoming");
-        Files.createDirectories(incoming);
-        Path work = Files.createTempDirectory(incoming, ".musicolide-mono-");
+        Path temporaryRoot = data.resolve("temp");
+        Files.createDirectories(temporaryRoot);
+        Path work = Files.createTempDirectory(temporaryRoot, ".musicolide-mono-");
         try {
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
             int quality = bounded(plugin.getConfig().getInt("audio.mono-quality",
@@ -772,9 +960,9 @@ public final class AudioProcessor implements AutoCloseable {
             throw new IOException("The track has already reached its end.");
         }
 
-        Path incoming = data.resolve("incoming");
-        Files.createDirectories(incoming);
-        Path work = Files.createTempDirectory(incoming, ".musicolide-resume-");
+        Path temporaryRoot = data.resolve("temp");
+        Files.createDirectories(temporaryRoot);
+        Path work = Files.createTempDirectory(temporaryRoot, ".musicolide-resume-");
         Path outputPack = null;
         try {
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);

@@ -85,6 +85,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "unlink" -> unlink(sender);
                 case "import" -> importTrack(sender, args);
                 case "import-url" -> importUrl(sender, args);
+                case "save" -> saveTrack(sender, args);
+                case "delete" -> deleteTrack(sender, args);
                 case "diagnostics" -> diagnostics(sender);
                 case "download" -> downloadLibrary(sender);
                 case "list" -> listTracks(sender, args);
@@ -240,10 +242,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         try {
             local = repository.searchForPlayback(cleaned, 25, 0).stream()
                     .map(track -> new DiscordPlaySuggestion(
-                            TextUtil.truncate(track.title()
+                            TextUtil.truncate("[" + displayTrackId(track) + "] " + track.title()
                                     + (track.artist() == null || track.artist().isBlank()
                                     ? "" : " — " + track.artist()), 100),
-                            track.id()))
+                            displayTrackId(track)))
                     .toList();
         } catch (SQLException error) {
             return CompletableFuture.failedFuture(error);
@@ -354,7 +356,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void importTrack(CommandSender sender, String[] args) {
         if (!admin(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /music import <filename> [title] [--id custom_id] or /music import all"));
+            sender.sendMessage(msg("&eUsage: /music import <filename> [title] [id:music100] or /music import all"));
             return;
         }
         if (args[1].equalsIgnoreCase("all")) {
@@ -367,18 +369,20 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         String customId = optionValue(args, 2, "--id");
         String title = joinWithoutOption(args, 2, "--id");
-        sender.sendMessage(msg("&aPreparing audio. Place the file in plugins/Musicolide/incoming/."));
+        sender.sendMessage(msg("&ePreparing &f" + args[1] + "&e from SavedMusic/..."));
         processor.importFile(args[1], title.isBlank() ? null : title, customId).whenComplete((track, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (error != null) sender.sendMessage(msg("&cImport failed: " + rootMessage(error)));
-                    else sender.sendMessage(msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)"));
+                    else sender.sendMessage(msg("&aSaved &f" + track.title() + " &7[TrackID: &f" + displayTrackId(track) + "&7]"));
                 }));
     }
 
     private void importUrl(CommandSender sender, String[] args) throws SQLException {
         if (!admin(sender)) return;
-        if (args.length < 3 || !args[2].equalsIgnoreCase("--rights-confirmed")) {
-            sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> --rights-confirmed [title] [--id custom_id]"));
+        if (args.length < 3 || !(args[2].equalsIgnoreCase("rights")
+                || args[2].equalsIgnoreCase("rights-confirmed")
+                || args[2].equalsIgnoreCase("--rights-confirmed"))) {
+            sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> rights [title] [id:music100]"));
             sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
             return;
         }
@@ -394,21 +398,27 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!alreadyImported && !admitHeavyRequest(sender, "import",
                 "audio.processing.import-cooldown-seconds", 10,
                 "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
-        sender.sendMessage(msg("&aStarting an allowlisted URL import. yt-dlp will finish before FFmpeg starts."));
-        processor.importUrl(args[1], title.isBlank() ? null : title, customId).whenComplete((track, error) ->
+        sender.sendMessage(msg("&eImporting authorized audio into the permanent SavedMusic library..."));
+        processor.importUrlPermanent(args[1], title.isBlank() ? null : title, customId).whenComplete((track, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
-                    else sender.sendMessage(msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)"));
+                    else sender.sendMessage(msg("&aSaved &f" + track.title() + " &7[TrackID: &f" + displayTrackId(track) + "&7]"));
                 }));
     }
 
     private String optionValue(String[] args, int start, String option) {
         for (int i = Math.max(0, start); i < args.length; i++) {
-            if (args[i].equalsIgnoreCase(option)) {
+            String token = args[i];
+            if (token.equalsIgnoreCase(option)) {
                 if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
                     throw new IllegalArgumentException(option + " requires a value.");
                 }
                 return args[i + 1];
+            }
+            if (option.equalsIgnoreCase("--id") && token.toLowerCase(Locale.ROOT).startsWith("id:")) {
+                String value = token.substring(3);
+                if (value.isBlank()) throw new IllegalArgumentException("id: requires a value.");
+                return value;
             }
         }
         return null;
@@ -420,6 +430,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             if (args[i].equalsIgnoreCase(option)) {
                 if (i + 1 >= args.length) throw new IllegalArgumentException(option + " requires a value.");
                 i++;
+            } else if (option.equalsIgnoreCase("--id")
+                    && args[i].toLowerCase(Locale.ROOT).startsWith("id:")) {
+                if (args[i].substring(3).isBlank()) throw new IllegalArgumentException("id: requires a value.");
             } else {
                 values.add(args[i]);
             }
@@ -471,7 +484,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     /**
-     * Imports every supported audio file in the incoming directory sequentially.
+     * Imports every supported audio file in SavedMusic sequentially.
      * Sequential processing avoids launching an unbounded number of FFmpeg jobs
      * and gives hosts with strict CPU/RAM limits a predictable workload.
      */
@@ -482,7 +495,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 "audio.processing.import-cooldown-seconds", 10,
                 "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
 
-        Path incoming = plugin.getDataFolder().toPath().resolve("incoming");
+        Path incoming = plugin.getDataFolder().toPath().resolve("SavedMusic");
         int maximumFiles = Math.max(1, Math.min(200,
                 plugin.getConfig().getInt("audio.processing.max-bulk-import-files", 50)));
         final List<String> files;
@@ -495,6 +508,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 List<String> discovered = stream.filter(Files::isRegularFile)
                         .map(path -> path.getFileName().toString())
                         .filter(MusicCommand::isSupportedAudioFile)
+                        .filter(fileName -> !hasTrackMetadataSidecar(incoming, fileName))
                         .limit((long) maximumFiles + 1L)
                         .sorted(String.CASE_INSENSITIVE_ORDER)
                         .toList();
@@ -504,18 +518,18 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                         : discovered;
             }
         } catch (IOException ex) {
-            sender.sendMessage(msg("&cCould not scan the incoming directory: " + ex.getMessage()));
+            sender.sendMessage(msg("&cCould not scan SavedMusic/: " + ex.getMessage()));
             return;
         }
 
         if (files.isEmpty()) {
-            sender.sendMessage(msg("&eNo supported audio files were found in plugins/Musicolide/incoming/."));
+            sender.sendMessage(msg("&eNo supported audio files were found in plugins/Musicolide/SavedMusic/."));
             return;
         }
 
         sender.sendMessage(msg("&aBulk import started for &f" + files.size()
                 + " &aaudio file(s). Files are processed one at a time."
-                + (truncated ? " &eThe configured batch limit was reached; additional files remain in incoming/." : "")));
+                + (truncated ? " &eThe configured batch limit was reached; additional files remain in SavedMusic/." : "")));
         AtomicInteger imported = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
@@ -525,7 +539,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 if (error == null) {
                     imported.incrementAndGet();
                     Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
-                            msg("&aImported &f" + track.title() + " &7(ID: &f" + track.id() + "&7)")));
+                            msg("&aSaved &f" + track.title() + " &7[TrackID: " + displayTrackId(track) + "]")));
                 } else {
                     failed.incrementAndGet();
                     String reason = rootMessage(error);
@@ -542,6 +556,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                         + (truncated ? " &e| More files remain; this batch was capped at " + maximumFiles + "." : "")))));
     }
 
+    private static boolean hasTrackMetadataSidecar(Path directory, String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot <= 0) return false;
+        String base = fileName.substring(0, dot);
+        return base.matches("[a-f][0-9]{2}") && Files.isRegularFile(directory.resolve(base + ".yml"));
+    }
+
     private static boolean isSupportedAudioFile(String fileName) {
         int dot = fileName.lastIndexOf('.');
         if (dot < 1 || dot == fileName.length() - 1) return false;
@@ -553,12 +574,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void listTracks(CommandSender sender, String[] args) throws SQLException {
         String query = args.length > 1 ? String.join(" ", Arrays.copyOfRange(args, 1, args.length)) : "";
         List<MusicTrack> tracks = query.isBlank() ? repository.allTracks(50) : repository.search(query, 50);
-        sender.sendMessage(msg("&5Musicolide tracks (&f" + tracks.size() + "&5):"));
+        sender.sendMessage(msg("&5Musicolide library &8• &f" + tracks.size() + " &7track(s):"));
         for (MusicTrack track : tracks) {
             String title = TextUtil.truncate(track.title(), 48);
             String artist = TextUtil.truncate(track.artist(), 28);
             String details = artist.isBlank() ? title : title + " &7by &f" + artist;
-            sender.sendMessage(msg("&7- &f" + track.id() + " &8| &5" + details
+            sender.sendMessage(msg("&7• &d" + displayTrackId(track) + " &8| &f" + details
                     + " &8| &7" + format(track.durationMs())));
         }
     }
@@ -567,7 +588,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <track-id, title, YouTube URL or search query> [@a/@p/@s/player] [--target selector] [--id custom_id] [--circle radius/--square WxL/--region id] [--mode mono/stereo]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -638,68 +659,86 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             beginYouTubeSearch(sender, input, request);
             return;
         }
-        if (plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
-            if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
-                sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
-                return;
-            }
-            if (!admitHeavyRequest(sender, "import",
-                    "audio.processing.import-cooldown-seconds", 10,
-                    "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
-            sender.sendMessage(msg("&eImporting this allowlisted URL. Confirm that your server may distribute this audio."));
-            processor.importUrl(rawInput, null, request.customId).whenComplete((imported, error) ->
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        if (sender instanceof Player player && !player.isOnline()) return;
-                        if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
-                        else {
-                            sender.sendMessage(msg("&aImported &f" + imported.title() + "&a; starting playback."));
-                            start(sender, imported, request);
-                        }
-                    }));
-            return;
-        }
-        if (isYouTubeUrl(rawInput)) {
-            sender.sendMessage(msg("&cYouTube URL auto-import is disabled."));
-            sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play and allow youtube.com/youtu.be in config.yml."));
-            sender.sendMessage(msg("&7For a one-time authorized import, use /music import-url <url> --rights-confirmed, then /music play <track-id>."));
-            return;
-        }
-        if (!plugin.getConfig().getBoolean("matching.enabled", true)
-                || !plugin.getConfig().getBoolean("matching.metadata-lookup", true)) {
-            sender.sendMessage(msg("&cNo saved alias exists for this URL. Ask an administrator to add one."));
+        resolveOrImportPlayUrl(sender, rawInput, request);
+        return;
+    }
+
+    private void resolveOrImportPlayUrl(CommandSender sender, String rawUrl, PlayRequest request) {
+        boolean metadataEnabled = plugin.getConfig().getBoolean("matching.enabled", true)
+                && plugin.getConfig().getBoolean("matching.metadata-lookup", true);
+        if (!metadataEnabled) {
+            continueTemporaryUrlImport(sender, rawUrl, request);
             return;
         }
         if (!admitHeavyRequest(sender, "metadata",
                 "audio.processing.metadata-cooldown-seconds", 5,
                 "audio.processing.global-metadata-cooldown-seconds", 1,
                 "another external metadata lookup")) return;
-        sender.sendMessage(msg("&eLooking up public metadata and searching your local catalogue. No audio is downloaded from the streaming service."));
-        metadataResolver.resolve(input).thenAccept(metadata -> Bukkit.getScheduler().runTask(plugin, () -> {
-            if (metadata.isEmpty()) {
-                sender.sendMessage(msg("&cCould not read public metadata for that URL. Use /music alias add to map it manually."));
-                return;
-            }
-            try {
-                List<MusicTrack> candidates = repository.searchForPlayback(metadata.get().title(), 20, 0);
-                Optional<CatalogMatcher.Match> match = CatalogMatcher.best(metadata.get().title(),
-                        metadata.get().creator(), candidates);
-                if (match.isEmpty()) {
-                    sender.sendMessage(msg("&cNo likely match was found in your local authorized catalogue."));
+        sender.sendMessage(msg("&eChecking the local library by source and metadata before downloading..."));
+        metadataResolver.resolve(rawUrl).thenAccept(metadata -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (sender instanceof Player player && !player.isOnline()) return;
+            if (metadata.isPresent()) {
+                try {
+                    List<MusicTrack> candidates = repository.searchForPlayback(metadata.get().title(), 25, 0);
+                    Optional<CatalogMatcher.Match> match = CatalogMatcher.bestCompatibleArtistMatch(
+                            metadata.get().title(), metadata.get().creator(), candidates);
+                    if (match.isPresent()) {
+                        sender.sendMessage(msg("&aFound a matching local download: &f" + match.get().track().title()
+                                + " &7[TrackID: " + displayTrackId(match.get().track()) + "]."));
+                        offerMatch(sender, match.get().track(), request, match.get().confidence());
+                        return;
+                    }
+                } catch (SQLException error) {
+                    sender.sendMessage(msg("&cCould not check the local catalogue: " + error.getMessage()));
                     return;
                 }
-                offerMatch(sender, match.get().track(), request, match.get().confidence());
-            } catch (SQLException ex) {
-                sender.sendMessage(msg("&cCatalogue search failed: " + ex.getMessage()));
             }
+            continueTemporaryUrlImport(sender, rawUrl, request);
         }));
+    }
+
+    private void continueTemporaryUrlImport(CommandSender sender, String rawUrl, PlayRequest request) {
+        if (!isYouTubeUrl(rawUrl)) {
+            sender.sendMessage(msg("&cNo matching local track was found for this source."));
+            sender.sendMessage(msg("&7Spotify and SoundCloud remain metadata/alias-only. Add an alias to a local TrackID with /music alias add."));
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            sender.sendMessage(msg("&cNo saved local match was found and URL auto-import is disabled."));
+            sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play for configured, rights-cleared hosts."));
+            sender.sendMessage(msg("&7To permanently add an authorized URL, use /music import-url <url> rights."));
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            sender.sendMessage(msg("&cURL importing is disabled by the server administrator."));
+            return;
+        }
+        if (!admitHeavyRequest(sender, "import",
+                "audio.processing.import-cooldown-seconds", 10,
+                "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
+        sender.sendMessage(msg("&eNo local match found. Importing a temporary playback copy..."));
+        processor.importUrl(rawUrl, null, request.customId).whenComplete((imported, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (sender instanceof Player player && !player.isOnline()) return;
+                    if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
+                    else {
+                        sender.sendMessage(msg("&aReady: &f" + imported.title() + " &7[TrackID: "
+                                + displayTrackId(imported) + "] &a(temporary)."));
+                        start(sender, imported, request);
+                    }
+                }));
     }
 
     private int firstPlayModifierIndex(CommandSender sender, String[] args) {
         for (int i = 2; i < args.length; i++) {
             String value = args[i];
             String normalized = value.toLowerCase(Locale.ROOT);
-            if (normalized.startsWith("--") || normalized.equals("@a")
-                    || normalized.equals("@p") || normalized.equals("@s")
+            boolean compact = normalized.startsWith("target:") || normalized.startsWith("id:")
+                    || normalized.startsWith("mode:") || normalized.startsWith("circle:")
+                    || normalized.startsWith("square:") || normalized.startsWith("region:")
+                    || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
+            if (normalized.startsWith("--") || compact || normalized.equals("mono") || normalized.equals("stereo")
+                    || normalized.equals("@a") || normalized.equals("@p") || normalized.equals("@s")
                     || Bukkit.getPlayerExact(value) != null) return i;
         }
         return args.length;
@@ -733,10 +772,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
                 query, parsed.customId, parsed.audioMode);
-        beginYouTubeSearch(sender, query, request);
+        beginYouTubeSearch(sender, query, request, true);
     }
 
     private void beginYouTubeSearch(CommandSender sender, String rawQuery, PlayRequest request) {
+        beginYouTubeSearch(sender, rawQuery, request, false);
+    }
+
+    private void beginYouTubeSearch(CommandSender sender, String rawQuery, PlayRequest request,
+                                    boolean permanentSelection) {
         if (!(sender instanceof Player player)) {
             sender.sendMessage(msg("&cSearch result selection is player-specific; run /music search in game."));
             return;
@@ -744,7 +788,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String query = normalizeSearchQuery(rawQuery);
         long now = System.currentTimeMillis();
         pendingSearches.entrySet().removeIf(entry -> now - entry.getValue().createdAtMillis > SEARCH_RESULT_TTL_MILLIS);
-        PendingSearch search = new PendingSearch(query, request, now);
+        PendingSearch search = new PendingSearch(query, request, now, permanentSelection);
         pendingSearches.put(player.getUniqueId(), search);
         sender.sendMessage(msg("&eSearching the local catalogue first, then YouTube for: &f" + safeChat(query)));
         loadSearchPage(player, search, 1);
@@ -837,7 +881,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 String artist = safeChat(track.artist());
                 player.sendMessage(msg("&e" + (i + 1) + ". &a[Local] &f" + TextUtil.truncate(safeChat(track.title()), 58)
                         + (artist.isBlank() ? "" : " &7- " + TextUtil.truncate(artist, 24))
-                        + " &8(ID: " + safeChat(track.id()) + ") &7[" + format(track.durationMs()) + "]"));
+                        + " &8[TrackID: " + displayTrackId(track) + "] &7[" + format(track.durationMs()) + "]"));
             } else {
                 YtDlpDownloader.SearchResult result = entry.remoteResult;
                 String duration = result.durationSeconds() > 0 ? format(result.durationSeconds() * 1000L) : "duration ?";
@@ -894,39 +938,94 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         SearchEntry selected = search.pageResults.get(selection - 1);
         if (selected.localTrack != null) {
             pendingSearches.remove(player.getUniqueId(), search);
-            start(sender, selected.localTrack, search.request);
-            return;
-        }
-        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) throw new IllegalArgumentException("URL importing is disabled by the server administrator.");
-        if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
-            sender.sendMessage(msg("&cSelecting a YouTube result imports audio, but audio.yt-dlp.auto-import-on-play is disabled."));
-            sender.sendMessage(msg("&7Ask an administrator to enable it after confirming redistribution rights."));
+            if (!search.permanentSelection) {
+                start(sender, selected.localTrack, search.request);
+                return;
+            }
+            sender.sendMessage(msg("&eSaving the selected local track to SavedMusic..."));
+            processor.saveTrackPermanently(selected.localTrack.id()).whenComplete((saved, error) ->
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (!player.isOnline()) return;
+                        if (error != null) sender.sendMessage(msg("&cCould not save track: " + rootMessage(error)));
+                        else {
+                            sender.sendMessage(msg("&aSaved &f" + saved.title() + " &7[TrackID: "
+                                    + displayTrackId(saved) + "&7]."));
+                            start(sender, saved, search.request);
+                        }
+                    }));
             return;
         }
         YtDlpDownloader.SearchResult remote = selected.remoteResult;
+        List<MusicTrack> metadataCandidates = repository.searchForPlayback(remote.title(), 25, 0);
+        Optional<CatalogMatcher.Match> metadataMatch = findStrongMetadataMatch(
+                remote.title(), remote.uploader(), metadataCandidates);
+        if (metadataMatch.isPresent()) {
+            pendingSearches.remove(player.getUniqueId(), search);
+            MusicTrack match = metadataMatch.get().track();
+            sender.sendMessage(msg("&aMatched an existing local download: &f" + match.title()
+                    + " &7[TrackID: " + displayTrackId(match) + "]."));
+            if (search.permanentSelection) {
+                processor.saveTrackPermanently(match.id()).whenComplete((saved, error) ->
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            if (!player.isOnline()) return;
+                            if (error != null) sender.sendMessage(msg("&cCould not save the matched track: " + rootMessage(error)));
+                            else start(sender, saved, search.request);
+                        }));
+            } else {
+                start(sender, match, search.request);
+            }
+            return;
+        }
         Optional<String> aliasKey = LinkNormalizer.normalize(remote.url());
         if (aliasKey.isPresent()) {
             Optional<MusicTrack> existing = repository.resolveAlias(aliasKey.get());
             if (existing.isPresent()) {
                 pendingSearches.remove(player.getUniqueId(), search);
-                sender.sendMessage(msg("&aAlready imported: &f" + existing.get().title() + "&a. Starting the saved copy without another download."));
-                start(sender, existing.get(), search.request);
+                MusicTrack matched = existing.get();
+                if (search.permanentSelection) {
+                    processor.saveTrackPermanently(matched.id()).whenComplete((saved, error) ->
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                if (!player.isOnline()) return;
+                                if (error != null) sender.sendMessage(msg("&cCould not save the existing track: " + rootMessage(error)));
+                                else {
+                                    sender.sendMessage(msg("&aReusing existing audio &f" + saved.title()
+                                            + " &7[TrackID: " + displayTrackId(saved) + "]."));
+                                    start(sender, saved, search.request);
+                                }
+                            }));
+                } else {
+                    sender.sendMessage(msg("&aAlready imported: &f" + matched.title()
+                            + " &a. Starting the saved copy without another download."));
+                    start(sender, matched, search.request);
+                }
                 return;
             }
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false))
+            throw new IllegalArgumentException("URL importing is disabled by the server administrator.");
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
+            sender.sendMessage(msg("&cThis result is not in your local library and YouTube importing is disabled."));
+            sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play after confirming redistribution rights."));
+            return;
         }
         if (!admitHeavyRequest(sender, "import",
                 "audio.processing.import-cooldown-seconds", 10,
                 "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
         search.selecting = true;
         sender.sendMessage(msg("&eImporting selected result: &f" + safeChat(remote.title())));
-        processor.importUrl(remote.url(), null, search.request.customId).whenComplete((imported, error) ->
+        CompletableFuture<MusicTrack> selectedImport = search.permanentSelection
+                ? processor.importUrlPermanent(remote.url(), null, search.request.customId)
+                : processor.importUrl(remote.url(), null, search.request.customId);
+        selectedImport.whenComplete((imported, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     search.selecting = false;
                     if (!player.isOnline()) return;
                     if (error != null) sender.sendMessage(msg("&cSelected result could not be imported: " + rootMessage(error)));
                     else {
                         pendingSearches.remove(player.getUniqueId(), search);
-                        sender.sendMessage(msg("&aImported &f" + imported.title() + "&a; starting playback."));
+                        sender.sendMessage(msg(search.permanentSelection
+                                ? "&aSaved &f" + imported.title() + " &7[TrackID: " + displayTrackId(imported) + "]&a; starting playback."
+                                : "&aImported temporary copy &f" + imported.title() + " &7[TrackID: " + displayTrackId(imported) + "]&a; starting playback."));
                         start(sender, imported, search.request);
                     }
                 }));
@@ -1025,11 +1124,56 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         for (int i = 2; i < args.length; i++) {
             String option = args[i].toLowerCase(Locale.ROOT);
+            if (option.startsWith("target:")) {
+                if (selector != null) throw new IllegalArgumentException("Specify only one target.");
+                selector = option.substring("target:".length());
+                if (selector.isBlank()) throw new IllegalArgumentException("Use target:@a, target:@p, target:@s or target:<player>.");
+                continue;
+            }
+            if (option.startsWith("id:")) {
+                customId = option.substring(3);
+                if (customId.isBlank()) throw new IllegalArgumentException("Use id:<custom-name>, for example id:music100.");
+                continue;
+            }
+            if (option.startsWith("mode:")) {
+                audioMode = option.substring(5);
+                if (!audioMode.equals("mono") && !audioMode.equals("stereo"))
+                    throw new IllegalArgumentException("Use mode:mono or mode:stereo.");
+                continue;
+            }
+            if (option.startsWith("circle:")) {
+                radius = Double.parseDouble(option.substring(7));
+                circle = true; square = false; region = null;
+                continue;
+            }
+            if (option.startsWith("square:")) {
+                String[] dims = option.substring(7).split("x", 2);
+                if (dims.length != 2) throw new IllegalArgumentException("Use square:WIDTHxLENGTH, for example square:50x50.");
+                width = Double.parseDouble(dims[0]); length = Double.parseDouble(dims[1]);
+                square = true; circle = false; region = null;
+                continue;
+            }
+            if (option.startsWith("region:")) {
+                region = option.substring(7);
+                if (region.isBlank()) throw new IllegalArgumentException("Use region:<WorldGuard-region-ID>.");
+                circle = false; square = false;
+                continue;
+            }
+            java.util.regex.Matcher fadeArgument = java.util.regex.Pattern
+                    .compile("fade(?::)?([0-9]+(?:\\.[0-9]+)?)").matcher(option);
+            if (fadeArgument.matches()) {
+                fadeSpecified = true;
+                fade = Double.parseDouble(fadeArgument.group(1));
+                fadeEnabled = fade > 0;
+                if (fadeEnabled && !circle && !square && region == null) circle = true;
+                continue;
+            }
+
             switch (option) {
                 case "--all", "--player" -> throw new IllegalArgumentException(
                         "Use @a, @p, @s, or a player name instead of --all/--player.");
                 case "--target" -> {
-                    if (++i >= args.length) throw new IllegalArgumentException("--target requires @a, @p, @s, or a player name.");
+                    if (++i >= args.length) throw new IllegalArgumentException("--target requires a target.");
                     if (selector != null) throw new IllegalArgumentException("Specify only one target.");
                     selector = args[i];
                 }
@@ -1045,39 +1189,27 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "mono", "stereo" -> audioMode = option;
                 case "--circle" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--circle requires a radius.");
-                    radius = Double.parseDouble(args[i]);
-                    circle = true;
-                    square = false;
+                    radius = Double.parseDouble(args[i]); circle = true; square = false; region = null;
                 }
                 case "--square" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--square requires WIDTHxLENGTH.");
                     String[] dims = args[i].toLowerCase(Locale.ROOT).split("x", 2);
                     if (dims.length != 2) throw new IllegalArgumentException("Square dimensions must look like 50x50.");
-                    width = Double.parseDouble(dims[0]);
-                    length = Double.parseDouble(dims[1]);
-                    square = true;
-                    circle = false;
+                    width = Double.parseDouble(dims[0]); length = Double.parseDouble(dims[1]);
+                    square = true; circle = false; region = null;
                 }
                 case "--fade" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--fade requires a distance.");
-                    fadeSpecified = true;
-                    fade = Double.parseDouble(args[i]);
-                    fadeEnabled = fade > 0;
+                    fadeSpecified = true; fade = Double.parseDouble(args[i]); fadeEnabled = fade > 0;
                     if (fadeEnabled && !circle && !square && region == null) circle = true;
                 }
                 case "--region" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--region requires a region ID.");
-                    region = args[i];
-                    circle = false;
-                    square = false;
+                    region = args[i]; circle = false; square = false;
                 }
                 default -> {
-                    if (option.startsWith("--")) {
-                        throw new IllegalArgumentException("Unknown play option: " + args[i]);
-                    }
-                    if (selector != null) {
-                        throw new IllegalArgumentException("Specify only one target: @a, @p, @s, or one player name.");
-                    }
+                    if (option.startsWith("--")) throw new IllegalArgumentException("Unknown play option: " + args[i]);
+                    if (selector != null) throw new IllegalArgumentException("Specify only one target: @a, @p, @s, or one player name.");
                     selector = args[i];
                 }
             }
@@ -1237,6 +1369,52 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void saveTrack(CommandSender sender, String[] args) throws SQLException {
+        if (!libraryManager(sender)) return;
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music save <TrackID>");
+        MusicTrack track = repository.getTrack(args[1])
+                .orElseThrow(() -> new IllegalArgumentException("TrackID not found. Use /music list to see saved tracks."));
+        sender.sendMessage(msg("&eSaving &f" + track.title() + " &eto the permanent SavedMusic library..."));
+        processor.saveTrackPermanently(track.id()).whenComplete((saved, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (error != null) sender.sendMessage(msg("&cCould not save track: " + rootMessage(error)));
+                    else sender.sendMessage(msg("&aPermanently saved &f" + saved.title()
+                            + " &7[TrackID: " + displayTrackId(saved) + "]."));
+                }));
+    }
+
+    private void deleteTrack(CommandSender sender, String[] args) throws SQLException {
+        if (!admin(sender)) return;
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music delete <TrackID>");
+        MusicTrack track = repository.getTrack(args[1])
+                .orElseThrow(() -> new IllegalArgumentException("TrackID not found. Use /music list to check the ID."));
+        if (playback.isTrackInUse(track.id())) {
+            throw new IllegalArgumentException("That track is currently playing or queued. Stop or remove it before deleting.");
+        }
+        if (plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin
+                && musicPlugin.isTrackPackDownloadInProgress(track.packId())) {
+            throw new IllegalArgumentException("A player is downloading this track's library pack. Try again after it finishes.");
+        }
+        sender.sendMessage(msg("&eDeleting &f" + track.title() + " &7[TrackID: " + displayTrackId(track)
+                + "&7] &efrom SavedMusic and the music library..."));
+        processor.deleteTrack(track.id()).whenComplete((deleted, error) ->
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (error != null) sender.sendMessage(msg("&cCould not delete track: " + rootMessage(error)));
+                    else if (Boolean.TRUE.equals(deleted)) sender.sendMessage(msg("&aDeleted &f" + track.title()
+                            + " &7[TrackID: " + displayTrackId(track) + "]."));
+                    else sender.sendMessage(msg("&eThat track was already deleted."));
+                }));
+    }
+
+    private String displayTrackId(MusicTrack track) {
+        try {
+            return repository.getTrackCode(track.id()).orElse(track.id());
+        } catch (SQLException error) {
+            plugin.getLogger().warning("Could not read TrackID for " + track.id() + ": " + error.getMessage());
+            return track.id();
+        }
+    }
+
     private void control(CommandSender sender, String action) {
         if (!dj(sender)) return;
         UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
@@ -1280,7 +1458,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         MusicTrack track = resolveTrack(args[1]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
         if (!playback.enqueue(player.getUniqueId(), admin, track)) sender.sendMessage(msg("&cNo session found or queue is full."));
-        else sender.sendMessage(msg("&aQueued: &f" + track.title()));
+        else sender.sendMessage(msg("&aQueued: &f" + track.title()
+                + " &7[TrackID: " + displayTrackId(track) + "]"));
     }
 
     private void nowPlaying(CommandSender sender) {
@@ -1289,7 +1468,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             MusicTrack track = session.current();
             String title = track == null ? "Unknown" : TextUtil.truncate(track.title(), 48);
             String artist = track == null ? "" : TextUtil.truncate(track.artist(), 28);
-            sender.sendMessage(msg("&5" + title + (artist.isBlank() ? "" : " &7by &f" + artist)
+            sender.sendMessage(msg("&5" + (track == null ? "" : "[" + displayTrackId(track) + "] ")
+                    + title + (artist.isBlank() ? "" : " &7by &f" + artist)
                     + " &7| " + session.ownerName()
                     + " &8| &7" + format(session.elapsedMs()) + " / " + format(track == null ? 0 : track.durationMs())
                     + (session.paused() ? " &e(PAUSED)" : "")));
@@ -1468,7 +1648,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 MusicTrack track = resolveTrack(args[3]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
                 int maximumTracks = Math.max(1, plugin.getConfig().getInt("limits.max-playlist-tracks", 500));
                 repository.addPlaylistTrack(args[2], track.id(), maximumTracks);
-                sender.sendMessage(msg("&aAdded " + track.title() + " to " + args[2]));
+                sender.sendMessage(msg("&aAdded &f" + track.title() + " &7[TrackID: "
+                        + displayTrackId(track) + "] &ato playlist &f" + args[2] + "."));
             }
             case "list" -> sender.sendMessage(msg("&5Playlists: &f" + String.join(", ", repository.listPlaylists())));
             case "play" -> {
@@ -1483,7 +1664,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 PlaybackSession session = playback.startSession(player.getUniqueId(), player.getName(), zone,
                         true, List.of(), tracks, 0);
                 session.repeat(plugin.getConfig().getBoolean("playlists.repeat", false));
-                sender.sendMessage(msg("&aStarted playlist &f" + args[2] + " &7(" + tracks.size() + " tracks; packs load gradually)."));
+                sender.sendMessage(msg("&aStarted playlist &f" + args[2] + " &7(" + tracks.size()
+                        + " tracks; packs load gradually)."));
             }
             default -> throw new IllegalArgumentException("Unknown playlist subcommand.");
         }
@@ -1504,8 +1686,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("&eUsage: /music alias add <external-url> <track-id>")); return;
         }
         String key = LinkNormalizer.normalize(args[2]).orElseThrow(() -> new IllegalArgumentException("Invalid URL."));
-        if (repository.getTrack(args[3]).isEmpty()) throw new IllegalArgumentException("Local track ID not found.");
-        repository.addAlias(key, args[3]);
+        MusicTrack track = resolveTrack(args[3])
+                .orElseThrow(() -> new IllegalArgumentException("Local TrackID not found."));
+        repository.addAlias(key, track.id());
         sender.sendMessage(msg("&aURL alias saved. It points to your local authorized audio file."));
     }
 
@@ -1544,6 +1727,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return false;
     }
 
+    private boolean libraryManager(CommandSender sender) {
+        String djPermission = plugin.getConfig().getString("permissions.dj", "musicolide.dj");
+        String adminPermission = plugin.getConfig().getString("permissions.admin", "musicolide.admin");
+        if (sender.hasPermission(djPermission) || sender.hasPermission(adminPermission)) return true;
+        sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
+        return false;
+    }
+
     private boolean admin(CommandSender sender) {
         if (sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"))) return true;
         sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
@@ -1551,31 +1742,39 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void help(CommandSender sender) {
-        sender.sendMessage(msg("&5Musicolide commands:"));
-        sender.sendMessage(msg("&f/link &7- create a five-minute one-use Discord pairing code"));
-        sender.sendMessage(msg("&f/unlink &7- unlink your Discord account"));
-        sender.sendMessage(msg("&f/music import <file> [title] &7- import one authorized audio file"));
-        sender.sendMessage(msg("&f/music import all &7- import every supported file in incoming/"));
-        sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] &7- import an allowlisted source"));
-        sender.sendMessage(msg("&f/music diagnostics &7- inspect native audio tools (admin)"));
-        sender.sendMessage(msg("&f/music download &7- retry or request your music library"));
-        sender.sendMessage(msg("&f/music list [search] &7- list tracks"));
-        sender.sendMessage(msg("&f/music search <query> &7- search local tracks first, then YouTube metadata"));
-        sender.sendMessage(msg("&f/music select <number> &7- play a local result or import a YouTube result"));
-        sender.sendMessage(msg("&f/music page <2-" + configuredSearchMaxPages() + "> &7- load the next six results only when requested"));
-        sender.sendMessage(msg("&f/music import <file> [title] [--id id] &7- set a stable custom track ID/name"));
-        sender.sendMessage(msg("&f/music import-url <url> --rights-confirmed [title] [--id id] &7- import with a custom ID/name"));
-        sender.sendMessage(msg("&f/play <track, query or URL> [@a/@p/@s/player] [--target selector] [--id custom_id] [--circle r/--square WxL/--region id] [--mode mono/stereo] [--fade n]"));
-        sender.sendMessage(msg("&7Stereo is the default. Mono uses one-channel audio; circle/square mono zones fade over 10 blocks by default (set playback.mono.fade-distance or override with --fade)."));
-        sender.sendMessage(msg("&7Spatial play/search defaults to @a inside the zone; without a zone it defaults to @s. WorldGuard regions do not support distance fade."));
-        sender.sendMessage(msg("&f/music search <query> [target] [zone options] &7- search with the same zone/target options"));
-        sender.sendMessage(msg("&f/music pause/resume/skip/stop/queue <track>"));
-        sender.sendMessage(msg("&f/music playlist create/add/list/play ..."));
-        sender.sendMessage(msg("&f/music volume <0-100>/speed <0.5-2.0>/mute/unmute/seek <seconds>/nowplaying"));
-        sender.sendMessage(msg("&f/music sync &7- re-synchronize your own audio with the active session"));
-        sender.sendMessage(msg("&f/music sync <seconds> &7- set the shared sync offset (admin)"));
-        sender.sendMessage(msg("&f/music alias add <url> <track-id> &7- map a URL to local audio"));
-        sender.sendMessage(msg("&f/music priority <number> &7- admin session priority"));
+        sender.sendMessage(msg("&5&lMusicolide &8• &7Quick command guide"));
+        sender.sendMessage(msg("&dPLAYBACK &8| &7Most-used commands"));
+        sender.sendMessage(msg("&f/play <TrackID/title/query/URL> &8- &7play for yourself"));
+        sender.sendMessage(msg("&f/play <track> @a &8- &7play for everyone (admin)"));
+        sender.sendMessage(msg("&f/music pause &8• &fresume &8• &fskip &8• &fstop &8• &fqueue"));
+        sender.sendMessage(msg("&f/music nowplaying &8• &fprogress &8• &fvolume <0-100> &8• &fspeed <0.5-2>"));
+        sender.sendMessage(msg("&f/music mute &8• &funmute &8• &fseek <seconds> &8• &fsync"));
+        sender.sendMessage(msg("&dLIBRARY &8| &7Search and manage audio"));
+        sender.sendMessage(msg("&f/music list [query] &8- &7browse tracks and their short TrackIDs"));
+        sender.sendMessage(msg("&f/music search <song/artist> &8- &7search local library and YouTube metadata"));
+        sender.sendMessage(msg("&f/music select <number> &8- &7save the selected result permanently, then play"));
+        sender.sendMessage(msg("&f/music page <number> &8- &7load the next result page"));
+        sender.sendMessage(msg("&f/music save <TrackID> &8- &7keep a temporary track permanently (DJ/admin)"));
+        sender.sendMessage(msg("&f/music delete <TrackID> &8- &7delete a track and its saved files (admin)"));
+        sender.sendMessage(msg("&f/music playlist create/add/list/play ... &8- &7manage playlists"));
+        sender.sendMessage(msg("&dIMPORTS &8| &7Server library files"));
+        sender.sendMessage(msg("&f/music import <file> [title] [id:name] &8- &7import from SavedMusic/"));
+        sender.sendMessage(msg("&f/music import all &8- &7import supported files in SavedMusic/"));
+        sender.sendMessage(msg("&f/music import-url <URL> rights [title] [id:name] &8- &7permanently import an authorized URL"));
+        sender.sendMessage(msg("&7Only import audio you own or have explicit rights to redistribute."));
+        sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
+        sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
+        sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10"));
+        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f id:custom_name"));
+        sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:stereo"));
+        sender.sendMessage(msg("&7Stereo is default. Mono circle/square zones use configured fade unless fadeN overrides it."));
+        sender.sendMessage(msg("&7A spatial option defaults to @a inside the zone; without one, /play defaults to @s."));
+        sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
+        sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
+        sender.sendMessage(msg("&f/music sync <seconds> &8• &f/music priority <number> &8• &f/music alias add <URL> <TrackID>"));
+        sender.sendMessage(msg("&f/link &8• &f/unlink &8- &7connect or disconnect your Discord account"));
+        sender.sendMessage(msg("&8TrackIDs use the short format a00-f99. Existing long internal IDs remain accepted."));
+        sender.sendMessage(msg("&8Legacy --option syntax is still accepted for backward compatibility."));
     }
 
     private boolean admitHeavyRequest(CommandSender sender, String action,
@@ -1615,9 +1814,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (sender instanceof Player player
                 && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return List.of();
-        if (args.length == 1) return partial(List.of("help", "link", "unlink", "import", "import-url", "diagnostics", "download", "list", "search", "select", "page", "play", "confirm", "pause", "resume",
-                "skip", "stop", "queue", "nowplaying", "progress", "volume", "mute", "unmute", "seek",
-                "playlist", "alias", "priority", "sync", "speed", "reload"), args[0]);
+        if (args.length == 1) return partial(List.of("help", "play", "pause", "resume", "skip", "stop", "queue",
+                "nowplaying", "progress", "volume", "speed", "mute", "unmute", "seek", "sync",
+                "list", "search", "select", "page", "save", "delete", "playlist", "import", "import-url",
+                "download", "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
         if (args.length >= 4 && args[0].equalsIgnoreCase("play")
                 && args[args.length - 2].equalsIgnoreCase("--target")) {
             List<String> targets = new ArrayList<>(List.of("@s", "@p", "@a"));
@@ -1640,6 +1840,16 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 return partial(numbers, args[1]);
             }
         }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("save")
+                || args[0].equalsIgnoreCase("delete"))) {
+            try {
+                List<String> codes = repository.allTracks(100).stream()
+                        .map(this::displayTrackId).toList();
+                return partial(codes, args[1]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
         if (args.length == 2 && args[0].equalsIgnoreCase("speed"))
             return partial(List.of("0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("volume"))
@@ -1648,6 +1858,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
             return partial(List.of("create", "add", "list", "play"), args[1]);
+        if (args.length == 4 && args[0].equalsIgnoreCase("playlist")
+                && args[1].equalsIgnoreCase("add")) {
+            try {
+                return partial(repository.allTracks(100).stream().map(this::displayTrackId).toList(), args[3]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
         if (args.length == 3 && args[0].equalsIgnoreCase("play")) {
             List<String> targets = new ArrayList<>();
             targets.add("@a");
@@ -1657,7 +1875,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER)
                     .forEach(targets::add);
-            targets.addAll(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"));
+            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade10", "mode:mono", "mode:stereo"));
             return partial(targets, args[2]);
         }
         if (args.length >= 4 && args[0].equalsIgnoreCase("play")
@@ -1680,6 +1898,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         private final List<MusicTrack> localTracks = new ArrayList<>();
         private final PlayRequest request;
         private final long createdAtMillis;
+        private final boolean permanentSelection;
         private List<YtDlpDownloader.SearchResult> remoteResults = List.of();
         private List<SearchEntry> pageResults = List.of();
         private int currentPage;
@@ -1688,10 +1907,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         private boolean remoteExhausted;
         private boolean localExhausted;
 
-        private PendingSearch(String query, PlayRequest request, long createdAtMillis) {
+        private PendingSearch(String query, PlayRequest request, long createdAtMillis,
+                              boolean permanentSelection) {
             this.query = query;
             this.request = request;
             this.createdAtMillis = createdAtMillis;
+            this.permanentSelection = permanentSelection;
         }
     }
     private record SearchEntry(MusicTrack localTrack, YtDlpDownloader.SearchResult remoteResult) {
