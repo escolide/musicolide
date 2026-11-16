@@ -30,6 +30,21 @@ public final class YtDlpDownloader {
 
     public record DownloadResult(Path audioFile, String title, String artist,
                                  String sourceId, String extractor) {}
+
+    public record PlaylistEntry(String videoId, String title, String uploader,
+                                long durationSeconds, String url) {}
+
+    public record PlaylistListing(List<PlaylistEntry> entries, int reportedCount,
+                                  boolean truncated) {
+        public PlaylistListing {
+            entries = List.copyOf(entries);
+        }
+    }
+
+    public record SearchResult(String videoId, String title, String uploader,
+                               long durationSeconds, String url) {}
+
+    private record RankedSearchResult(SearchResult result, int score, int originalOrder) {}
     private final JavaPlugin plugin;
     private final NativeToolchain toolchain;
 
@@ -123,6 +138,406 @@ public final class YtDlpDownloader {
         }
     }
 
+
+    /**
+     * Reads a bounded YouTube playlist without downloading media. Actual audio
+     * imports are then performed one video at a time through download(), which
+     * always uses --no-playlist.
+     */
+    public PlaylistListing listPlaylist(String sourceUrl, int maximumItems)
+            throws IOException, InterruptedException {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            throw new IOException("Remote importing is disabled in config.yml.");
+        }
+        if (!isYouTubePlaylistUrl(sourceUrl)) {
+            throw new IOException("The URL is not a recognized YouTube playlist URL.");
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)
+                || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            throw new IOException("yt-dlp and QuickJS must be available before playlist import can start.");
+        }
+        URI uri = validateSource(sourceUrl,
+                plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts"),
+                plugin.getConfig().getStringList("audio.yt-dlp.blocked-hosts"));
+        if (!isYouTubeHost(uri.getHost())) {
+            throw new IOException("Only allowlisted YouTube playlists can be imported.");
+        }
+
+        int maximum = bounded(maximumItems, 1, 20);
+        Path temporaryDirectory = plugin.getDataFolder().toPath().resolve("temp");
+        Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
+        Files.createDirectories(temporaryDirectory);
+        Files.createDirectories(cacheDirectory);
+        Path output = Files.createTempFile(temporaryDirectory, ".youtube-playlist-", ".json");
+        Path errorLog = Files.createTempFile(temporaryDirectory, ".youtube-playlist-", ".log");
+        Process process = null;
+        try {
+            String jsRuntime = toolchain.executable(NativeToolchain.Tool.JS_RUNTIME);
+            List<String> command = buildPlaylistMetadataCommand(
+                    toolchain.executable(NativeToolchain.Tool.YT_DLP), jsRuntime,
+                    cacheDirectory, maximum, uri);
+            process = toolchain.start(new ProcessBuilder(command)
+                    .redirectOutput(output.toFile())
+                    .redirectError(errorLog.toFile()));
+            int timeoutSeconds = bounded(plugin.getConfig().getInt(
+                    "audio.processing.yt-dlp-search-timeout-seconds", 45), 10, 180);
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                toolchain.terminate(process);
+                throw new IOException("YouTube playlist metadata lookup exceeded its "
+                        + timeoutSeconds + " second timeout.");
+            }
+            int exit = process.exitValue();
+            toolchain.finished(process);
+            if (exit != 0) {
+                String details = readErrorSummary(errorLog, sourceUrl);
+                throw new IOException("YouTube playlist lookup failed with exit code " + exit
+                        + (details.isBlank() ? "." : ". Details: " + details));
+            }
+            long outputSize = Files.size(output);
+            if (outputSize <= 0 || outputSize > MAX_INFO_JSON_BYTES) {
+                throw new IOException("YouTube playlist returned an empty or oversized metadata response.");
+            }
+            return parsePlaylistEntries(Files.readString(output, StandardCharsets.UTF_8), maximum);
+        } catch (InterruptedException ex) {
+            if (process != null) toolchain.terminate(process);
+            Thread.currentThread().interrupt();
+            throw ex;
+        } finally {
+            if (process != null) toolchain.finished(process);
+            Files.deleteIfExists(output);
+            Files.deleteIfExists(errorLog);
+        }
+    }
+
+    static List<String> buildPlaylistMetadataCommand(String executable, String jsRuntimeExecutable,
+                                                      Path cacheDirectory, int maximumItems, URI uri) {
+        if (jsRuntimeExecutable == null || jsRuntimeExecutable.isBlank()) {
+            throw new IllegalArgumentException("A JavaScript runtime is required for YouTube playlist extraction.");
+        }
+        int maximum = bounded(maximumItems, 1, 20);
+        List<String> command = new ArrayList<>();
+        command.add(executable);
+        command.addAll(List.of(
+                "--js-runtimes", "quickjs:" + jsRuntimeExecutable,
+                "--remote-components", "ejs:github",
+                "--ignore-config",
+                "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
+                "--no-warnings",
+                "--no-progress",
+                "--no-colors",
+                "--socket-timeout", "15",
+                "--retries", "1",
+                "--flat-playlist",
+                "--skip-download",
+                "--dump-single-json",
+                "--playlist-end", Integer.toString(maximum),
+                "--", uri.toASCIIString()
+        ));
+        return List.copyOf(command);
+    }
+
+    static PlaylistListing parsePlaylistEntries(String json, int maximumItems) throws IOException {
+        final JsonElement root;
+        try {
+            root = JsonParser.parseString(json);
+        } catch (RuntimeException ex) {
+            throw new IOException("yt-dlp returned invalid YouTube playlist JSON.", ex);
+        }
+        if (!root.isJsonObject()) throw new IOException("yt-dlp returned an unexpected playlist response.");
+        JsonObject object = root.getAsJsonObject();
+        JsonElement entryElement = object.get("entries");
+        if (entryElement == null || !entryElement.isJsonArray()) {
+            throw new IOException("The supplied YouTube URL did not resolve to a readable playlist.");
+        }
+        int maximum = bounded(maximumItems, 1, 20);
+        JsonArray entries = entryElement.getAsJsonArray();
+        int reportedCount = readCount(object, "playlist_count", "n_entries");
+        boolean reportedCountKnown = reportedCount > 0;
+        if (!reportedCountKnown) reportedCount = entries.size();
+
+        List<PlaylistEntry> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (JsonElement entry : entries) {
+            if (result.size() >= maximum) break;
+            if (entry == null || !entry.isJsonObject()) continue;
+            JsonObject video = entry.getAsJsonObject();
+            String id = firstNonBlank(video, "id");
+            String title = firstNonBlank(video, "title");
+            if (!id.matches("[A-Za-z0-9_-]{6,32}") || title.isBlank() || !seen.add(id)) continue;
+            String liveStatus = firstNonBlank(video, "live_status").toLowerCase(Locale.ROOT);
+            boolean live = video.has("is_live") && !video.get("is_live").isJsonNull()
+                    && video.get("is_live").isJsonPrimitive()
+                    && video.get("is_live").getAsBoolean();
+            if (live || liveStatus.equals("is_live") || liveStatus.equals("is_upcoming")) continue;
+
+            long duration = -1L;
+            JsonElement durationValue = video.get("duration");
+            if (durationValue != null && durationValue.isJsonPrimitive()
+                    && durationValue.getAsJsonPrimitive().isNumber()) {
+                double seconds = durationValue.getAsDouble();
+                if (Double.isFinite(seconds) && seconds >= 0 && seconds <= Long.MAX_VALUE) {
+                    duration = Math.round(seconds);
+                }
+            }
+            result.add(new PlaylistEntry(id, title,
+                    firstNonBlank(video, "uploader", "channel", "channel_name", "creator"),
+                    duration, "https://www.youtube.com/watch?v=" + id));
+        }
+        if (result.isEmpty()) throw new IOException("The YouTube playlist contains no importable video entries.");
+        // Filtering duplicate, unavailable or live entries can reduce the
+        // returned playable count without meaning the source playlist was capped.
+        // Use the source's reported total when present; otherwise a full page is
+        // conservatively considered potentially truncated.
+        boolean truncated = reportedCountKnown
+                ? reportedCount > maximum || entries.size() > maximum
+                : entries.size() >= maximum;
+        return new PlaylistListing(result, reportedCount, truncated);
+    }
+
+    private static int readCount(JsonObject object, String... keys) {
+        for (String key : keys) {
+            JsonElement value = object.get(key);
+            if (value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isNumber()) {
+                try { return value.getAsInt(); } catch (RuntimeException ignored) {}
+            }
+        }
+        return -1;
+    }
+
+    /** Detects playlist-only URLs, not ordinary video URLs with a playlist context attached. */
+    public static boolean isYouTubePlaylistUrl(String sourceUrl) {
+        try {
+            URI uri = URI.create(sourceUrl == null ? "" : sourceUrl.trim());
+            if (!isYouTubeHost(uri.getHost())) return false;
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            Map<String, String> query = new HashMap<>();
+            String rawQuery = uri.getRawQuery();
+            if (rawQuery != null) {
+                for (String part : rawQuery.split("&")) {
+                    int equals = part.indexOf('=');
+                    String key = equals < 0 ? part : part.substring(0, equals);
+                    String value = equals < 0 ? "" : part.substring(equals + 1);
+                    query.putIfAbsent(key.toLowerCase(Locale.ROOT), value);
+                }
+            }
+            if (path.equals("/playlist")) return !query.getOrDefault("list", "").isBlank();
+            if (query.containsKey("v") && !query.get("v").isBlank()) return false;
+            if (path.matches("/(shorts|embed|live)/.+")) return false;
+            if ("youtu.be".equalsIgnoreCase(uri.getHost()) && !path.isBlank() && !path.equals("/")) return false;
+            return !query.getOrDefault("list", "").isBlank();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Searches YouTube for metadata only. No media formats are selected and
+     * --skip-download is always present; a player must explicitly choose a result
+     * before the normal, allowlist-checked import path can download audio.
+     */
+    public List<SearchResult> searchYouTube(String query) throws IOException, InterruptedException {
+        int configured = bounded(plugin.getConfig().getInt("audio.yt-dlp.search.result-count", 6), 1, 20);
+        return searchYouTube(query, configured);
+    }
+
+    public List<SearchResult> searchYouTube(String query, int maximumResults) throws IOException, InterruptedException {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            throw new IOException("YouTube search is disabled. Enable audio.yt-dlp first.");
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)) {
+            throw new IOException("yt-dlp is unavailable. Install it or provide a bundled executable.");
+        }
+        if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            throw new IOException("QuickJS is unavailable; YouTube search cannot start.");
+        }
+
+        String normalizedQuery = query == null ? "" : query.trim().replace('_', ' ').replaceAll("[\\r\\n\\t]+", " ");
+        if (normalizedQuery.isBlank()) throw new IOException("Enter a YouTube search query.");
+        if (normalizedQuery.length() > 180) throw new IOException("Search queries must be 180 characters or fewer.");
+
+        List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");
+        List<String> blockedHosts = plugin.getConfig().getStringList("audio.yt-dlp.blocked-hosts");
+        if (isBlockedHost("youtube.com", blockedHosts) || isBlockedHost("youtu.be", blockedHosts)) {
+            throw new IOException("YouTube is blocked in audio.yt-dlp.blocked-hosts.");
+        }
+        if (!isHostAllowed("youtube.com", allowedHosts)
+                && !isHostAllowed("youtu.be", allowedHosts)) {
+            throw new IOException("Add youtube.com or youtu.be to audio.yt-dlp.allowed-hosts before searching.");
+        }
+
+        int resultCount = bounded(maximumResults, 1, 160);
+        boolean prioritizeSongs = plugin.getConfig().getBoolean(
+                "audio.yt-dlp.search.prioritize-songs", true);
+        int fetchCount = prioritizeSongs ? Math.min(160, Math.max(resultCount, resultCount * 3)) : resultCount;
+
+        Path temporaryDirectory = plugin.getDataFolder().toPath().resolve("temp");
+        Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
+        Files.createDirectories(temporaryDirectory);
+        Files.createDirectories(cacheDirectory);
+        Path output = null;
+        Path errorLog = null;
+        Process process = null;
+        try {
+            output = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".json");
+            errorLog = Files.createTempFile(temporaryDirectory, ".youtube-search-", ".log");
+            String jsRuntime = toolchain.executable(NativeToolchain.Tool.JS_RUNTIME);
+            List<String> command = buildSearchCommand(
+                    toolchain.executable(NativeToolchain.Tool.YT_DLP), jsRuntime, cacheDirectory,
+                    fetchCount, normalizedQuery);
+            process = toolchain.start(new ProcessBuilder(command)
+                    .redirectOutput(output.toFile())
+                    .redirectError(errorLog.toFile()));
+
+            int timeoutSeconds = bounded(plugin.getConfig().getInt(
+                    "audio.processing.yt-dlp-search-timeout-seconds", 45), 10, 180);
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                toolchain.terminate(process);
+                throw new IOException("YouTube search exceeded its " + timeoutSeconds + " second timeout.");
+            }
+            int exit = process.exitValue();
+            toolchain.finished(process);
+            if (exit != 0) {
+                String details = readErrorSummary(errorLog, normalizedQuery);
+                throw new IOException("YouTube search failed with exit code " + exit
+                        + (details.isBlank() ? ". Check server connectivity and yt-dlp diagnostics."
+                        : ". Details: " + details));
+            }
+
+            long outputSize = Files.size(output);
+            if (outputSize <= 0 || outputSize > MAX_INFO_JSON_BYTES) {
+                throw new IOException("YouTube search returned an empty or oversized metadata response.");
+            }
+            String json = Files.readString(output, StandardCharsets.UTF_8);
+            return parseSearchResults(json, resultCount, prioritizeSongs);
+        } catch (InterruptedException ex) {
+            if (process != null) toolchain.terminate(process);
+            Thread.currentThread().interrupt();
+            throw ex;
+        } finally {
+            if (process != null) toolchain.finished(process);
+            if (output != null) Files.deleteIfExists(output);
+            if (errorLog != null) Files.deleteIfExists(errorLog);
+        }
+    }
+
+    static List<String> buildSearchCommand(String executable, String jsRuntimeExecutable,
+                                           Path cacheDirectory, int searchLimit, String query) {
+        if (jsRuntimeExecutable == null || jsRuntimeExecutable.isBlank()) {
+            throw new IllegalArgumentException("A JavaScript runtime is required for YouTube search.");
+        }
+        int boundedLimit = bounded(searchLimit, 1, 160);
+        List<String> command = new ArrayList<>();
+        command.add(executable);
+        command.addAll(List.of(
+                "--js-runtimes", "quickjs:" + jsRuntimeExecutable,
+                "--remote-components", "ejs:github",
+                "--ignore-config",
+                "--cache-dir", cacheDirectory.toAbsolutePath().toString(),
+                "--no-warnings",
+                "--no-progress",
+                "--no-colors",
+                "--socket-timeout", "15",
+                "--retries", "1",
+                "--flat-playlist",
+                "--skip-download",
+                "--dump-single-json",
+                "--playlist-end", Integer.toString(boundedLimit),
+                "--", "ytsearch" + boundedLimit + ":" + query
+        ));
+        return List.copyOf(command);
+    }
+
+    static List<SearchResult> parseSearchResults(String json, int resultLimit, boolean prioritizeSongs)
+            throws IOException {
+        final JsonElement root;
+        try {
+            root = JsonParser.parseString(json);
+        } catch (RuntimeException ex) {
+            throw new IOException("yt-dlp returned invalid YouTube search JSON.", ex);
+        }
+        if (!root.isJsonObject()) throw new IOException("yt-dlp returned an unexpected YouTube search response.");
+        JsonElement entriesElement = root.getAsJsonObject().get("entries");
+        JsonArray entries;
+        if (entriesElement == null || entriesElement.isJsonNull()) {
+            // Some extractors return a single video object instead of a playlist
+            // wrapper; preserve that usable result rather than silently showing none.
+            JsonObject single = root.getAsJsonObject();
+            if (!single.has("id") || !single.has("title")) return List.of();
+            entries = new JsonArray();
+            entries.add(single.deepCopy());
+        } else if (!entriesElement.isJsonArray()) {
+            throw new IOException("yt-dlp returned an unexpected YouTube search result list.");
+        } else {
+            entries = entriesElement.getAsJsonArray();
+        }
+
+        List<RankedSearchResult> results = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>();
+        int order = 0;
+        for (JsonElement entry : entries) {
+            int currentOrder = order++;
+            if (entry == null || !entry.isJsonObject()) continue;
+            JsonObject object = entry.getAsJsonObject();
+            String id = firstNonBlank(object, "id");
+            String title = firstNonBlank(object, "title");
+            if (!id.matches("[A-Za-z0-9_-]{6,32}") || title.isBlank() || !seenIds.add(id)) continue;
+
+            String liveStatus = firstNonBlank(object, "live_status").toLowerCase(Locale.ROOT);
+            boolean live = object.has("is_live") && !object.get("is_live").isJsonNull()
+                    && object.get("is_live").isJsonPrimitive()
+                    && object.get("is_live").getAsBoolean();
+            if (live || liveStatus.equals("is_live") || liveStatus.equals("is_upcoming")) continue;
+
+            String uploader = firstNonBlank(object, "uploader", "channel", "channel_name", "creator");
+            long durationSeconds = -1L;
+            JsonElement duration = object.get("duration");
+            if (duration != null && duration.isJsonPrimitive() && duration.getAsJsonPrimitive().isNumber()) {
+                double value = duration.getAsDouble();
+                if (Double.isFinite(value) && value >= 0 && value <= Long.MAX_VALUE) {
+                    durationSeconds = Math.round(value);
+                }
+            }
+
+            SearchResult result = new SearchResult(id, title, uploader, durationSeconds,
+                    "https://www.youtube.com/watch?v=" + id);
+            int score = prioritizeSongs ? songMaterialScore(title, uploader, durationSeconds) : 0;
+            results.add(new RankedSearchResult(result, score, currentOrder));
+        }
+
+        if (prioritizeSongs) {
+            results.sort(Comparator.comparingInt(RankedSearchResult::score).reversed()
+                    .thenComparingInt(RankedSearchResult::originalOrder));
+        } else {
+            results.sort(Comparator.comparingInt(RankedSearchResult::originalOrder));
+        }
+        return results.stream().limit(bounded(resultLimit, 1, 160))
+                .map(RankedSearchResult::result).toList();
+    }
+
+    static int songMaterialScore(String title, String uploader, long durationSeconds) {
+        String normalizedTitle = title == null ? "" : title.toLowerCase(Locale.ROOT);
+        String normalizedUploader = uploader == null ? "" : uploader.toLowerCase(Locale.ROOT);
+        int score = 0;
+
+        if (normalizedTitle.contains("official audio")) score += 9;
+        if (normalizedTitle.contains("official music video")) score += 7;
+        else if (normalizedTitle.contains("official video")) score += 4;
+        if (normalizedTitle.contains("lyric video") || normalizedTitle.contains("lyrics")) score += 4;
+        if (normalizedTitle.contains("visualizer")) score += 3;
+        if (normalizedUploader.endsWith(" - topic")) score += 7;
+        else if (normalizedUploader.contains("vevo")) score += 3;
+
+        for (String term : List.of("reaction", "tutorial", "how to", "review", "karaoke",
+                "full album", "compilation", "playlist", "live stream", "explained")) {
+            if (normalizedTitle.contains(term)) score -= 8;
+        }
+        if (normalizedTitle.contains("cover")) score -= 2;
+        if (normalizedTitle.contains("fan made") || normalizedTitle.contains("fan-made")) score -= 3;
+        if (durationSeconds >= 120 && durationSeconds <= 600) score += 2;
+        else if (durationSeconds > 0 && durationSeconds < 45) score -= 3;
+        else if (durationSeconds > 900) score -= 2;
+        return score;
+    }
 
     record Metadata(String title, String artist, String sourceId, String extractor) {
         private static final Metadata EMPTY = new Metadata("", "", "", "");

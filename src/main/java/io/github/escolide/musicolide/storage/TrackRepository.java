@@ -57,6 +57,13 @@ public final class TrackRepository implements AutoCloseable {
                       muted INTEGER NOT NULL DEFAULT 0
                     )
                     """);
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS track_codes (
+                      track_id TEXT PRIMARY KEY,
+                      short_id TEXT NOT NULL UNIQUE
+                    )
+                    """);
+            assignMissingTrackCodes(connection);
         }
     }
 
@@ -102,6 +109,7 @@ public final class TrackRepository implements AutoCloseable {
                     ps.setLong(11, System.currentTimeMillis());
                     ps.executeUpdate();
                 }
+                ensureTrackCode(c, track.id());
                 if (expiresAtMillis == null) {
                     try (PreparedStatement ps = c.prepareStatement("DELETE FROM ephemeral_tracks WHERE track_id=?")) {
                         ps.setString(1, track.id());
@@ -129,6 +137,67 @@ public final class TrackRepository implements AutoCloseable {
         }
     }
 
+    private static void assignMissingTrackCodes(Connection connection) throws SQLException {
+        List<String> missing = new ArrayList<>();
+        try (PreparedStatement ps = connection.prepareStatement("""
+                SELECT t.id FROM tracks t
+                LEFT JOIN track_codes c ON c.track_id=t.id
+                WHERE c.track_id IS NULL
+                ORDER BY t.created_at ASC, t.id ASC
+                """); ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) missing.add(rs.getString(1));
+        }
+        for (String id : missing) ensureTrackCode(connection, id);
+    }
+
+    private static void ensureTrackCode(Connection connection, String trackId) throws SQLException {
+        try (PreparedStatement existing = connection.prepareStatement(
+                "SELECT 1 FROM track_codes WHERE track_id=?")) {
+            existing.setString(1, trackId);
+            try (ResultSet rs = existing.executeQuery()) {
+                if (rs.next()) return;
+            }
+        }
+        String code = nextAvailableTrackCode(connection);
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO track_codes(track_id,short_id) VALUES(?,?)")) {
+            insert.setString(1, trackId);
+            insert.setString(2, code);
+            insert.executeUpdate();
+        }
+    }
+
+    private static String nextAvailableTrackCode(Connection connection) throws SQLException {
+        for (char letter = 'a'; letter <= 'f'; letter++) {
+            for (int number = 0; number < 100; number++) {
+                String candidate = letter + String.format(Locale.ROOT, "%02d", number);
+                try (PreparedStatement ps = connection.prepareStatement("""
+                        SELECT 1 FROM track_codes WHERE lower(short_id)=lower(?)
+                        UNION ALL
+                        SELECT 1 FROM tracks WHERE lower(id)=lower(?)
+                        LIMIT 1
+                        """)) {
+                    ps.setString(1, candidate);
+                    ps.setString(2, candidate);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) return candidate;
+                    }
+                }
+            }
+        }
+        throw new SQLException("All 600 Musicolide TrackIDs (a00-f99) are in use. Delete unused tracks before importing more.");
+    }
+
+    public synchronized Optional<String> getTrackCode(String trackId) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT short_id FROM track_codes WHERE track_id=?")) {
+            ps.setString(1, trackId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(rs.getString(1)) : Optional.empty();
+            }
+        }
+    }
+
     public synchronized List<MusicTrack> expiredTemporaryTracks(long nowMillis) throws SQLException {
         List<MusicTrack> tracks = new ArrayList<>();
         String sql = """
@@ -146,16 +215,74 @@ public final class TrackRepository implements AutoCloseable {
         return tracks;
     }
 
+    /** Returns every temporary URL/imported track, including entries not yet expired. */
+    public synchronized List<MusicTrack> temporaryTracks() throws SQLException {
+        List<MusicTrack> tracks = new ArrayList<>();
+        String sql = """
+                SELECT t.* FROM tracks t
+                JOIN ephemeral_tracks e ON e.track_id=t.id
+                ORDER BY e.expires_at ASC
+                """;
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) tracks.add(readTrack(rs));
+            }
+        }
+        return tracks;
+    }
+
     public synchronized boolean deleteTrack(String trackId) throws SQLException {
-        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("DELETE FROM tracks WHERE id=?")) {
-            ps.setString(1, trackId);
-            return ps.executeUpdate() > 0;
+        try (Connection c = open()) {
+            c.setAutoCommit(false);
+            try {
+                String resolvedId = null;
+                try (PreparedStatement lookup = c.prepareStatement("""
+                        SELECT id FROM tracks WHERE lower(id)=lower(?)
+                        UNION ALL
+                        SELECT track_id FROM track_codes WHERE lower(short_id)=lower(?)
+                        LIMIT 1
+                        """)) {
+                    lookup.setString(1, trackId);
+                    lookup.setString(2, trackId);
+                    try (ResultSet rs = lookup.executeQuery()) {
+                        if (rs.next()) resolvedId = rs.getString(1);
+                    }
+                }
+                if (resolvedId == null) {
+                    c.rollback();
+                    return false;
+                }
+                try (PreparedStatement deleteTrack = c.prepareStatement("DELETE FROM tracks WHERE id=?");
+                     PreparedStatement deleteCode = c.prepareStatement("DELETE FROM track_codes WHERE track_id=?")) {
+                    deleteTrack.setString(1, resolvedId);
+                    deleteTrack.executeUpdate();
+                    deleteCode.setString(1, resolvedId);
+                    deleteCode.executeUpdate();
+                }
+                c.commit();
+                return true;
+            } catch (SQLException error) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollbackError) {
+                    error.addSuppressed(rollbackError);
+                }
+                throw error;
+            }
         }
     }
 
     public synchronized Optional<MusicTrack> getTrack(String id) throws SQLException {
-        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("SELECT * FROM tracks WHERE id=?")) {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("""
+                SELECT t.* FROM tracks t
+                LEFT JOIN track_codes c ON c.track_id=t.id
+                WHERE lower(t.id)=lower(?) OR lower(c.short_id)=lower(?)
+                ORDER BY CASE WHEN lower(c.short_id)=lower(?) THEN 0 ELSE 1 END
+                LIMIT 1
+                """)) {
             ps.setString(1, id);
+            ps.setString(2, id);
+            ps.setString(3, id);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? Optional.of(readTrack(rs)) : Optional.empty();
             }
@@ -164,16 +291,97 @@ public final class TrackRepository implements AutoCloseable {
 
     public synchronized List<MusicTrack> search(String query, int limit) throws SQLException {
         List<MusicTrack> tracks = new ArrayList<>();
-        String sql = "SELECT * FROM tracks WHERE lower(id)=lower(?) OR lower(title) LIKE ? ORDER BY title COLLATE NOCASE LIMIT ?";
+        String sql = """
+                SELECT t.* FROM tracks t
+                LEFT JOIN track_codes c ON c.track_id=t.id
+                WHERE lower(t.id)=lower(?) OR lower(c.short_id)=lower(?) OR lower(t.title) LIKE ?
+                ORDER BY t.title COLLATE NOCASE LIMIT ?
+                """;
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, query);
-            ps.setString(2, "%" + query.toLowerCase(Locale.ROOT).replace("%", "\\%").replace("_", "\\_") + "%");
-            ps.setInt(3, Math.max(1, limit));
+            ps.setString(2, query);
+            ps.setString(3, "%" + query.toLowerCase(Locale.ROOT).replace("%", "\\%").replace("_", "\\_") + "%");
+            ps.setInt(4, Math.max(1, limit));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) tracks.add(readTrack(rs));
             }
         }
         return tracks;
+    }
+
+    /**
+     * Search local playable tracks in a stable, useful order. Exact IDs and
+     * titles win first, then title prefixes, then artist prefixes, with newer
+     * imports taking priority among comparable matches.
+     */
+    public synchronized List<MusicTrack> searchForPlayback(String query, int limit, int offset) throws SQLException {
+        String normalized = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isBlank()) return List.of();
+        String escaped = normalized.replace("!", "!!").replace("%", "!%").replace("_", "!_");
+        String contains = "%" + escaped + "%";
+        String prefix = escaped + "%";
+        String sql = """
+                SELECT t.* FROM tracks t
+                LEFT JOIN track_codes c ON c.track_id=t.id
+                WHERE lower(t.id)=lower(?)
+                   OR lower(c.short_id)=lower(?)
+                   OR lower(t.title) LIKE ? ESCAPE '!'
+                   OR lower(t.artist) LIKE ? ESCAPE '!'
+                ORDER BY CASE
+                    WHEN lower(t.id)=lower(?) OR lower(c.short_id)=lower(?) THEN 0
+                    WHEN lower(t.title)=lower(?) THEN 1
+                    WHEN lower(t.title) LIKE ? ESCAPE '!' THEN 2
+                    WHEN lower(t.artist) LIKE ? ESCAPE '!' THEN 3
+                    ELSE 4 END,
+                    t.created_at DESC, t.title COLLATE NOCASE
+                LIMIT ? OFFSET ?
+                """;
+        List<MusicTrack> tracks = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, normalized);
+            ps.setString(2, normalized);
+            ps.setString(3, contains);
+            ps.setString(4, contains);
+            ps.setString(5, normalized);
+            ps.setString(6, normalized);
+            ps.setString(7, normalized);
+            ps.setString(8, prefix);
+            ps.setString(9, prefix);
+            ps.setInt(10, Math.max(1, limit));
+            ps.setInt(11, Math.max(0, offset));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) tracks.add(readTrack(rs));
+            }
+        }
+        return tracks;
+    }
+
+    public synchronized Optional<MusicTrack> findExactTitle(String title) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT * FROM tracks WHERE lower(title)=lower(?) ORDER BY created_at DESC LIMIT 1")) {
+            ps.setString(1, title == null ? "" : title.trim());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(readTrack(rs)) : Optional.empty();
+            }
+        }
+    }
+
+    /** Returns a validated-at-call-site YouTube video ID for Discord embeds. */
+    public synchronized Optional<String> getYouTubeVideoId(String trackId) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("""
+                SELECT substr(a.alias_key,9)
+                FROM aliases a
+                LEFT JOIN track_codes tc ON tc.track_id=a.track_id
+                WHERE (a.track_id=? OR lower(tc.short_id)=lower(?))
+                  AND lower(a.alias_key) LIKE 'youtube:%'
+                ORDER BY a.alias_key LIMIT 1
+                """)) {
+            ps.setString(1, trackId);
+            ps.setString(2, trackId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.ofNullable(rs.getString(1)) : Optional.empty();
+            }
+        }
     }
 
     public synchronized List<MusicTrack> allTracks(int limit) throws SQLException {
@@ -234,27 +442,57 @@ public final class TrackRepository implements AutoCloseable {
     }
 
     public synchronized void addPlaylistTrack(String name, String trackId) throws SQLException {
+        addPlaylistTrack(name, trackId, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Adds a catalogue track only when the playlist remains within its configured
+     * maximum. The count and insert share one transaction so repeated commands
+     * cannot race past the limit.
+     */
+    public synchronized void addPlaylistTrack(String name, String trackId, int maximumTracks) throws SQLException {
+        String normalizedName = name.toLowerCase(Locale.ROOT);
+        int limit = Math.max(1, maximumTracks);
         try (Connection c = open()) {
             c.setAutoCommit(false);
-            try (PreparedStatement exists = c.prepareStatement("SELECT 1 FROM playlists WHERE name=?");
-                 PreparedStatement insert = c.prepareStatement(
-                         "INSERT INTO playlist_entries(playlist_name,position,track_id) VALUES(?,?,?)")) {
-                exists.setString(1, name.toLowerCase(Locale.ROOT));
-                try (ResultSet rs = exists.executeQuery()) {
-                    if (!rs.next()) throw new SQLException("Playlist does not exist.");
+            try {
+                try (PreparedStatement exists = c.prepareStatement("SELECT 1 FROM playlists WHERE name=?")) {
+                    exists.setString(1, normalizedName);
+                    try (ResultSet rs = exists.executeQuery()) {
+                        if (!rs.next()) throw new SQLException("Playlist does not exist.");
+                    }
                 }
+
+                int count = 0;
+                try (PreparedStatement countQuery = c.prepareStatement(
+                        "SELECT COUNT(*) FROM playlist_entries WHERE playlist_name=?")) {
+                    countQuery.setString(1, normalizedName);
+                    try (ResultSet rs = countQuery.executeQuery()) {
+                        if (rs.next()) count = rs.getInt(1);
+                    }
+                }
+                if (count >= limit) {
+                    throw new IllegalArgumentException("Playlist has reached its maximum of "
+                            + limit + " tracks. Remove a track before adding another.");
+                }
+
                 int position = 0;
-                try (PreparedStatement count = c.prepareStatement(
+                try (PreparedStatement positionQuery = c.prepareStatement(
                         "SELECT COALESCE(MAX(position),-1)+1 FROM playlist_entries WHERE playlist_name=?")) {
-                    count.setString(1, name.toLowerCase(Locale.ROOT));
-                    try (ResultSet rs = count.executeQuery()) { if (rs.next()) position = rs.getInt(1); }
+                    positionQuery.setString(1, normalizedName);
+                    try (ResultSet rs = positionQuery.executeQuery()) {
+                        if (rs.next()) position = rs.getInt(1);
+                    }
                 }
-                insert.setString(1, name.toLowerCase(Locale.ROOT));
-                insert.setInt(2, position);
-                insert.setString(3, trackId);
-                insert.executeUpdate();
+                try (PreparedStatement insert = c.prepareStatement(
+                        "INSERT INTO playlist_entries(playlist_name,position,track_id) VALUES(?,?,?)")) {
+                    insert.setString(1, normalizedName);
+                    insert.setInt(2, position);
+                    insert.setString(3, trackId);
+                    insert.executeUpdate();
+                }
                 c.commit();
-            } catch (SQLException ex) {
+            } catch (SQLException | RuntimeException ex) {
                 c.rollback();
                 throw ex;
             }

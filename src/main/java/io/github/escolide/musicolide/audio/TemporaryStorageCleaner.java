@@ -12,12 +12,13 @@ import java.util.stream.Stream;
 
 /**
  * Removes only known processing intermediates left by an interrupted import.
- * Ordinary files in incoming/ and generated resource packs are deliberately
+ * Ordinary files in SavedMusic/ and generated resource packs are deliberately
  * preserved. Files.walk does not follow symbolic links.
  */
 public final class TemporaryStorageCleaner {
     private static final String URL_TEMP_PREFIX = ".musicolide-url-";
     private static final String RESUME_TEMP_PREFIX = ".musicolide-resume-";
+    private static final String MONO_TEMP_PREFIX = ".musicolide-mono-";
     private static final String PROBE_TEMP_PREFIX = ".musicolide-probe-";
 
     private TemporaryStorageCleaner() {}
@@ -33,10 +34,13 @@ public final class TemporaryStorageCleaner {
         List<String> failures = new ArrayList<>();
         int removed = 0;
 
-        // URL imports use private temporary directories inside incoming/.
+        // URL downloads, mono generation and resume tails now use private temp/ folders.
+        removed += cleanChildren(data.resolve("temp"), path -> true, failures);
+        // Clean abandoned work folders left by versions that used incoming/.
         removed += cleanChildren(data.resolve("incoming"),
                 path -> path.getFileName().toString().startsWith(URL_TEMP_PREFIX)
-                        || path.getFileName().toString().startsWith(RESUME_TEMP_PREFIX), failures);
+                        || path.getFileName().toString().startsWith(RESUME_TEMP_PREFIX)
+                        || path.getFileName().toString().startsWith(MONO_TEMP_PREFIX), failures);
 
         // tracks/ contains only transient OGG segment work directories. The
         // finished catalogue is stored as immutable ZIPs in packs/.

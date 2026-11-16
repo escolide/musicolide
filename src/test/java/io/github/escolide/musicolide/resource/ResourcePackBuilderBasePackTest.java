@@ -68,4 +68,24 @@ class ResourcePackBuilderBasePackTest {
         assertFalse(Files.exists(temporary.resolve("packs").resolve(empty.fileName())));
         assertTrue(Files.exists(temporary.resolve("packs").resolve(populated.fileName())));
     }
+
+    @Test
+    void rebuildingLibraryAfterDeletingATrackRemovesItsAssetsFromTheNewRevision() throws Exception {
+        ResourcePackBuilder builder = new ResourcePackBuilder(
+                temporary, ResourcePackFormat.forMinecraftVersion("1.21.1"));
+        Path audio = temporary.resolve("temporary-track.ogg");
+        Files.write(audio, new byte[]{'O', 'g', 'g', 'S', 9, 8, 7});
+        Path trackPack = builder.buildStreamed("ms_temporary_track", audio);
+        ResourcePackBuilder.BasePackInfo beforeRemoval = builder.buildBasePack();
+
+        Files.delete(trackPack);
+        ResourcePackBuilder.BasePackInfo afterRemoval = builder.buildBasePack();
+
+        assertNotEquals(beforeRemoval.sha1(), afterRemoval.sha1());
+        assertTrue(Files.exists(temporary.resolve("packs").resolve(beforeRemoval.fileName())),
+                "The previous immutable revision remains available until download cleanup runs.");
+        try (ZipFile zip = new ZipFile(temporary.resolve("packs").resolve(afterRemoval.fileName()).toFile())) {
+            assertNull(zip.getEntry("assets/ms_temporary_track/sounds/music.ogg"));
+        }
+    }
 }

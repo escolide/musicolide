@@ -8,11 +8,47 @@ class MusicZoneTest {
     private final UUID world = UUID.randomUUID();
 
     @Test
+    void equivalentGlobalAndSpatialZonesMatchExactly() {
+        assertTrue(MusicZone.global().sameAs(MusicZone.global()));
+        assertFalse(MusicZone.global().sameAs(
+                MusicZone.circle(world, 0, 64, 0, 60, false, 0, false, 0)));
+
+        MusicZone first = MusicZone.circle(world, 10, 64, 20, 60, true, 16, true, 8);
+        MusicZone same = MusicZone.circle(world, 10, 64, 20, 60, true, 16, true, 8);
+        MusicZone different = MusicZone.circle(world, 10, 64, 20, 61, true, 16, true, 8);
+        assertTrue(first.sameAs(same));
+        assertFalse(first.sameAs(different));
+    }
+
+    @Test
+    void centeredMonoOriginIsDistinctFromTheDefaultListenerOrigin() {
+        MusicZone ordinary = MusicZone.circle(world, 10, 64, 20, 30, false, 0, true, 5);
+        MusicZone centered = MusicZone.centeredCircle(world, 10, 64, 20, 30, false, 0, true, 5);
+        MusicZone sameCentered = MusicZone.centeredCircle(world, 10, 64, 20, 30, false, 0, true, 5);
+
+        assertFalse(ordinary.centeredAudioOrigin());
+        assertTrue(centered.centeredAudioOrigin());
+        assertEquals(10, centered.centerX());
+        assertEquals(64, centered.centerY());
+        assertEquals(20, centered.centerZ());
+        assertFalse(ordinary.sameAs(centered));
+        assertTrue(centered.sameAs(sameCentered));
+    }
+
+    @Test
     void circleUsesHorizontalRadius() {
         MusicZone zone = MusicZone.circle(world, 0, 64, 0, 10, false, 0, false, 0);
         assertTrue(zone.containsBase(world, 10, 200, 0));
         assertFalse(zone.containsBase(UUID.randomUUID(), 0, 64, 0));
         assertFalse(zone.containsBase(world, 10.01, 64, 0));
+    }
+
+    @Test
+    void circleCanRestrictVerticalDistanceWhenConfigured() {
+        MusicZone zone = MusicZone.circle(world, 0, 64, 0, 10, true, 4, false, 0);
+        assertTrue(zone.containsBase(world, 5, 68, 0));
+        assertFalse(zone.containsBase(world, 5, 68.01, 0));
+        assertFalse(zone.containsBase(world, 5, 59.99, 0));
     }
 
     @Test

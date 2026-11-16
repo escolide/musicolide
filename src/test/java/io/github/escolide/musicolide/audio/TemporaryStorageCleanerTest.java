@@ -29,6 +29,9 @@ class TemporaryStorageCleanerTest {
         Path probe = Files.writeString(dataDirectory.resolve(".musicolide-probe-abandoned.txt"), "temporary");
         Path packs = Files.createDirectories(dataDirectory.resolve("packs"));
         Path retainedPack = Files.writeString(packs.resolve("persistent-track.zip"), "keep");
+        Path savedMusic = Files.createDirectories(dataDirectory.resolve("SavedMusic"));
+        Path permanentAudio = Files.writeString(savedMusic.resolve("a00.ogg"), "permanent audio");
+        Path permanentMetadata = Files.writeString(savedMusic.resolve("a00.yml"), "title: Keep Me");
 
         TemporaryStorageCleaner.Report report = TemporaryStorageCleaner.clean(dataDirectory);
 
@@ -36,6 +39,8 @@ class TemporaryStorageCleanerTest {
         assertTrue(report.failures().isEmpty());
         assertTrue(Files.exists(userUpload));
         assertTrue(Files.exists(retainedPack));
+        assertTrue(Files.exists(permanentAudio));
+        assertTrue(Files.exists(permanentMetadata));
         assertFalse(Files.exists(urlImport));
         assertFalse(Files.exists(tracks.resolve("unfinished-track")));
         assertFalse(Files.exists(temp.resolve(".tool-check-123.log")));

@@ -13,6 +13,7 @@ public final class PlaybackSession {
     private final MusicZone zone;
     private final Set<UUID> explicitListeners;
     private final boolean allPlayers;
+    private final boolean monoAudio;
     private final Deque<MusicTrack> queue = new ArrayDeque<>();
     private final List<MusicTrack> repeatSource;
     private MusicTrack current;
@@ -25,16 +26,27 @@ public final class PlaybackSession {
     private boolean paused;
     private boolean resumePreparing;
     private long resumeGeneration;
+    private long timelineGeneration;
     private boolean clockStarted;
     private boolean repeat;
+    private boolean queuePending;
     private int priority;
+    private double speed = 1.0;
+    private Double pendingSpeed;
 
     public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
                            Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority) {
+        this(owner, ownerName, zone, allPlayers, listeners, tracks, priority, false);
+    }
+
+    public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
+                           Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority,
+                           boolean monoAudio) {
         this.owner = owner;
         this.ownerName = ownerName;
         this.zone = zone;
         this.allPlayers = allPlayers;
+        this.monoAudio = monoAudio;
         this.explicitListeners = new HashSet<>(listeners);
         this.queue.addAll(tracks);
         this.repeatSource = List.copyOf(tracks);
@@ -48,20 +60,76 @@ public final class PlaybackSession {
     public String ownerName() { return ownerName; }
     public long startedAt() { return startedAt; }
     public MusicZone zone() { return zone; }
-    public MusicTrack current() { return current; }
+    public boolean isMono() { return monoAudio; }
+    /** True only for sessions explicitly addressed to all players in the global zone. */
+    public boolean isServerWideGlobalSession() {
+        return allPlayers && zone.shape() == MusicZone.Shape.GLOBAL;
+    }
+    public synchronized MusicTrack current() { return current; }
     /** Original catalogue track or the temporary OGG tail currently being played. */
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
     public synchronized boolean paused() { return paused; }
+    public synchronized boolean queuePending() { return queuePending; }
+    public synchronized void queuePending(boolean pending) { queuePending = pending; }
     public synchronized boolean resumePreparing() { return resumePreparing; }
     public synchronized boolean clockStarted() { return clockStarted; }
-    public int priority() { return priority; }
-    public void priority(int priority) { this.priority = priority; }
+    /** Changes whenever this session starts a new track timeline, including a restart of the same track. */
+    public synchronized long timelineGeneration() { return timelineGeneration; }
+    public synchronized int priority() { return priority; }
+    public synchronized void priority(int priority) { this.priority = priority; }
+    public synchronized double speed() { return speed; }
+    public synchronized Double pendingSpeed() { return pendingSpeed; }
+
+    /**
+     * Changes sound pitch (and therefore playback rate) without modifying audio.
+     * An already-playing Minecraft sound cannot have its pitch changed in place,
+     * so live changes are staged for the next track.
+     *
+     * @return true when the speed can affect the current track immediately
+     */
+    public synchronized boolean setSpeed(double value) {
+        if (!Double.isFinite(value) || value < 0.5 || value > 2.0) {
+            throw new IllegalArgumentException("Playback speed must be between 0.5x and 2.0x.");
+        }
+        if (clockStarted && !paused && !resumePreparing) {
+            pendingSpeed = value;
+            return false;
+        }
+        speed = value;
+        pendingSpeed = null;
+        return true;
+    }
+
     public void repeat(boolean repeat) { this.repeat = repeat; }
-    public boolean isEmpty() { return current == null && queue.isEmpty(); }
+    public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending; }
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
+
+    /** Checks whether a new /play request has the same audience and zone. */
+    public synchronized boolean matchesPlaybackRequest(boolean requestedAllPlayers,
+                                                       Collection<UUID> requestedListeners,
+                                                       MusicZone requestedZone) {
+        return matchesPlaybackRequest(requestedAllPlayers, requestedListeners, requestedZone, false);
+    }
+
+    public synchronized boolean matchesPlaybackAudienceAndZone(boolean requestedAllPlayers,
+                                                                 Collection<UUID> requestedListeners,
+                                                                 MusicZone requestedZone) {
+        Set<UUID> listeners = new HashSet<>(requestedListeners == null ? List.of() : requestedListeners);
+        return allPlayers == requestedAllPlayers
+                && explicitListeners.equals(listeners)
+                && zone.sameAs(requestedZone);
+    }
+
+    public synchronized boolean matchesPlaybackRequest(boolean requestedAllPlayers,
+                                                       Collection<UUID> requestedListeners,
+                                                       MusicZone requestedZone,
+                                                       boolean requestedMono) {
+        return matchesPlaybackAudienceAndZone(requestedAllPlayers, requestedListeners, requestedZone)
+                && monoAudio == requestedMono;
+    }
 
     public synchronized boolean referencesTrack(String trackId) {
         if (trackId == null) return false;
@@ -71,9 +139,20 @@ public final class PlaybackSession {
         return repeat && repeatSource.stream().anyMatch(track -> track.id().equals(trackId));
     }
 
-    public synchronized void enqueue(MusicTrack track) { queue.addLast(track); }
+    public synchronized void enqueue(MusicTrack track) {
+        if (track == null) return;
+        queue.addLast(track);
+        // An asynchronous playlist may have reached the end of its current
+        // track while waiting for this import. Start the new item immediately.
+        if (current == null && !paused && !resumePreparing) advance();
+    }
 
     public synchronized boolean advance() {
+        timelineGeneration++;
+        if (pendingSpeed != null) {
+            speed = pendingSpeed;
+            pendingSpeed = null;
+        }
         if (queue.isEmpty() && repeat && !repeatSource.isEmpty()) queue.addAll(repeatSource);
         resumeGeneration++;
         resumePreparing = false;
@@ -117,6 +196,7 @@ public final class PlaybackSession {
     /** Existing behaviour for legacy segmented and continuous modes. */
     public synchronized void resume() {
         if (!paused || current == null) return;
+        timelineGeneration++;
         resumeGeneration++;
         resumePreparing = false;
         pendingOffsetMs = -1L;
@@ -143,6 +223,7 @@ public final class PlaybackSession {
      */
     public synchronized long beginResumePreparation() {
         if (!paused || current == null || !current.isStreamed() || resumePreparing) return -1L;
+        timelineGeneration++;
         resumePreparing = true;
         pendingOffsetMs = pausedOffsetMs;
         resumeAfterPreparation = true;
@@ -155,6 +236,7 @@ public final class PlaybackSession {
      */
     public synchronized long beginSeekPreparation(long targetMs) {
         if (current == null || !current.isStreamed() || resumePreparing) return -1L;
+        timelineGeneration++;
         boolean wasPlaying = !paused;
         if (wasPlaying) pausedOffsetMs = elapsedMs();
         paused = true;
@@ -197,6 +279,7 @@ public final class PlaybackSession {
 
     public synchronized void seek(long millis) {
         if (current == null) return;
+        timelineGeneration++;
         if (current.isStreamed()) {
             throw new IllegalArgumentException(
                     "Seeking within continuous streamed tracks requires resumable playback mode.");
@@ -211,9 +294,15 @@ public final class PlaybackSession {
     }
 
     public synchronized long elapsedMs() {
+        return elapsedMsAt(System.currentTimeMillis());
+    }
+
+    /** Deterministic clock projection used by the unit tests and playback engine. */
+    synchronized long elapsedMsAt(long nowMillis) {
         if (paused) return pausedOffsetMs;
         if (!clockStarted) return elapsedBaseMs;
-        return Math.max(0, elapsedBaseMs + System.currentTimeMillis() - trackStartedAt);
+        long wallElapsed = Math.max(0L, nowMillis - trackStartedAt);
+        return Math.max(0L, elapsedBaseMs + Math.round(wallElapsed * speed));
     }
 
     public synchronized int segmentIndex() {

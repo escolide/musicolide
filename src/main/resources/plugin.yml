@@ -9,13 +9,29 @@ softdepend:
   - Geyser-Spigot
 commands:
   music:
-    description: Control Musicolide playback, playlists and the local music catalogue.
+    description: Control Musicolide playback, YouTube search and the local music catalogue.
     usage: /music help
     aliases: [musicolide, m]
   play:
     description: Play a track or import an administrator-allowlisted URL.
-    usage: /play <track-or-url>
+    usage: /play <track-title, search query or YouTube URL>
     permission: musicolide.dj
+  link:
+    description: Generate a one-time five-minute Discord account-link code.
+    usage: /link
+    permission: musicolide.use
+  unlink:
+    description: Unlink your Discord account from Minecraft.
+    usage: /unlink
+    permission: musicolide.use
+  deafen:
+    description: Mute Musicolide audio for yourself.
+    usage: /deafen
+    permission: musicolide.use
+  undeafen:
+    description: Unmute Musicolide audio for yourself.
+    usage: /undeafen
+    permission: musicolide.use
 permissions:
   musicolide.use:
     description: Allows use of Musicolide playback commands.

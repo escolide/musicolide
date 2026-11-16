@@ -40,6 +40,166 @@ class YtDlpDownloaderTest {
 
 
     @Test
+    void searchCommandOnlyFetchesMetadataAndUsesBoundedYoutubeSearch() {
+        List<String> command = YtDlpDownloader.buildSearchCommand(
+                "yt-dlp", "qjs", Path.of("cache/yt-dlp"), 18, "Daft Punk One More Time");
+
+        assertTrue(command.contains("--flat-playlist"));
+        assertTrue(command.contains("--skip-download"));
+        assertTrue(command.contains("--dump-single-json"));
+        assertTrue(command.contains("--playlist-end"));
+        assertFalse(command.contains("--format"));
+        assertFalse(command.contains("--write-info-json"));
+        assertEquals("ytsearch18:Daft Punk One More Time",
+                command.get(command.indexOf("--") + 1));
+    }
+
+    @Test
+    void searchCommandSupportsLaterPagesBeyondTheOldThirtyResultCap() {
+        List<String> command = YtDlpDownloader.buildSearchCommand(
+                "yt-dlp", "qjs", Path.of("cache/yt-dlp"), 48, "artist album");
+        int playlistEnd = command.indexOf("--playlist-end");
+        assertTrue(playlistEnd >= 0);
+        assertEquals("48", command.get(playlistEnd + 1));
+        assertEquals("ytsearch48:artist album", command.get(command.size() - 1));
+    }
+
+
+    @Test
+    void detectsPlaylistOnlyUrlsButNotVideoUrlsWithPlaylistContext() {
+        assertTrue(YtDlpDownloader.isYouTubePlaylistUrl(
+                "https://www.youtube.com/playlist?list=PL123456789"));
+        assertTrue(YtDlpDownloader.isYouTubePlaylistUrl(
+                "https://www.youtube.com/watch?list=PL123456789"));
+        assertFalse(YtDlpDownloader.isYouTubePlaylistUrl(
+                "https://www.youtube.com/watch?v=Video12345&list=PL123456789"));
+        assertFalse(YtDlpDownloader.isYouTubePlaylistUrl(
+                "https://youtu.be/Video12345?list=PL123456789"));
+    }
+
+    @Test
+    void playlistMetadataCommandIsBoundedAndDoesNotDownloadMedia() {
+        List<String> command = YtDlpDownloader.buildPlaylistMetadataCommand(
+                "yt-dlp", "qjs", Path.of("cache/yt-dlp"), 7,
+                URI.create("https://www.youtube.com/playlist?list=PL123456789"));
+
+        assertTrue(command.contains("--flat-playlist"));
+        assertTrue(command.contains("--skip-download"));
+        assertTrue(command.contains("--dump-single-json"));
+        assertTrue(command.contains("--playlist-end"));
+        assertEquals("7", command.get(command.indexOf("--playlist-end") + 1));
+        assertFalse(command.contains("--no-playlist"));
+        assertFalse(command.contains("--format"));
+        assertEquals("https://www.youtube.com/playlist?list=PL123456789",
+                command.get(command.size() - 1));
+    }
+
+    @Test
+    void playlistParserDoesNotReportTruncationOnlyBecauseEntriesWereFiltered() throws Exception {
+        String json = """
+                {
+                  "playlist_count": 3,
+                  "entries": [
+                    {"id":"Video0001","title":"First Song","duration":180},
+                    {"id":"Video0002","title":"Live Stream","duration":300,"is_live":true},
+                    {"id":"Video0003","title":"Third Song","duration":210}
+                  ]
+                }
+                """;
+        YtDlpDownloader.PlaylistListing listing =
+                YtDlpDownloader.parsePlaylistEntries(json, 10);
+
+        assertEquals(2, listing.entries().size());
+        assertEquals(3, listing.reportedCount());
+        assertFalse(listing.truncated());
+    }
+
+    @Test
+    void playlistParserTreatsFullUnknownCountPageAsPotentiallyTruncated() throws Exception {
+        String json = """
+                {
+                  "entries": [
+                    {"id":"Video0001","title":"First Song"},
+                    {"id":"Video0002","title":"Second Song"}
+                  ]
+                }
+                """;
+        YtDlpDownloader.PlaylistListing listing =
+                YtDlpDownloader.parsePlaylistEntries(json, 2);
+
+        assertEquals(2, listing.entries().size());
+        assertTrue(listing.truncated());
+    }
+
+    @Test
+    void playlistParserDeduplicatesFiltersLiveEntriesAndReportsTruncation() throws Exception {
+        String json = """
+                {
+                  "playlist_count": 4,
+                  "entries": [
+                    {"id":"Video0001","title":"First Song","duration":180,"uploader":"Artist"},
+                    {"id":"Video0001","title":"First Song duplicate","duration":180},
+                    {"id":"Video0002","title":"Live Stream","duration":300,"is_live":true},
+                    {"id":"Video0003","title":"Third Song","duration":210,"uploader":"Artist"}
+                  ]
+                }
+                """;
+        YtDlpDownloader.PlaylistListing listing =
+                YtDlpDownloader.parsePlaylistEntries(json, 2);
+
+        assertEquals(2, listing.entries().size());
+        assertEquals("Video0001", listing.entries().get(0).videoId());
+        assertEquals("Video0003", listing.entries().get(1).videoId());
+        assertEquals("https://www.youtube.com/watch?v=Video0003", listing.entries().get(1).url());
+        assertEquals(4, listing.reportedCount());
+        assertTrue(listing.truncated());
+    }
+
+    @Test
+    void parserAcceptsSingleVideoResponseWhenPlaylistWrapperIsAbsent() throws Exception {
+        String json = """
+                {"id":"single1234","title":"A Single Result","uploader":"Artist","duration":210}
+                """;
+        List<YtDlpDownloader.SearchResult> results = YtDlpDownloader.parseSearchResults(json, 6, false);
+        assertEquals(1, results.size());
+        assertEquals("single1234", results.get(0).videoId());
+    }
+
+    @Test
+    void parserAllowsMoreThanTwentyResultsForOnDemandPages() throws Exception {
+        StringBuilder json = new StringBuilder("{\"entries\":[");
+        for (int i = 0; i < 36; i++) {
+            if (i > 0) json.append(',');
+            json.append("{\"id\":\"video").append(String.format("%04d", i))
+                    .append("\",\"title\":\"Track ").append(i).append("\",\"duration\":200}");
+        }
+        json.append("]}");
+        assertEquals(36, YtDlpDownloader.parseSearchResults(json.toString(), 36, false).size());
+    }
+
+    @Test
+    void songPriorityPrefersOfficialAudioButCanBeDisabled() throws Exception {
+        String json = """
+                {
+                  "entries": [
+                    {"id":"tutorial1234","title":"How to play One More Time - Tutorial","uploader":"Piano Lessons","duration":240},
+                    {"id":"official123","title":"One More Time (Official Audio)","uploader":"Artist - Topic","duration":225},
+                    {"id":"reaction123","title":"One More Time Reaction","uploader":"React Channel","duration":300}
+                  ]
+                }
+                """;
+
+        List<YtDlpDownloader.SearchResult> prioritized =
+                YtDlpDownloader.parseSearchResults(json, 2, true);
+        List<YtDlpDownloader.SearchResult> originalOrder =
+                YtDlpDownloader.parseSearchResults(json, 2, false);
+
+        assertEquals("official123", prioritized.get(0).videoId());
+        assertEquals("tutorial1234", originalOrder.get(0).videoId());
+        assertEquals(2, prioritized.size());
+    }
+
+    @Test
     void parsesMultilingualTitleArtistAndYoutubeSourceIdFromInfoJson(@org.junit.jupiter.api.io.TempDir Path temporary)
             throws Exception {
         Path info = temporary.resolve("source.info.json");

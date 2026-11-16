@@ -139,51 +139,170 @@ public final class ResourcePackBuilder {
 
     public Path build(String namespace, Path trackDirectory, int segmentCount, int segmentMs) throws IOException {
         Path output = packsDirectory.resolve(namespace + ".zip");
-        Map<String, String> sounds = new LinkedHashMap<>();
+        boolean hasMono = Files.isDirectory(trackDirectory.resolve("mono"));
+        StringBuilder soundsJson = new StringBuilder("{\n");
+        int total = segmentCount * (hasMono ? 2 : 1);
+        int index = 0;
         for (int i = 0; i < segmentCount; i++) {
             String id = String.format("%05d", i);
-            sounds.put("s_" + id, namespace + "/stereo/" + id);
-        }
-
-        StringBuilder soundsJson = new StringBuilder("{\n");
-        int index = 0;
-        for (Map.Entry<String, String> entry : sounds.entrySet()) {
-            soundsJson.append("  \"").append(entry.getKey()).append("\": {\"sounds\":[{\"name\":\"")
-                    .append(namespace).append(':').append(entry.getValue()).append("\",\"stream\":false}]}");
-            if (++index < sounds.size()) soundsJson.append(',');
-            soundsJson.append('\n');
+            appendSegmentSound(soundsJson, namespace, "s_" + id, namespace + "/stereo/" + id,
+                    ++index < total);
+            if (hasMono) {
+                appendSegmentSound(soundsJson, namespace, "m_" + id, namespace + "/mono/" + id,
+                        ++index < total);
+            }
         }
         soundsJson.append("}\n");
 
-        String meta = format.toPackMcmeta();
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
-            add(zip, "pack.mcmeta", meta.getBytes(StandardCharsets.UTF_8));
+            add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
             add(zip, "assets/" + namespace + "/sounds.json", soundsJson.toString().getBytes(StandardCharsets.UTF_8));
             for (int i = 0; i < segmentCount; i++) {
                 String id = String.format("%05d", i);
                 addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/stereo/" + id + ".ogg",
                         trackDirectory.resolve("stereo").resolve(id + ".ogg"));
+                if (hasMono) {
+                    addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/mono/" + id + ".ogg",
+                            trackDirectory.resolve("mono").resolve(id + ".ogg"));
+                }
             }
         }
         return output;
     }
 
+    private void appendSegmentSound(StringBuilder json, String namespace, String key,
+                                    String path, boolean comma) {
+        json.append("  \"").append(key).append("\": {\"sounds\":[{\"name\":\"")
+                .append(namespace).append(':').append(path).append("\",\"stream\":false}]}");
+        if (comma) json.append(',');
+        json.append('\n');
+    }
+
     public Path buildStreamed(String namespace, Path audioFile) throws IOException {
-        if (!Files.isRegularFile(audioFile) || Files.size(audioFile) == 0) {
-            throw new IOException("The streamed OGG file is missing or empty.");
-        }
+        return buildStreamed(namespace, audioFile, null);
+    }
+
+    public Path buildStreamed(String namespace, Path audioFile, Path monoAudioFile) throws IOException {
+        requireAudioFile(audioFile, "The streamed stereo OGG file is missing or empty.");
+        if (monoAudioFile != null) requireAudioFile(monoAudioFile, "The streamed mono OGG file is missing or empty.");
         Path output = packsDirectory.resolve(namespace + ".zip");
         String soundsJson = "{\n"
                 + "  \"music\": {\"sounds\":[{\"name\":\"" + namespace
-                + ":music\",\"stream\":true}]}\n"
-                + "}\n";
+                + ":music\",\"stream\":true}]}"
+                + (monoAudioFile == null ? "" : ",\n  \"mono\": {\"sounds\":[{\"name\":\""
+                + namespace + ":mono\",\"stream\":true}]}")
+                + "\n}\n";
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
             add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
             add(zip, "assets/" + namespace + "/sounds.json", soundsJson.getBytes(StandardCharsets.UTF_8));
             addFile(zip, "assets/" + namespace + "/sounds/music.ogg", audioFile);
+            if (monoAudioFile != null) {
+                addFile(zip, "assets/" + namespace + "/sounds/mono.ogg", monoAudioFile);
+            }
         }
         return output;
+    }
+
+    private void requireAudioFile(Path file, String message) throws IOException {
+        if (!Files.isRegularFile(file) || Files.size(file) == 0) throw new IOException(message);
+    }
+
+    /**
+     * Adds a one-channel variant to an older per-track archive without changing
+     * its stereo assets or required pack metadata. The replacement is atomic.
+     */
+    public synchronized void addMonoVariant(String namespace, Path sourcePack, Path monoDirectory,
+                                            boolean streamed, int segmentCount) throws IOException {
+        if (!Files.isRegularFile(sourcePack)) throw new IOException("The source track pack is missing.");
+        Path temporary = Files.createTempFile(sourcePack.getParent(), ".musicolide-mono-", ".zip");
+        String soundsEntry = "assets/" + namespace + "/sounds.json";
+        String monoPrefix = streamed
+                ? "assets/" + namespace + "/sounds/mono.ogg"
+                : "assets/" + namespace + "/sounds/" + namespace + "/mono/";
+        try {
+            // Finish reading and writing the archive before replacing the source.
+            // This also works on Windows, where an open ZipFile can lock the file.
+            try (ZipFile source = new ZipFile(sourcePack.toFile())) {
+                ZipEntry sounds = source.getEntry(soundsEntry);
+                if (sounds == null || sounds.isDirectory()) {
+                    throw new IOException("The source track pack has no sounds.json.");
+                }
+                String oldSounds;
+                try (InputStream input = source.getInputStream(sounds)) {
+                    oldSounds = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                }
+
+                List<String> definitions = new ArrayList<>();
+                if (streamed) {
+                    requireAudioFile(monoDirectory.resolve("mono.ogg"), "The generated mono OGG is missing.");
+                    definitions.add("  \"mono\": {\"sounds\":[{\"name\":\"" + namespace
+                            + ":mono\",\"stream\":true}]}");
+                } else {
+                    for (int i = 0; i < segmentCount; i++) {
+                        String id = String.format("%05d", i);
+                        requireAudioFile(monoDirectory.resolve(id + ".ogg"),
+                                "A generated mono segment is missing: " + id);
+                        definitions.add("  \"m_" + id + "\": {\"sounds\":[{\"name\":\""
+                                + namespace + ":" + namespace + "/mono/" + id
+                                + "\",\"stream\":false}]}");
+                    }
+                }
+
+                int finalBrace = oldSounds.lastIndexOf('}');
+                if (finalBrace < 0) throw new IOException("The source sounds.json is invalid.");
+                String prefix = oldSounds.substring(0, finalBrace).stripTrailing();
+                String additions = (prefix.endsWith("}") ? ",\n" : "")
+                        + String.join(",\n", definitions) + "\n";
+                String updatedSounds = prefix + additions + "}\n";
+
+                try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(temporary))) {
+                    Set<String> written = new HashSet<>();
+                    Enumeration<? extends ZipEntry> entries = source.entries();
+                    while (entries.hasMoreElements()) {
+                        ZipEntry entry = entries.nextElement();
+                        String name = entry.getName();
+                        if (name.equals(soundsEntry) || name.equals(monoPrefix)
+                                || (!streamed && name.startsWith(monoPrefix))) continue;
+                        if (!written.add(name)) {
+                            throw new IOException("Duplicate entry in source track pack: " + name);
+                        }
+                        ZipEntry copy = new ZipEntry(name);
+                        if (entry.getTime() >= 0) copy.setTime(entry.getTime());
+                        output.putNextEntry(copy);
+                        if (!entry.isDirectory()) {
+                            try (InputStream input = source.getInputStream(entry)) {
+                                input.transferTo(output);
+                            }
+                        }
+                        output.closeEntry();
+                    }
+                    if (!written.add(soundsEntry)) {
+                        throw new IOException("Could not replace the sounds metadata.");
+                    }
+                    add(output, soundsEntry, updatedSounds.getBytes(StandardCharsets.UTF_8));
+                    if (streamed) {
+                        addFile(output, monoPrefix, monoDirectory.resolve("mono.ogg"));
+                    } else {
+                        for (int i = 0; i < segmentCount; i++) {
+                            String id = String.format("%05d", i);
+                            String name = monoPrefix + id + ".ogg";
+                            if (!written.add(name)) throw new IOException("Duplicate mono asset: " + name);
+                            addFile(output, name, monoDirectory.resolve(id + ".ogg"));
+                        }
+                    }
+                }
+            }
+
+            try {
+                Files.move(temporary, sourcePack,
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException error) {
+                Files.move(temporary, sourcePack, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     public synchronized Path rebuildBedrockLibrary() throws IOException {

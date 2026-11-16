@@ -15,6 +15,40 @@ public final class CatalogMatcher {
                 .filter(match -> match.confidence >= 0.45);
     }
 
+    /**
+     * Match metadata only when a supplied creator is compatible with the saved artist.
+     * This avoids treating two differently performed songs with the same title as the
+     * same recording merely because their titles are identical.
+     */
+    public static Optional<Match> bestCompatibleArtistMatch(
+            String title, String creator, List<MusicTrack> tracks) {
+        List<MusicTrack> compatible = tracks.stream()
+                .filter(track -> artistsCompatible(creator, track.artist()))
+                .toList();
+        return best(title, creator, compatible).filter(match -> match.confidence() >= 0.96);
+    }
+
+    private static boolean artistsCompatible(String sourceArtist, String savedArtist) {
+        if (sourceArtist == null || sourceArtist.isBlank()
+                || savedArtist == null || savedArtist.isBlank()) return true;
+        String source = normalizeArtist(sourceArtist);
+        String saved = normalizeArtist(savedArtist);
+        if (source.isBlank() || saved.isBlank()) return true;
+        if (source.equals(saved) || source.contains(saved) || saved.contains(source)) return true;
+        List<String> left = List.of(source.split(" "));
+        List<String> right = List.of(saved.split(" "));
+        long intersection = left.stream().distinct().filter(right::contains).count();
+        long union = java.util.stream.Stream.concat(left.stream(), right.stream()).distinct().count();
+        return union > 0 && intersection / (double) union >= 0.65;
+    }
+
+    private static String normalizeArtist(String value) {
+        return value.toLowerCase(Locale.ROOT)
+                .replaceAll("\\s*[-|]\\s*(topic|vevo|official)$", "")
+                .replaceAll("\\b(official audio|official music video|topic channel)\\b", "")
+                .replaceAll("[^a-z0-9]+", " ").trim().replaceAll("\\s+", " ");
+    }
+
     private static double score(String title, String creator, MusicTrack track) {
         String wanted = normalize(title);
         String candidate = normalize(track.title());

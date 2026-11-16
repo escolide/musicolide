@@ -11,6 +11,98 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaybackSessionTest {
     @Test
+    void playbackRequestMatchesOnlyTheSameAudienceAndZone() {
+        UUID owner = UUID.randomUUID();
+        UUID listener = UUID.randomUUID();
+        MusicZone zone = MusicZone.global();
+        PlaybackSession session = new PlaybackSession(owner, "tester",
+                zone, false, List.of(listener), List.of(sampleTrack("queue-current")), 0);
+
+        assertTrue(session.matchesPlaybackRequest(false, List.of(listener), MusicZone.global()));
+        assertFalse(session.isServerWideGlobalSession(), "A session with a named listener is not server-wide.");
+        assertFalse(session.matchesPlaybackRequest(true, List.of(), MusicZone.global()));
+        assertFalse(session.matchesPlaybackRequest(false, List.of(UUID.randomUUID()), MusicZone.global()));
+        assertFalse(session.matchesPlaybackRequest(false, List.of(listener),
+                MusicZone.circle(UUID.randomUUID(), 0, 64, 0, 20, false, 0, false, 0)));
+    }
+
+    private MusicTrack sampleTrack(String id) {
+        return new MusicTrack(id, id, "", "ms_" + id, id + ".zip",
+                "0000000000000000000000000000000000000000", 60000, 60000, 1, 1000);
+    }
+
+    @Test
+    void audioModeIsSessionScopedAndPartOfQueueIdentity() {
+        UUID listener = UUID.randomUUID();
+        MusicZone zone = MusicZone.global();
+        MusicTrack streamed = new MusicTrack("mode-stream", "Mode stream", "", "ms_mode_stream",
+                "mode-stream.zip", "0000000000000000000000000000000000000000",
+                60000, 60000, 1, 1000);
+        PlaybackSession stereo = new PlaybackSession(UUID.randomUUID(), "tester",
+                zone, false, List.of(listener), List.of(streamed), 0);
+        PlaybackSession mono = new PlaybackSession(UUID.randomUUID(), "tester",
+                zone, false, List.of(listener), List.of(streamed), 0, true);
+
+        assertFalse(stereo.isMono(), "Existing constructor overloads must remain stereo by default.");
+        assertTrue(mono.isMono());
+        assertTrue(stereo.matchesPlaybackAudienceAndZone(false, List.of(listener), zone));
+        assertTrue(mono.matchesPlaybackAudienceAndZone(false, List.of(listener), zone));
+        assertTrue(stereo.matchesPlaybackRequest(false, List.of(listener), zone));
+        assertFalse(stereo.matchesPlaybackRequest(false, List.of(listener), zone, true));
+        assertTrue(mono.matchesPlaybackRequest(false, List.of(listener), zone, true));
+        assertFalse(mono.matchesPlaybackRequest(false, List.of(listener), zone));
+        assertEquals("ms_mode_stream:music", streamed.soundKey(0));
+        assertEquals("ms_mode_stream:mono", streamed.soundKey(0, true));
+
+        MusicTrack segmented = new MusicTrack("mode-segmented", "Mode segmented", "", "mc_mode_segmented",
+                "mode-segmented.zip", "0000000000000000000000000000000000000000",
+                10000, 1000, 10, 1000);
+        assertEquals("mc_mode_segmented:s_00007", segmented.soundKey(7));
+        assertEquals("mc_mode_segmented:m_00007", segmented.soundKey(7, true));
+    }
+
+    @Test
+    void onlyAllPlayerGlobalSessionsQualifyAsServerWideDiscordPlayback() {
+        MusicTrack track = sampleTrack("discord-scope");
+        PlaybackSession globalAll = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(track), 0);
+        PlaybackSession globalNamed = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(UUID.randomUUID()), List.of(track), 0);
+        PlaybackSession spatialAll = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.circle(UUID.randomUUID(), 0, 64, 0, 30, false, 0, false, 0),
+                true, List.of(), List.of(track), 0);
+
+        assertTrue(globalAll.isServerWideGlobalSession());
+        assertFalse(globalNamed.isServerWideGlobalSession());
+        assertFalse(spatialAll.isServerWideGlobalSession());
+    }
+
+    @Test
+    void timelineGenerationChangesWhenTheSameTrackIsRestartedOrAdvanced() {
+        MusicTrack first = new MusicTrack("timeline-first", "First", "", "mc_timeline_first",
+                "first.zip", "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
+        MusicTrack second = new MusicTrack("timeline-second", "Second", "", "mc_timeline_second",
+                "second.zip", "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first, second), 0);
+
+        long initial = session.timelineGeneration();
+        session.startClockIfNeeded();
+        session.pause();
+        session.resume();
+        long resumed = session.timelineGeneration();
+        assertTrue(resumed > initial);
+
+        session.seek(2500);
+        long sought = session.timelineGeneration();
+        assertTrue(sought > resumed);
+
+        session.advance();
+        assertTrue(session.timelineGeneration() > sought);
+        assertEquals("timeline-second", session.current().id());
+    }
+
+    @Test
     void sessionWaitsForFirstPackReadySignalAndSupportsSegmentSeeking() {
         MusicTrack track = new MusicTrack("demo", "Demo", "", "mc_demo", "demo.zip",
                 "0000000000000000000000000000000000000000", 10000, 1000, 10, 1000);
@@ -199,6 +291,95 @@ class PlaybackSessionTest {
         assertFalse(session.completeResumePreparation(generation, remainder));
         assertEquals("next", session.current().id());
         assertEquals("mc_next", session.playbackTrack().namespace());
+    }
+
+    @Test
+    void pendingPlaylistKeepsAnEmptySessionAliveUntilTheNextImportArrives() {
+        MusicTrack first = sampleTrack("playlist-pending-first");
+        MusicTrack second = sampleTrack("playlist-pending-second");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first), 0);
+
+        assertFalse(session.isEmpty());
+        session.advance();
+        assertNull(session.current());
+        assertTrue(session.isEmpty());
+
+        session.queuePending(true);
+        assertFalse(session.isEmpty(), "An asynchronous playlist must not be removed while the next import is pending.");
+        session.enqueue(second);
+
+        assertEquals("playlist-pending-second", session.current().id());
+        assertFalse(session.isEmpty());
+        session.queuePending(false);
+    }
+
+    @Test
+    void enqueueDoesNotReplaceTheCurrentTrackOrResetItsTimeline() throws Exception {
+        MusicTrack current = sampleTrack("queue-current-track");
+        MusicTrack queued = sampleTrack("queue-next-track");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(current), 0);
+        session.startClockIfNeeded();
+        Thread.sleep(30);
+        long beforeQueue = session.elapsedMs();
+        long generation = session.timelineGeneration();
+
+        session.enqueue(queued);
+
+        assertEquals("queue-current-track", session.current().id());
+        assertEquals("queue-next-track", session.upcoming(1).get(0).id());
+        assertEquals(1, session.queueSize());
+        assertEquals(generation, session.timelineGeneration());
+        assertTrue(session.elapsedMs() >= beforeQueue,
+                "Adding a queued track must not reset the current playback clock.");
+        assertTrue(session.advance());
+        assertEquals("queue-next-track", session.current().id());
+    }
+
+    @Test
+    void liveSpeedChangeIsStagedUntilTheNextTrackAndScalesItsClock() {
+        MusicTrack first = sampleTrack("speed-first");
+        MusicTrack second = sampleTrack("speed-second");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first, second), 0);
+
+        assertTrue(session.setSpeed(0.75), "Speed can be set before playback starts.");
+        assertEquals(0.75, session.speed(), 0.0001);
+
+        session.startClockIfNeeded();
+        long now = System.currentTimeMillis();
+        assertFalse(session.setSpeed(2.0), "An already-playing sound cannot change pitch in place.");
+        assertEquals(0.75, session.speed(), 0.0001);
+        assertEquals(2.0, session.pendingSpeed(), 0.0001);
+        assertEquals(750L, session.elapsedMsAt(now + 1000) - session.elapsedMsAt(now),
+                "The current track keeps its original playback rate.");
+
+        assertTrue(session.advance());
+        assertEquals("speed-second", session.current().id());
+        assertEquals(2.0, session.speed(), 0.0001);
+        assertNull(session.pendingSpeed());
+
+        session.startClockIfNeeded();
+        long nextStart = System.currentTimeMillis();
+        assertEquals(2000L,
+                session.elapsedMsAt(nextStart + 1000) - session.elapsedMsAt(nextStart),
+                "The next track's session clock must match the client sound pitch.");
+    }
+
+    @Test
+    void speedCanBeChangedWhilePausedAndRejectsOutOfRangeValues() {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(sampleTrack("speed-paused")), 0);
+        assertTrue(session.setSpeed(0.5));
+        session.startClockIfNeeded();
+        session.pause();
+
+        assertTrue(session.setSpeed(1.5));
+        assertEquals(1.5, session.speed(), 0.0001);
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(0.49));
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(2.01));
+        assertThrows(IllegalArgumentException.class, () -> session.setSpeed(Double.NaN));
     }
 
     @Test

@@ -1,16 +1,21 @@
 package io.github.escolide.musicolide.region;
 
 import org.bukkit.Location;
+import org.bukkit.plugin.java.JavaPlugin;
 
 import java.lang.reflect.Method;
 
 /** Optional WorldGuard adapter loaded reflectively so the plugin still starts without WorldGuard. */
 public final class WorldGuardBridge {
+    private final JavaPlugin plugin;
     private final Method adapt;
     private final Method getRegions;
     private final Method getId;
+    private volatile boolean available = true;
+    private volatile boolean failureLogged;
 
-    public WorldGuardBridge() throws ReflectiveOperationException {
+    public WorldGuardBridge(JavaPlugin plugin) throws ReflectiveOperationException {
+        this.plugin = plugin;
         Class<?> adapter = Class.forName("com.sk89q.worldguard.bukkit.BukkitAdapter");
         this.adapt = adapter.getMethod("adapt", Location.class);
         Class<?> regionQuery = Class.forName("com.sk89q.worldguard.protection.regions.RegionQuery");
@@ -19,7 +24,12 @@ public final class WorldGuardBridge {
         this.getId = Class.forName("com.sk89q.worldguard.protection.regions.ProtectedRegion").getMethod("getId");
     }
 
+    public boolean isAvailable() {
+        return available;
+    }
+
     public boolean isInside(Location location, String regionId) {
+        if (!available || location == null || regionId == null || regionId.isBlank()) return false;
         try {
             Class<?> worldGuard = Class.forName("com.sk89q.worldguard.WorldGuard");
             Object instance = worldGuard.getMethod("getInstance").invoke(null);
@@ -33,8 +43,14 @@ public final class WorldGuardBridge {
             for (Object region : iterable) {
                 if (regionId.equalsIgnoreCase(String.valueOf(getId.invoke(region)))) return true;
             }
-        } catch (ReflectiveOperationException ignored) {
-            // An unavailable/incompatible WorldGuard API simply makes the region non-matching.
+        } catch (ReflectiveOperationException | LinkageError error) {
+            available = false;
+            if (!failureLogged) {
+                failureLogged = true;
+                plugin.getLogger().warning("WorldGuard region checks have been disabled because the runtime API "
+                        + "became unavailable or incompatible: " + error.getClass().getSimpleName()
+                        + ": " + String.valueOf(error.getMessage()));
+            }
         }
         return false;
     }

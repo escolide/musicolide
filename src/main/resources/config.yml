@@ -1,11 +1,10 @@
-# Musicolide configuration. Compatible target: Paper 1.21.1 through 26.3.
-# The resource-pack format is detected automatically from the running server version.
-general:
-  debug: false
-  language: en
-  check-interval-ticks: 5
-  shutdown-stop-playback: true
+# Musicolide configuration for Paper 1.21.1 through 26.3.
+# Settings are grouped by what they control. The resource-pack format is detected automatically.
 
+general:
+  check-interval-ticks: 5
+
+# HTTP hosting used to deliver the generated Java and Bedrock resource packs.
 server:
   hosting-mode: "shared-port"
   bind-address: "0.0.0.0"
@@ -25,7 +24,9 @@ server:
 
   path-prefix: "/packs"
   max-download-mb: 100
-  
+
+# Audio import, processing and encoding. These settings affect newly imported tracks.
+
 audio:
   tools:
     # Download pinned yt-dlp, FFmpeg and QuickJS builds over HTTPS on first startup.
@@ -35,50 +36,115 @@ audio:
     download-on-first-start: true
   ffmpeg:
     executable: "ffmpeg"
-    required: false
   # Controls how NEW imports are encoded. Existing catalogue tracks keep their format.
   # segmented: legacy short OGG segments; pause/resume preserves position at segment timing.
   # continuous: one streamed OGG; resume restarts at the beginning (Minecraft exposes no stream seek).
   # resumable: one streamed OGG; resume creates a timestamped OGG tail with FFmpeg and a temporary pack.
-  # Timestamp-based resume is for Java clients. Mixed sessions with online Bedrock players use the
-  # compatible restart-from-beginning fallback because Geyser's aggregate pack is fixed at join time.
+  # Timestamp-based resume is for Java clients. Mixed sessions with supported (non-excluded)
+  # Bedrock players use the compatible restart-from-beginning fallback because Geyser's aggregate
+  # pack is fixed at join time. Set geyser.ignore-bedrock-players: true to exclude Bedrock entirely.
   playback-mode: "resumable"
   yt-dlp:
     enabled: true
     executable: "yt-dlp"
-    # When enabled by an administrator, /play <url> imports a YouTube URL.
-    # Imports remain admin-only and must be authorized for download and redistribution.
-    # Keep false unless the server operator has confirmed those rights.
-    auto-import-on-play: true
+    # When enabled, /play <url> can be used by players with the DJ permission.
+    # The separate /music import-url command remains admin-only and requires --rights-confirmed.
+    # Keep false unless the server operator has confirmed download and redistribution rights.
+    auto-import-on-play: false
+    # Accept YouTube playlist URLs in /play only when this is explicitly enabled.
+    # Each video is still downloaded individually with --no-playlist and processed sequentially.
+    allow-playlists: false
+    # Hard-capped by the plugin at 20; also cannot exceed limits.max-playlist-tracks.
+    max-playlist-items: 10
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
-    # URL-imported packs become eligible for expiry this many minutes after import.
-    # Active playback sessions and in-flight Java pack downloads delay deletion.
-    url-import-retention-minutes: 15
     # Add only domains from which the server has permission to download and redistribute audio.
     # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
-    # For a one-time import, use /music import-url <url> --rights-confirmed.
+    # For a permanent authorized import, use /music import-url <url> rights.
     allowed-hosts:
       - "youtube.com"
       - "youtu.be"
     blocked-hosts:
       - "spotify.com"
       - "soundcloud.com"
-  format: "ogg"
+    # YouTube search returns metadata only. Audio is downloaded only after /music select.
+    search:
+      # Number of results returned by ordinary/autocomplete searches (1-20).
+      result-count: 6
+      # Search pages show six results each. Default maximum is four pages; administrators may raise this to eight.
+      # Later pages are queried only when /music page <number> is requested.
+      max-pages: 4
+      # Prefer official audio/music videos, lyrics and Topic-channel uploads.
+      # This is heuristic ranking, not a strict filter; disable to keep YouTube's order.
+      prioritize-songs: true
   sample-rate: 44100
   # Used only when audio.playback-mode is 'segmented'.
   segment-duration-ms: 1000
+  # Selects the encoder quality used for new imports. Existing tracks are not re-encoded.
+  # balanced: a good balance between audio quality and file size.
+  # compact: smaller packs and downloads, with a more noticeable quality trade-off.
+  # high: larger packs and downloads, with higher audio quality.
+  # Use custom to read the individual audio.stereo-quality and audio.mono-quality values below.
+  profiles:
+    active: "custom"
+    presets:
+      balanced:
+        stereo-quality: 5
+        mono-quality: 5
+      compact:
+        stereo-quality: 3
+        mono-quality: 3
+      high:
+        stereo-quality: 7
+        mono-quality: 7
+  # Custom profile values only. These are also retained for older config.yml files.
+  # Valid Vorbis quality range: 0-10. Lower values create smaller files.
   stereo-quality: 5
+  mono-quality: 5
   max-track-duration-seconds: 1800
   max-input-mb: 100
+  # Files in SavedMusic/ are retained, renamed by TrackID and given a metadata sidecar. This only removes transient sources.
   delete-source-after-import: true
   processing:
+    # The audio worker remains single-threaded; this bounds waiting jobs as well.
     max-queued-jobs: 8
+    # New imports: per-requester delay plus a server-wide admission interval.
+    # Bulk import counts as one request and continues sequentially.
+    import-cooldown-seconds: 10
+    global-import-cooldown-seconds: 2
+    # Maximum files selected by /music import all. Hard-capped at 200.
+    max-bulk-import-files: 50
+    # Remote metadata searches share the same bounded audio worker.
+    search-cooldown-seconds: 3
+    global-search-cooldown-seconds: 1
+    # Fixed-provider oEmbed metadata lookups for external URLs; no media is downloaded.
+    metadata-cooldown-seconds: 5
+    global-metadata-cooldown-seconds: 1
+    # Manual seek/sync audio-tail generation; automatic playback synchronization is unaffected.
+    transform-cooldown-seconds: 3
+    global-transform-cooldown-seconds: 1
     timeout-seconds: 1800
     probe-timeout-seconds: 30
     yt-dlp-timeout-seconds: 600
+    yt-dlp-search-timeout-seconds: 45
     ffmpeg-threads: 1
 
+# Storage limits and cleanup for permanent sources and temporary imports.
+
+storage:
+  saved-music:
+    # Maximum combined size of files retained in plugins/Musicolide/SavedMusic/.
+    # This is separate from limits.max-track-library-gb, which applies to generated packs.
+    # Set to 0 to disable this source-library limit.
+    max-library-gb: 10
+  temporary:
+    # Lifetime of temporary URL-imported tracks before they become eligible for cleanup.
+    # A track is kept while it is playing, queued, repeating, or still being downloaded.
+    track-retention-minutes: 15
+    # How often Musicolide checks for expired temporary tracks. Valid range: 1-1440 minutes.
+    cleanup-interval-minutes: 1
+
+# How Musicolide sends, caches and prefetches resource packs for players.
 resource-packs:
   required-on-first-use: false
   prompt: "Musicolide needs its music library to play tracks."
@@ -86,31 +152,49 @@ resource-packs:
   # on-join: send it as the player joins, even when no music is currently playing.
   # The Java library is one pack containing all imported tracks; new imports publish a new revision.
   download-mode: "on-play"
-  strategy: "library"
+  # Minimum delay between a player's explicit /music download requests.
+  # Playback-triggered pack delivery is not subject to this manual-command cooldown.
+  request-cooldown-seconds: 30
+  # Server-wide spacing between explicit /music download requests.
+  # Playback-triggered pack delivery is never subject to this manual cooldown.
+  global-request-cooldown-seconds: 1
   prefetch:
     enabled: true
-    tracks-ahead: 4
+    # Keep up to two temporary playback packs ahead of the current track.
+    # Ordinary catalogue songs are already in the aggregate library pack.
+    tracks-ahead: 2
     max-concurrent-downloads: 2
-    max-prefetch-mb-per-player: 40
+  optimization:
+    # Remember each player's successfully loaded library revision.
+    # When enabled, an unchanged pack is not offered again on reconnect.
+    # Disable only when you need to force a fresh pack application after each join.
+    avoid-redundant-reloads: true
   cache:
-    enabled: true
-    max-size-gb: 5
-    retain-unused-files-days: 30
     # false keeps the music library active for the entire connection and lets
     # Minecraft reuse its local SHA-1 cache after reconnecting.
     remove-pack-after-session: false
 
+# Playback defaults and spatial behavior for /play and /music commands.
+
 playback:
   default-volume: 100
-  default-mode: "stereo"
+  # Keep the playback clock moving even when nobody is currently inside the selected zone.
+  # A listener arriving later will synchronize to the current track position.
+  continue-without-listeners: true
+  # Separate rule for a completely empty server.
+  continue-when-server-empty: true
+  # next-track: no new file; the current sound retains its old volume until the next track.
+  # precise: Java players receive a timestamp-aligned temporary OGG tail to change volume mid-track.
+  # restart-segment: restart the current segment in legacy segmented mode; streamed tracks use next-track.
+  volume-change-mode: "next-track"
   overlap:
-    enabled: true
-    priority-policy: "first-started"
     manual-priority-enabled: true
     warn-session-owner: true
     warning-cooldown-seconds: 60
   range:
-    default-shape: "circle"
+    # With a spatial option and no explicit target, admins default to @a while
+    # ordinary players default to @s when permissions.allow-player-self-zones is enabled.
+    # Without a spatial option, a player command defaults to @s.
     circle:
       radius: 60
     square:
@@ -121,27 +205,55 @@ playback:
       mode: "unlimited"
       max-distance: 32
   fade:
+    # Applies to the existing per-player attenuation behavior when explicitly enabled.
     enabled-by-default: false
     distance: 10
-    transition: true
+  mono:
+    # Default extra attenuation band for mono circle/square play zones (blocks).
+    # Override per request with fade10; fade0 disables it.
+    # WorldGuard polygon regions do not currently support edge-distance fading.
+    fade-distance: 10
   synchronization:
     action-bar-now-playing: true
-    # Wait for all current, audible recipients to have a ready pack before starting a new track.
-    # This prevents faster clients starting the shared clock while others are still downloading.
+    # Synchronize Java recipients, but never let one slow client hold playback indefinitely.
     start-barrier: true
-    progress-update-ticks: 20
+    # Maximum time to wait for slow Java resource packs after at least one Java
+    # recipient is ready. Late clients automatically receive a timeline-aligned
+    # temporary audio tail when their original library pack finishes loading.
+    # If nobody is ready yet, the session clock waits rather than consuming the track.
+    start-barrier-timeout-seconds: 7
+    late-join:
+      # Lead time used by /music sync and precise Java volume changes.
+      # The default next-track volume mode does not generate a replacement audio file.
+      delay-seconds: 4.0
+
+# Playlist behavior and rules for matching imported tracks to existing catalogue entries.
 
 playlists:
   enabled: true
   shuffle: false
   repeat: false
-  prefetch-next: true
+  preimport:
+    # Begin preparing the next playlist track this many seconds before the current one ends.
+    # Short tracks start their next import immediately when the remaining time is below this value.
+    lead-seconds: 20
+    # Maximum imported future tracks waiting in the queue (not including the current track).
+    max-preimported-tracks: 2
 
 matching:
   enabled: true
-  warn-when-approximate: true
   require-confirmation-for-alias: true
   metadata-lookup: true
+
+# Optional integrations for Bedrock players, protected regions and Discord.
+geyser:
+  # Completely exclude Geyser-identified Bedrock players from Musicolide:
+  # no Bedrock music pack, no Java or temporary packs, no playback, and no plugin messages.
+  # They are also excluded from playback audience/barrier decisions, so Java players
+  # continue normally. Geyser must be installed on this Paper server for detection.
+  # Enable before Bedrock players connect. Players already sent a pack must reconnect
+  # after changing this option so Geyser starts a new session without offering it.
+  ignore-bedrock-players: false
 
 worldguard:
   enabled: true
@@ -150,16 +262,111 @@ worldguard:
 limits:
   max-sessions: 20
   max-queue-length: 500
+  # Maximum entries allowed in each Musicolide playlist, including imported URL tracks once added.
   max-playlist-tracks: 500
+  # Maximum size of the generated/processed audio resource-pack library in packs/.
+  # SavedMusic/ source files have a separate limit under storage.saved-music.
   max-track-library-gb: 10
 
 permissions:
   use: "musicolide.use"
   dj: "musicolide.dj"
   admin: "musicolide.admin"
+  # Allow non-admin players to use circle/square zones only when targeting themselves.
+  allow-player-self-zones: true
+  # Allow non-admin players to use target:@a. Disabled by default.
+  allow-player-all-target: false
 
+discord:
+  # Optional Discord bot integration: passive one-way voice broadcast plus linked-account slash commands.
+  # Discord commands execute as the linked, online Minecraft player and respect the configured permission policy.
+  enabled: false
+  # global-only: broadcast only sessions addressed to @a with no spatial zone.
+  # zone-aware: also allow the previous behaviour of mirroring an eligible spatial session.
+  broadcast-scope: "global-only"
+  # Put the bot token in this server's local plugins/Musicolide/config.yml only.
+  # Never commit, share, or post a real token.
+  bot-token: ""
+  # Discord voice-channel snowflake ID (Developer Mode -> Copy Channel ID).
+  voice-channel-id: ""
+  # Rejoin after an unexpected voice disconnect and restart from Minecraft's current timer.
+  reconnect-and-resync: true
+  voice:
+    # true connects only while a Minecraft playback session is active.
+    # false keeps the bot in the configured voice channel even when nothing is playing.
+    connect-only-when-playing: true
+    # Keep the voice connection open while a track is paused or waiting at its start barrier.
+    # The bot never sends audio while playback is paused.
+    stay-connected-while-paused: true
+    # Delay disconnecting after playback ends or a paused session is set to disconnect.
+    # 0 disconnects immediately, matching the previous behavior.
+    disconnect-delay-seconds: 0
+  # Discord profile presence is metadata-only and never controls audio playback.
+  # No active song (including paused/preparing): bot appears Idle with no activity.
+  # Actively playing: bot appears Online with a "Playing" activity using this template.
+  # Placeholders: {title}, {artist}, {elapsed}, {duration}, and {state}.
+  presence:
+    enabled: true
+    template: "🎵 {title} • {elapsed}"
+    # Discord presence is rate-limited; values below 15 seconds are raised to 15.
+    update-interval-seconds: 15
+  # Bot replies use this accent colour (six-digit hex).
+  embed-color: "#9B59B6"
+  info:
+    enabled: true
+    # Adds a YouTube thumbnail to Discord /info only when the current track has a saved YouTube source ID.
+    # Thumbnail URLs are sent to Discord; no image is added to Java or Bedrock player resource packs.
+    show-thumbnail: true
+    # Appended after the standard info fields. Placeholders: {state}, {track}, {title}, {artist}, {position}, {duration}, {server}.
+    custom-message: ""
+    server-name: "Minecraft Server"
+    # Server address is hidden unless explicitly enabled.
+    show-server-address: false
+    server-ip: ""
+    server-port: 25565
+  commands:
+    enabled: true
+    # Explicit command guild. Blank defaults to the guild containing voice-channel-id.
+    # Commands are never globally registered; use allowed-guild-ids for an explicit multi-guild allowlist.
+    guild-id: ""
+    # minecraft-op / discord-administrator / either / both
+    # minecraft-op checks the linked player's actual OP/admin permission in Bukkit.
+    # discord-administrator checks Discord Administrator permission or a configured role ID.
+    admin-authorization: "minecraft-op"
+    admin-role-ids: []
+    # Explicit trusted guild allowlist. When non-empty, commands register only in these guilds.
+    # When empty, discord.commands.guild-id is trusted, or the guild containing voice-channel-id.
+    # A non-empty invalid list fails closed; commands are never globally registered.
+    allowed-guild-ids: []
+    # Per-user Discord slash-command cooldown and a small global request spacing.
+    user-cooldown-ms: 1000
+    global-cooldown-ms: 100
+    # Remote autocomplete is metadata-only but uses yt-dlp; local results remain available during cooldown.
+    autocomplete-cooldown-seconds: 1
+    autocomplete-global-cooldown-seconds: 1
+    # Also bound cheap local autocomplete work and reply volume.
+    autocomplete-response-cooldown-ms: 250
+    autocomplete-global-response-cooldown-ms: 50
+    # Pairing-code guesses are limited both per Discord user and globally.
+    otp-user-attempts-per-minute: 5
+    otp-global-attempts-per-minute: 30
+    # Limit repeated /link code generation from Minecraft accounts.
+    link-code-cooldown-seconds: 30
+    global-link-code-cooldown-seconds: 1
+    # /music command: playlist play creates a fresh playback session rather than appending to one.
+    playlist-play-cooldown-seconds: 30
+    global-playlist-play-cooldown-seconds: 2
+    # Slash command response visibility: requester (ephemeral/private) or everyone (public).
+    # Existing installations default to requester so current privacy is preserved.
+    visibility:
+      info: "requester"
+      help: "requester"
+      play: "requester"
+      music: "requester"
+
+# Text shown by Minecraft commands and playback feedback.
 messages:
-  prefix: "&8[&bMusicolide&8] &r"
+  prefix: "&8[&5Musicolide&8] &r"
   no-permission: "&cYou do not have permission to do that."
   player-only: "&cThis command must be run by a player."
   track-not-found: "&cTrack not found. Import an authorized audio file first."
@@ -172,7 +379,8 @@ messages:
   import-failed: "&cAudio import failed: {reason}"
   bedrock-not-supported: "&eMusicolide Bedrock audio is unavailable until a Bedrock music pack has been generated."
   bedrock-pack-reconnect: "&eThe Bedrock music pack changed after you joined. Reconnect to receive the latest music library."
-  bedrock-resume-unsupported: "&eThis track resumed at a timestamp using a temporary Java pack. Bedrock playback is unavailable until the next track."
+  bedrock-resume-unsupported: "&eThis track needs a private Java audio pack. Bedrock playback will resume with the next track."
+  playback-sync-too-late: "&eThe track is almost finished; your audio will start with the next track."
   playback-started: "&aNow playing: &f{title}"
   playback-paused: "&ePlayback paused."
   playback-resumed: "&aPlayback resumed."

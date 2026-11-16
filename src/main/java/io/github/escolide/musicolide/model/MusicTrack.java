@@ -35,9 +35,15 @@ public record MusicTrack(
         return namespace != null && (namespace.startsWith("ms_") || namespace.startsWith("mr_"));
     }
 
+    /** Backwards-compatible default: stereo audio. */
     public String soundKey(int segmentIndex) {
-        return isStreamed() ? namespace + ":music"
-                : namespace + ":s_" + String.format("%05d", segmentIndex);
+        return soundKey(segmentIndex, false);
+    }
+
+    /** Returns the selected channel layout's sound event. */
+    public String soundKey(int segmentIndex, boolean mono) {
+        if (isStreamed()) return namespace + (mono ? ":mono" : ":music");
+        return namespace + ":" + (mono ? "m_" : "s_") + String.format("%05d", segmentIndex);
     }
 
     public long segmentDurationMs(int segmentIndex) {

@@ -11,9 +11,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.SQLException;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,7 +34,16 @@ public final class AudioProcessor implements AutoCloseable {
     private final ResourcePackBuilder packBuilder;
     private final NativeToolchain toolchain;
     private final ThreadPoolExecutor worker;
+    // Metadata-only searches do not wait behind long audio imports.
+    private final ThreadPoolExecutor searchWorker;
     private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightUrlImports =
+            new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CompletableFuture<PlaylistImportResult>> inFlightPlaylistImports =
+            new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicBoolean playlistImportActive =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private final Set<String> monoVariantsReady = ConcurrentHashMap.newKeySet();
+    private final ConcurrentMap<String, CompletableFuture<MusicTrack>> inFlightMonoVariants =
             new ConcurrentHashMap<>();
 
     public AudioProcessor(JavaPlugin plugin, TrackRepository repository, ResourcePackBuilder packBuilder,
@@ -46,19 +59,52 @@ public final class AudioProcessor implements AutoCloseable {
                     thread.setDaemon(true);
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
+        this.searchWorker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(8), runnable -> {
+                    Thread thread = new Thread(runnable, "Musicolide-SearchWorker");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle) {
+        return importFile(fileName, requestedTitle, null);
+    }
+
+    public CompletableFuture<MusicTrack> importFile(String fileName, String requestedTitle, String customId) {
+        if (fileName != null) {
+            Path localName;
+            try {
+                localName = Path.of(fileName).getFileName();
+            } catch (RuntimeException invalidPath) {
+                return CompletableFuture.failedFuture(new IllegalArgumentException("Invalid SavedMusic filename."));
+            }
+            if (localName != null) {
+                String value = localName.toString();
+                int dot = value.lastIndexOf('.');
+                String base = dot > 0 ? value.substring(0, dot) : "";
+                Path saved = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("SavedMusic");
+                if (base.matches("[a-f][0-9]{2}") && Files.isRegularFile(saved.resolve(base + ".yml"))) {
+                    return CompletableFuture.failedFuture(new IllegalArgumentException(
+                            "That file is already imported as TrackID " + base + ". Use /music save or /music play instead of importing it again."));
+                }
+            }
+        }
+        final String normalizedCustomId;
+        try {
+            normalizedCustomId = validateCustomId(customId);
+        } catch (IOException error) {
+            return CompletableFuture.failedFuture(error);
+        }
         if (!toolchain.isInitialized()) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Native audio tools are still being checked during startup. Try again in a moment."));
+            return toolchain.initializeAsync().thenCompose(ignored -> importFile(fileName, requestedTitle, customId));
         }
         if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "FFmpeg must be installed or downloaded before audio can be imported."));
         }
         try {
-            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false), worker);
+            return CompletableFuture.supplyAsync(() -> processFile(fileName, requestedTitle, false, normalizedCustomId), worker);
         } catch (RejectedExecutionException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
@@ -70,26 +116,93 @@ public final class AudioProcessor implements AutoCloseable {
      * uses the same local validation/encoding path as a file import. yt-dlp exits
      * before FFmpeg is launched.
      */
+
+    /**
+     * Runs a bounded, metadata-only YouTube search on the serial audio worker.
+     * The search itself never downloads media; selected URLs still pass through
+     * the normal allowlist and explicit auto-import configuration.
+     */
+    public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query) {
+        int configured = bounded(plugin.getConfig().getInt("audio.yt-dlp.search.result-count", 6), 1, 20);
+        return searchYouTube(query, configured);
+    }
+
+    public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query, int maximumResults) {
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored -> searchYouTube(query, maximumResults));
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "YouTube search is disabled. Enable audio.yt-dlp in config.yml first."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "yt-dlp is unavailable. Install it or provide a bundled executable."));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "QuickJS is unavailable; YouTube search cannot start."));
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new YtDlpDownloader(plugin, toolchain).searchYouTube(query, bounded(maximumResults, 1, 160));
+                } catch (Exception ex) {
+                    throw new CompletionException(ex);
+                }
+            }, searchWorker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide metadata-search queue is full. Try again shortly.", ex));
+        }
+    }
+
     public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle) {
+        return importUrl(sourceUrl, requestedTitle, null);
+    }
+
+    public CompletableFuture<MusicTrack> importUrl(String sourceUrl, String requestedTitle, String customId) {
+        return importUrlInternal(sourceUrl, requestedTitle, customId, true);
+    }
+
+    /** Imports an authorized URL into the permanent SavedMusic library. */
+    public CompletableFuture<MusicTrack> importUrlPermanent(String sourceUrl, String requestedTitle, String customId) {
+        return importUrlInternal(sourceUrl, requestedTitle, customId, false);
+    }
+
+    private CompletableFuture<MusicTrack> importUrlInternal(String sourceUrl, String requestedTitle,
+                                                              String customId, boolean temporaryTrack) {
+        if (YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "YouTube playlist URLs are not accepted by the single-track importer. Use /play with audio.yt-dlp.allow-playlists enabled."));
+        }
         String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
         if (sourceKey.isBlank()) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("The source URL is invalid."));
         }
 
         // Check the persistent alias before checking native tools or queueing a job.
-        // A previously imported video must not be downloaded again just because
-        // yt-dlp is currently unavailable or a second player pasted another URL variant.
         try {
             Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
-            if (existing.isPresent()) return CompletableFuture.completedFuture(existing.get());
+            if (existing.isPresent()) {
+                return temporaryTrack ? CompletableFuture.completedFuture(existing.get())
+                        : saveTrackPermanently(existing.get().id());
+            }
         } catch (SQLException ex) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "Could not check the existing URL catalogue entry.", ex));
         }
 
+        final String normalizedCustomId;
+        try {
+            normalizedCustomId = validateCustomId(customId);
+        } catch (IOException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+
         if (!toolchain.isInitialized()) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
-                    "Native audio tools are still being checked during startup. Try again in a moment."));
+            return toolchain.initializeAsync().thenCompose(ignored ->
+                    importUrlInternal(sourceUrl, requestedTitle, customId, temporaryTrack));
         }
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -106,78 +219,413 @@ public final class AudioProcessor implements AutoCloseable {
 
         CompletableFuture<MusicTrack> result = new CompletableFuture<>();
         CompletableFuture<MusicTrack> active = inFlightUrlImports.putIfAbsent(sourceKey, result);
-        if (active != null) return active;
+        if (active != null) {
+            return temporaryTrack ? active : active.thenCompose(track -> saveTrackPermanently(track.id()));
+        }
 
         try {
             worker.execute(() -> {
-                Path temporary = null;
                 try {
-                    Path incoming = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("incoming");
-                    Files.createDirectories(incoming);
-                    temporary = Files.createTempDirectory(incoming, ".musicolide-url-");
-                    YtDlpDownloader.DownloadResult download =
-                            new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
-                    String relative = incoming.relativize(download.audioFile()).toString();
-                    MusicTrack imported = processFile(relative, requestedTitle, true,
-                            download.title(), download.artist());
-
-                    // LinkNormalizer maps YouTube watch, youtu.be, music.youtube.com,
-                    // and Shorts URLs to the same youtube:<video-id> key.
-                    try {
-                        repository.addAlias(sourceKey, imported.id());
-                        String extractor = download.extractor() == null ? "" : download.extractor().toLowerCase(Locale.ROOT);
-                        String sourceId = download.sourceId() == null ? "" : download.sourceId().trim();
-                        if (!sourceId.isBlank() && extractor.contains("youtube")) {
-                            // The extractor-provided ID is authoritative if a future
-                            // YouTube URL form is not recognized by LinkNormalizer.
-                            repository.addAlias("youtube:" + sourceId, imported.id());
-                        }
-                    } catch (SQLException aliasError) {
-                        plugin.getLogger().warning("Imported " + imported.title()
-                                + " but could not save its source-ID alias: " + aliasError.getMessage());
-                    }
-                    result.complete(imported);
-                } catch (Throwable ex) {
-                    result.completeExceptionally(ex instanceof CompletionException && ex.getCause() != null
-                            ? ex.getCause() : ex);
+                    result.complete(importUrlNow(sourceUrl, requestedTitle, normalizedCustomId, temporaryTrack, true));
+                } catch (Throwable error) {
+                    result.completeExceptionally(error instanceof CompletionException && error.getCause() != null
+                            ? error.getCause() : error);
                 } finally {
-                    deleteQuietly(temporary);
                     inFlightUrlImports.remove(sourceKey, result);
                 }
             });
         } catch (RejectedExecutionException ex) {
             inFlightUrlImports.remove(sourceKey, result);
             result.completeExceptionally(new IllegalStateException(
-                    "The Musicolide audio queue is full. Wait for the current import to finish and try again.", ex));
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
         }
         return result;
+    }
+
+    /**
+     * Imports only a bounded number of entries from an explicitly permitted
+     * YouTube playlist. Playlist metadata is read first; each video then follows
+     * the normal single-video (--no-playlist), allowlist and audio validation path.
+     */
+    /**
+     * Reads playlist metadata only. Media is intentionally not downloaded here;
+     * MusicCommand imports entries one at a time as playback approaches them.
+     */
+    public CompletableFuture<YtDlpDownloader.PlaylistListing> listPlaylistUrl(
+            String sourceUrl, int maximumItems) {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "YouTube playlist importing is disabled. Enable audio.yt-dlp.allow-playlists in config.yml first."));
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)
+                || !plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Playlist importing requires audio.yt-dlp.enabled and audio.yt-dlp.auto-import-on-play."));
+        }
+        if (!YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "The URL is not a recognized YouTube playlist URL."));
+        }
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored -> listPlaylistUrl(sourceUrl, maximumItems));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)
+                || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "yt-dlp and QuickJS must be available before playlist lookup can start."));
+        }
+        int configuredMaximum = bounded(plugin.getConfig().getInt(
+                "audio.yt-dlp.max-playlist-items", 10), 1, 20);
+        int playlistLimit = bounded(plugin.getConfig().getInt("limits.max-playlist-tracks", 500), 1, 500);
+        int maximum = Math.min(Math.min(configuredMaximum, playlistLimit), bounded(maximumItems, 1, 20));
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new YtDlpDownloader(plugin, toolchain).listPlaylist(sourceUrl, maximum);
+                } catch (Exception ex) {
+                    throw new CompletionException(ex);
+                }
+            }, worker);
+        } catch (RejectedExecutionException ex) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
+        }
+    }
+
+    /** Imports one already-authorized playlist entry as a temporary playback track. */
+    public CompletableFuture<MusicTrack> importPlaylistEntry(YtDlpDownloader.PlaylistEntry entry) {
+        if (entry == null || entry.url() == null || entry.url().isBlank()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("The playlist entry URL is invalid."));
+        }
+        return importUrl(entry.url(), entry.title());
+    }
+
+    public synchronized CompletableFuture<PlaylistImportResult> importPlaylistUrl(String sourceUrl) {
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "YouTube playlist importing is disabled. Enable audio.yt-dlp.allow-playlists in config.yml first."));
+        }
+        if (!YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "The URL is not a recognized YouTube playlist URL."));
+        }
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The YouTube playlist importer is disabled."));
+        }
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored -> importPlaylistUrl(sourceUrl));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.YT_DLP)
+                || !toolchain.available(NativeToolchain.Tool.JS_RUNTIME)
+                || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The YouTube playlist importer or required audio tools are unavailable."));
+        }
+
+        String playlistKey = sourceUrl.trim();
+        int maximum = bounded(plugin.getConfig().getInt(
+                "audio.yt-dlp.max-playlist-items", 10), 1, 20);
+        // Respect the server's general playlist cap as an additional ceiling.
+        maximum = Math.min(maximum, bounded(plugin.getConfig().getInt(
+                "limits.max-playlist-tracks", 500), 1, 500));
+        final int itemLimit = maximum;
+
+        CompletableFuture<PlaylistImportResult> existingPlaylist = inFlightPlaylistImports.get(playlistKey);
+        if (existingPlaylist != null) return existingPlaylist;
+        if (!playlistImportActive.compareAndSet(false, true)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Another YouTube playlist batch is already being processed. Try again after it finishes."));
+        }
+
+        CompletableFuture<PlaylistImportResult> result = new CompletableFuture<>();
+        inFlightPlaylistImports.put(playlistKey, result);
+        try {
+            worker.execute(() -> {
+                try {
+                    YtDlpDownloader.PlaylistListing listing =
+                            new YtDlpDownloader(plugin, toolchain).listPlaylist(sourceUrl, itemLimit);
+                    List<MusicTrack> imported = new ArrayList<>();
+                    int failed = 0;
+                    int newlyImported = 0;
+                    for (YtDlpDownloader.PlaylistEntry entry : listing.entries()) {
+                        String videoAlias = "youtube:" + entry.videoId();
+                        Optional<MusicTrack> existing = repository.resolveAlias(videoAlias);
+                        if (existing.isPresent()) {
+                            imported.add(existing.get());
+                            continue;
+                        }
+                        try {
+                            imported.add(importUrlNow(entry.url(), entry.title(), null, true, false));
+                            newlyImported++;
+                        } catch (Exception itemError) {
+                            failed++;
+                            plugin.getLogger().warning("Skipped YouTube playlist item '" + entry.title()
+                                    + "': " + rootMessage(itemError));
+                        }
+                    }
+                    if (imported.isEmpty()) {
+                        throw new IOException("No tracks from the YouTube playlist could be imported.");
+                    }
+                    // The Java pack must be published before each new catalogue row
+                    // becomes visible. The optional Bedrock aggregate can be rebuilt
+                    // once after this batch instead of once per playlist entry.
+                    if (newlyImported > 0) {
+                        try {
+                            packBuilder.rebuildBedrockLibrary();
+                        } catch (IOException bedrockError) {
+                            plugin.getLogger().warning("Playlist tracks were imported, but the Geyser Bedrock library "
+                                    + "could not be refreshed: " + bedrockError.getMessage());
+                        }
+                    }
+                    result.complete(new PlaylistImportResult(imported, listing.entries().size(),
+                            failed, listing.truncated(), listing.reportedCount()));
+                } catch (Throwable error) {
+                    result.completeExceptionally(error instanceof CompletionException && error.getCause() != null
+                            ? error.getCause() : error);
+                } finally {
+                    inFlightPlaylistImports.remove(playlistKey, result);
+                    playlistImportActive.set(false);
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            inFlightPlaylistImports.remove(playlistKey, result);
+            playlistImportActive.set(false);
+            result.completeExceptionally(new IllegalStateException(
+                    "The Musicolide audio queue is full. Wait for the current job to finish and try again.", ex));
+        }
+        return result;
+    }
+
+    private MusicTrack importUrlNow(String sourceUrl, String requestedTitle, String customId) throws Exception {
+        return importUrlNow(sourceUrl, requestedTitle, customId, true, true);
+    }
+
+    private MusicTrack importUrlNow(String sourceUrl, String requestedTitle,
+                                    String customId, boolean rebuildBedrockLibrary) throws Exception {
+        return importUrlNow(sourceUrl, requestedTitle, customId, true, rebuildBedrockLibrary);
+    }
+
+    private MusicTrack importUrlNow(String sourceUrl, String requestedTitle, String customId,
+                                    boolean temporaryTrack, boolean rebuildBedrockLibrary) throws Exception {
+        String sourceKey = LinkNormalizer.normalize(sourceUrl).orElse("");
+        if (sourceKey.isBlank()) throw new IOException("The source URL is invalid.");
+        Optional<MusicTrack> existing = repository.resolveAlias(sourceKey);
+        if (existing.isPresent()) return existing.get();
+
+        Path temporaryRoot = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("temp");
+        Files.createDirectories(temporaryRoot);
+        Path temporary = Files.createTempDirectory(temporaryRoot, ".musicolide-url-");
+        try {
+            YtDlpDownloader.DownloadResult download =
+                    new YtDlpDownloader(plugin, toolchain).download(sourceUrl, temporary);
+            String relative = temporaryRoot.relativize(download.audioFile()).toString();
+            MusicTrack imported = processFile(relative, requestedTitle, temporaryTrack,
+                    download.title(), download.artist(), customId, rebuildBedrockLibrary, true);
+
+            try {
+                repository.addAlias(sourceKey, imported.id());
+                String extractor = download.extractor() == null ? "" : download.extractor().toLowerCase(Locale.ROOT);
+                String sourceId = download.sourceId() == null ? "" : download.sourceId().trim();
+                if (!sourceId.isBlank() && extractor.contains("youtube")) {
+                    repository.addAlias("youtube:" + sourceId, imported.id());
+                }
+            } catch (SQLException aliasError) {
+                plugin.getLogger().warning("Imported " + imported.title()
+                        + " but could not save its source-ID alias: " + aliasError.getMessage());
+            }
+            return imported;
+        } finally {
+            deleteQuietly(temporary);
+        }
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    public record PlaylistImportResult(List<MusicTrack> tracks, int entriesFound,
+                                       int failedEntries, boolean truncated, int reportedTotal) {
+        public PlaylistImportResult {
+            tracks = List.copyOf(tracks);
+        }
     }
 
     public List<NativeToolchain.ToolStatus> toolStatuses() {
         return toolchain.statuses();
     }
 
+    public CompletableFuture<MusicTrack> saveTrackPermanently(String trackId) {
+        try {
+            MusicTrack track = repository.getTrack(trackId)
+                    .orElseThrow(() -> new IllegalArgumentException("Track not found: " + trackId));
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+                    Path saved = data.resolve("SavedMusic");
+                    Path packs = data.resolve("packs");
+                    Files.createDirectories(saved);
+                    String code = repository.getTrackCode(track.id())
+                            .orElseThrow(() -> new IOException("This track does not have an assigned TrackID."));
+                    Path sourcePack = packs.resolve(track.packFileName()).normalize();
+                    Path destinationPack = saved.resolve(code + ".zip").normalize();
+                    if (!sourcePack.startsWith(packs) || !Files.isRegularFile(sourcePack)) {
+                        throw new IOException("The generated audio archive is missing or has an unsafe path.");
+                    }
+                    if (!destinationPack.startsWith(saved)) throw new IOException("Unsafe SavedMusic destination.");
+                    long additionalBytes = Files.exists(destinationPack) ? 0L : Files.size(sourcePack) + 4096L;
+                    ensureSavedMusicCapacity(saved, additionalBytes);
+                    Files.copy(sourcePack, destinationPack, StandardCopyOption.REPLACE_EXISTING);
+                    writeSavedMetadata(saved.resolve(code + ".yml"), track, code, destinationPack.getFileName().toString());
+                    repository.saveTrack(track); // Clears expiry without changing internal IDs or aliases.
+                    return track;
+                } catch (Exception error) {
+                    throw new CompletionException(error);
+                }
+            }, worker);
+        } catch (Exception error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
+    public CompletableFuture<Boolean> deleteTrack(String trackId) {
+        try {
+            MusicTrack track = repository.getTrack(trackId).orElse(null);
+            if (track == null) return CompletableFuture.completedFuture(false);
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    String code = repository.getTrackCode(track.id()).orElse(null);
+                    if (!repository.deleteTrack(track.id())) return false;
+                    monoVariantsReady.remove(track.id());
+                    inFlightMonoVariants.remove(track.id());
+                    Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+                    Path packs = data.resolve("packs");
+                    Path pack = packs.resolve(track.packFileName()).normalize();
+                    if (pack.startsWith(packs)) Files.deleteIfExists(pack);
+                    Path tracksRoot = data.resolve("tracks").normalize();
+                    Path trackDirectory = tracksRoot.resolve(track.id()).normalize();
+                    if (trackDirectory.startsWith(tracksRoot)) deleteTree(trackDirectory);
+                    if (code != null) {
+                        Path saved = data.resolve("SavedMusic").normalize();
+                        if (Files.isDirectory(saved)) {
+                            try (var files = Files.list(saved)) {
+                                for (Path file : files.filter(Files::isRegularFile)
+                                        .filter(path -> path.getFileName().toString().startsWith(code + "."))
+                                        .toList()) Files.deleteIfExists(file);
+                            }
+                        }
+                    }
+                    packBuilder.buildBasePack();
+                    try {
+                        packBuilder.rebuildBedrockLibrary();
+                    } catch (IOException bedrockError) {
+                        plugin.getLogger().warning("Track was deleted, but the Bedrock library could not be refreshed: "
+                                + bedrockError.getMessage());
+                    }
+                    return true;
+                } catch (Exception error) {
+                    throw new CompletionException(error);
+                }
+            }, worker);
+        } catch (Exception error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
+    private void persistSavedSource(Path data, Path source, MusicTrack track) throws Exception {
+        Path saved = data.resolve("SavedMusic").toAbsolutePath().normalize();
+        Files.createDirectories(saved);
+        String code = repository.getTrackCode(track.id())
+                .orElseThrow(() -> new IOException("This track does not have an assigned TrackID."));
+        String fileName = source.getFileName().toString();
+        int dot = fileName.lastIndexOf('.');
+        String extension = dot >= 0 && fileName.length() - dot <= 10
+                ? fileName.substring(dot).toLowerCase(Locale.ROOT) : ".audio";
+        if (!extension.matches("\\.[a-z0-9]{1,8}")) extension = ".audio";
+        Path savedAudio = saved.resolve(code + extension).normalize();
+        if (!savedAudio.startsWith(saved)) throw new IOException("Unsafe SavedMusic source destination.");
+        boolean sourceAlreadyInLibrary = source.toAbsolutePath().normalize().startsWith(saved);
+        long additionalBytes = (sourceAlreadyInLibrary ? 0L : Files.size(source)) + 4096L;
+        ensureSavedMusicCapacity(saved, additionalBytes);
+        if (!source.toAbsolutePath().normalize().equals(savedAudio)) {
+            if (source.toAbsolutePath().normalize().getParent().equals(saved)) {
+                Files.move(source, savedAudio, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.copy(source, savedAudio, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        writeSavedMetadata(saved.resolve(code + ".yml"), track, code, savedAudio.getFileName().toString());
+    }
+
+    private void writeSavedMetadata(Path destination, MusicTrack track, String code, String audioFile)
+            throws IOException {
+        String yaml = "track-id: " + yamlQuote(code) + System.lineSeparator()
+                + "internal-id: " + yamlQuote(track.id()) + System.lineSeparator()
+                + "title: " + yamlQuote(track.title()) + System.lineSeparator()
+                + "artist: " + yamlQuote(track.artist() == null ? "" : track.artist()) + System.lineSeparator()
+                + "audio-file: " + yamlQuote(audioFile) + System.lineSeparator()
+                + "pack-file: " + yamlQuote(track.packFileName()) + System.lineSeparator()
+                + "duration-ms: " + track.durationMs() + System.lineSeparator()
+                + "sha1: " + yamlQuote(track.sha1Hex()) + System.lineSeparator();
+        Files.writeString(destination, yaml, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    private String yamlQuote(String value) {
+        String safe = value == null ? "" : value.replace("\\", "\\\\")
+                .replace("\"", "\\\"").replace("\r", " ").replace("\n", " ");
+        return "\"" + safe + "\"";
+    }
+
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport) {
-        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "");
+        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "", null);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String customId) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, "", "", customId);
     }
 
     private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
                                    String metadataTitle, String metadataArtist) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, metadataTitle, metadataArtist, null);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist, String requestedCustomId) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport,
+                metadataTitle, metadataArtist, requestedCustomId, true);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist, String requestedCustomId,
+                                   boolean rebuildBedrockLibrary) {
+        return processFile(fileName, requestedTitle, temporaryUrlImport, metadataTitle,
+                metadataArtist, requestedCustomId, rebuildBedrockLibrary, false);
+    }
+
+    private MusicTrack processFile(String fileName, String requestedTitle, boolean temporaryUrlImport,
+                                   String metadataTitle, String metadataArtist, String requestedCustomId,
+                                   boolean rebuildBedrockLibrary, boolean sourceIsTemporary) {
         Path trackDirectory = null;
         Path generatedPack = null;
         Path source = null;
+        boolean basePackPublished = false;
+        String persistedTrackId = null;
         try {
             Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
-            Path incoming = data.resolve("incoming");
-            Files.createDirectories(incoming);
-            source = incoming.resolve(fileName).normalize();
-            if (!source.startsWith(incoming) || !Files.isRegularFile(source)) {
-                throw new IOException("File not found in plugins/Musicolide/incoming.");
+            Path sourceRoot = data.resolve(sourceIsTemporary ? "temp" : "SavedMusic");
+            Files.createDirectories(sourceRoot);
+            source = sourceRoot.resolve(fileName).normalize();
+            if (!source.startsWith(sourceRoot) || !Files.isRegularFile(source)) {
+                throw new IOException("File not found in plugins/Musicolide/" + (sourceIsTemporary ? "temp" : "SavedMusic") + ".");
             }
-            Path realIncoming = incoming.toRealPath();
+            Path realSourceRoot = sourceRoot.toRealPath();
             source = source.toRealPath();
-            if (!source.startsWith(realIncoming)) {
-                throw new IOException("The selected file must remain inside the incoming directory.");
+            if (!source.startsWith(realSourceRoot)) {
+                throw new IOException("The selected file must remain inside its permitted Musicolide folder.");
             }
 
             long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
@@ -190,11 +638,19 @@ public final class AudioProcessor implements AutoCloseable {
                 throw new IOException("Track duration is invalid or exceeds " + maxDuration + " seconds.");
             }
 
-            String rawTitle = requestedTitle != null && !requestedTitle.isBlank() ? requestedTitle.trim()
+            String customId = normalizeCustomId(requestedCustomId);
+            if (customId != null && repository.getTrack(customId).isPresent()) {
+                throw new IOException("The custom track ID '" + customId + "' is already in use.");
+            }
+            String customDisplayName = requestedCustomId == null ? ""
+                    : requestedCustomId.trim().replace('_', ' ').replaceAll("\\s+", " ");
+            String rawTitle = customId != null ? customDisplayName
+                    : requestedTitle != null && !requestedTitle.isBlank() ? requestedTitle.trim()
                     : metadataTitle != null && !metadataTitle.isBlank() ? metadataTitle.trim()
                     : stripExtension(source.getFileName().toString());
             String artist = metadataArtist == null ? "" : metadataArtist.trim();
-            String id = slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
+            String id = customId != null ? customId
+                    : slug(rawTitle) + "-" + UUID.randomUUID().toString().substring(0, 8);
             // The ms_ namespace marks the new single-file streaming format. The
             // older mc_ namespace remains readable for tracks imported with segments.
             String playbackMode = configuredPlaybackMode();
@@ -204,33 +660,40 @@ public final class AudioProcessor implements AutoCloseable {
 
             trackDirectory = data.resolve("tracks").resolve(id);
             Files.createDirectories(trackDirectory);
-            int quality = bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10);
+            int stereoQuality = configuredQuality("stereo", 5);
+            int monoQuality = configuredQuality("mono", stereoQuality);
             int segmentMs;
             int segmentCount;
             if (segmented) {
-                // Legacy mode: encode independently playable OGG chunks.
+                // Legacy mode: create matching stereo and mono chunks from the same source timestamps.
                 segmentMs = bounded(plugin.getConfig().getInt("audio.segment-duration-ms", 1000), 250, 60000);
                 segmentCount = (int) Math.max(1L, (durationMs + segmentMs - 1L) / segmentMs);
                 Path stereo = trackDirectory.resolve("stereo");
+                Path mono = trackDirectory.resolve("mono");
                 Files.createDirectories(stereo);
+                Files.createDirectories(mono);
                 for (int i = 0; i < segmentCount; i++) {
                     long startMs = (long) i * segmentMs;
                     long lengthMs = Math.min(segmentMs, durationMs - startMs);
-                    runFfmpeg(ffmpeg, source, stereo.resolve(String.format(Locale.ROOT, "%05d.ogg", i)),
-                            startMs / 1000.0, lengthMs / 1000.0, quality);
+                    String segment = String.format(Locale.ROOT, "%05d.ogg", i);
+                    runFfmpeg(ffmpeg, source, stereo.resolve(segment),
+                            startMs / 1000.0, lengthMs / 1000.0, stereoQuality, 2);
+                    runFfmpeg(ffmpeg, source, mono.resolve(segment),
+                            startMs / 1000.0, lengthMs / 1000.0, monoQuality, 1);
                 }
                 generatedPack = packBuilder.build(namespace, trackDirectory, segmentCount, segmentMs);
             } else {
-                // Both continuous and resumable modes start as one streamed OGG.
-                // Resumable mode regenerates a timestamped remainder when resumed.
+                // Both continuous and resumable modes contain one OGG per channel layout.
                 Path streamedAudio = trackDirectory.resolve("music.ogg");
-                runFfmpegStreamed(ffmpeg, source, streamedAudio, quality);
-                // Base the playback clock on the encoded OGG's actual duration.
+                Path monoAudio = trackDirectory.resolve("mono.ogg");
+                runFfmpegStreamed(ffmpeg, source, streamedAudio, stereoQuality, 2);
+                runFfmpegStreamed(ffmpeg, source, monoAudio, monoQuality, 1);
+                // Base the playback clock on the stereo encoding's actual duration.
                 durationMs = probeDuration(ffmpeg, streamedAudio, data);
                 if (durationMs <= 0) throw new IOException("The streamed OGG has an invalid duration.");
                 segmentMs = (int) Math.min(Integer.MAX_VALUE, durationMs);
                 segmentCount = 1;
-                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio);
+                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio, monoAudio);
             }
 
             // Audio files are build intermediates; the finished ZIP is retained.
@@ -248,27 +711,36 @@ public final class AudioProcessor implements AutoCloseable {
             // becomes visible in the catalogue. Existing clients receive the new
             // snapshot only when they next need a track from the updated library.
             packBuilder.buildBasePack();
+            basePackPublished = true;
 
             String sha1 = sha1(generatedPack);
             MusicTrack track = new MusicTrack(id, rawTitle, artist, namespace, generatedPack.getFileName().toString(),
                     sha1, durationMs, segmentMs, segmentCount, Files.size(generatedPack));
             if (temporaryUrlImport) {
                 long retentionMinutes = bounded(
-                        plugin.getConfig().getInt("audio.url-import-retention-minutes", 15), 1, 1440);
+                        plugin.getConfig().getInt("storage.temporary.track-retention-minutes",
+                                plugin.getConfig().getInt("audio.yt-dlp.url-import-retention-minutes", 15)), 1, 1440);
                 long expiresAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(retentionMinutes);
                 repository.saveTemporaryTrack(track, expiresAt);
             } else {
                 repository.saveTrack(track);
+                persistedTrackId = track.id();
+                persistSavedSource(data, source, track);
             }
-            try {
-                packBuilder.rebuildBedrockLibrary();
-            } catch (IOException bedrockError) {
-                plugin.getLogger().warning("Track imported, but the Geyser Bedrock library could not be refreshed: "
-                        + bedrockError.getMessage());
+            monoVariantsReady.add(track.id());
+            if (rebuildBedrockLibrary) {
+                try {
+                    packBuilder.rebuildBedrockLibrary();
+                } catch (IOException bedrockError) {
+                    plugin.getLogger().warning("Track imported, but the Geyser Bedrock library could not be refreshed: "
+                            + bedrockError.getMessage());
+                }
             }
 
             // Keep the original input if processing or catalogue persistence failed.
-            if (plugin.getConfig().getBoolean("audio.delete-source-after-import", true)) {
+            Path savedDirectory = data.resolve("SavedMusic").toAbsolutePath().normalize();
+            if (plugin.getConfig().getBoolean("audio.delete-source-after-import", true)
+                    && !source.toAbsolutePath().normalize().startsWith(savedDirectory)) {
                 try {
                     Files.deleteIfExists(source);
                 } catch (IOException ex) {
@@ -278,10 +750,67 @@ public final class AudioProcessor implements AutoCloseable {
             }
             return track;
         } catch (Exception ex) {
+            if (persistedTrackId != null) {
+                try {
+                    String code = repository.getTrackCode(persistedTrackId).orElse(null);
+                    Path saved = plugin.getDataFolder().toPath().toAbsolutePath().normalize().resolve("SavedMusic");
+                    if (code != null && Files.isDirectory(saved)) {
+                        try (var files = Files.list(saved)) {
+                            for (Path file : files.filter(Files::isRegularFile)
+                                    .filter(path -> path.getFileName().toString().startsWith(code + "."))
+                                    .toList()) Files.deleteIfExists(file);
+                        }
+                    }
+                    repository.deleteTrack(persistedTrackId);
+                } catch (Exception rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                    plugin.getLogger().warning("Could not fully roll back a catalogue row after a failed SavedMusic write: "
+                            + rollbackError.getMessage());
+                }
+            }
             deleteQuietly(trackDirectory);
             deleteQuietly(generatedPack);
+            // The Java library is built before the catalogue write so a track is
+            // never visible before its pack is ready. If that write fails, remove
+            // the just-published orphan from the active library snapshot as well.
+            if (basePackPublished) {
+                try {
+                    packBuilder.buildBasePack();
+                } catch (Exception rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                    plugin.getLogger().warning("Could not roll back the Java library after a failed import: "
+                            + rollbackError.getMessage());
+                }
+            }
             throw new CompletionException(ex);
         }
+    }
+
+    private String validateCustomId(String requestedId) throws IOException {
+        String normalized = normalizeCustomId(requestedId);
+        if (normalized == null) return null;
+        try {
+            if (repository.getTrack(normalized).isPresent()) {
+                throw new IOException("The custom track ID '" + normalized + "' is already in use.");
+            }
+        } catch (SQLException error) {
+            throw new IOException("Could not check whether custom track ID '" + normalized + "' is already in use.", error);
+        }
+        return normalized;
+    }
+
+    private static String normalizeCustomId(String requestedId) throws IOException {
+        if (requestedId == null || requestedId.isBlank()) return null;
+        String normalized = requestedId.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "_");
+        if (normalized.matches("[a-f][0-9]{2}")) {
+            throw new IOException("Names matching the reserved short TrackID format a00-f99 cannot be used as custom IDs.");
+        }
+        if (!SAFE_ID.matcher(normalized).matches() || normalized.length() > 45) {
+            // The ms_/mc_ sound namespace prefix adds three characters; keep
+            // the complete namespace within the same 48-character limit.
+            throw new IOException("Custom track IDs must be 1-45 characters using lowercase letters, numbers, and underscores.");
+        }
+        return normalized;
     }
 
     private String configuredPlaybackMode() {
@@ -297,23 +826,196 @@ public final class AudioProcessor implements AutoCloseable {
 
     /**
      * Builds a short-lived streamed resource pack containing the unplayed tail
-     * of an imported streamed track. This runs on the audio worker, never the
-     * Minecraft server thread. The returned track is intentionally not saved
-     * to the catalogue or the Bedrock aggregate pack.
+     * of an imported track. Streamed tracks use their OGG directly; segmented
+     * tracks are concatenated before extracting the requested timestamp.
+     * This runs on the audio worker and is not saved to the catalogue or the
+     * Bedrock aggregate pack.
      */
-    public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs) {
-        if (sourceTrack == null || !sourceTrack.isStreamed()) {
-            return CompletableFuture.failedFuture(new IllegalArgumentException(
-                    "Only continuous streamed tracks can use timestamp-based resume."));
+    /**
+     * Ensures an older stereo-only import has a matching one-channel variant.
+     * New imports already contain both variants, so they complete without re-encoding.
+     */
+    public CompletableFuture<MusicTrack> ensureMonoVariant(MusicTrack track) {
+        if (track == null) return CompletableFuture.failedFuture(
+                new IllegalArgumentException("A track is required for mono preparation."));
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored -> ensureMonoVariant(track));
         }
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            return CompletableFuture.failedFuture(new IllegalStateException("FFmpeg is unavailable for mono preparation."));
+        }
+        if (monoVariantsReady.contains(track.id())) return CompletableFuture.completedFuture(track);
+        CompletableFuture<MusicTrack> result = new CompletableFuture<>();
+        CompletableFuture<MusicTrack> current = inFlightMonoVariants.putIfAbsent(track.id(), result);
+        if (current != null) return current;
+        try {
+            worker.execute(() -> {
+                try {
+                    MusicTrack prepared = prepareMonoVariant(track);
+                    monoVariantsReady.add(track.id());
+                    result.complete(prepared);
+                } catch (Throwable error) {
+                    result.completeExceptionally(error);
+                } finally {
+                    inFlightMonoVariants.remove(track.id(), result);
+                }
+            });
+        } catch (RejectedExecutionException error) {
+            inFlightMonoVariants.remove(track.id(), result);
+            result.completeExceptionally(new IllegalStateException(
+                    "The Musicolide audio queue is full; mono preparation could not be queued.", error));
+        }
+        return result;
+    }
+
+    private MusicTrack prepareMonoVariant(MusicTrack track) throws Exception {
+        Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
+        Path packs = data.resolve("packs").normalize();
+        Path sourcePack = packs.resolve(track.packFileName()).normalize();
+        if (!sourcePack.startsWith(packs) || !Files.isRegularFile(sourcePack)) {
+            throw new IOException("The original track resource pack is missing; mono audio cannot be prepared.");
+        }
+        boolean streamed = track.isStreamed();
+        try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+            boolean complete = true;
+            if (streamed) {
+                ZipEntry monoEntry = zip.getEntry("assets/" + track.namespace() + "/sounds/mono.ogg");
+                complete = monoEntry != null && !monoEntry.isDirectory() && monoEntry.getSize() > 0;
+            } else {
+                for (int i = 0; i < track.segmentCount(); i++) {
+                    String id = String.format(Locale.ROOT, "%05d", i);
+                    ZipEntry monoEntry = zip.getEntry("assets/" + track.namespace() + "/sounds/" + track.namespace()
+                            + "/mono/" + id + ".ogg");
+                    if (monoEntry == null || monoEntry.isDirectory() || monoEntry.getSize() <= 0) {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+            if (complete) {
+                // Normally startup has already incorporated this archive into the
+                // aggregate pack. If the stored checksum is stale, rebuild it once.
+                MusicTrack refreshed = refreshPackMetadata(track, sourcePack);
+                if (!refreshed.sha1Hex().equals(track.sha1Hex())
+                        || refreshed.packSizeBytes() != track.packSizeBytes()) {
+                    publishAudioVariants();
+                }
+                return refreshed;
+            }
+        }
+
         if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
+            throw new IllegalStateException("FFmpeg is not ready; mono audio cannot be generated yet.");
+        }
+        Path temporaryRoot = data.resolve("temp");
+        Files.createDirectories(temporaryRoot);
+        Path work = Files.createTempDirectory(temporaryRoot, ".musicolide-mono-");
+        try {
+            String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
+            int quality = configuredQuality("mono", configuredQuality("stereo", 5));
+            long maximumBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+            Path monoDirectory = work.resolve("mono");
+            Files.createDirectories(monoDirectory);
+            if (streamed) {
+                Path stereo = work.resolve("source.ogg");
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    copyZipEntry(zip, "assets/" + track.namespace() + "/sounds/music.ogg",
+                            stereo, maximumBytes);
+                }
+                runFfmpegRechannel(ffmpeg, stereo, monoDirectory.resolve("mono.ogg"), quality, 1);
+            } else {
+                long extractedBytes = 0L;
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    for (int i = 0; i < track.segmentCount(); i++) {
+                        String id = String.format(Locale.ROOT, "%05d", i);
+                        Path stereo = work.resolve("stereo-" + id + ".ogg");
+                        copyZipEntry(zip, "assets/" + track.namespace() + "/sounds/" + track.namespace()
+                                + "/stereo/" + id + ".ogg", stereo, maximumBytes);
+                        extractedBytes += Files.size(stereo);
+                        if (extractedBytes > maximumBytes) {
+                            throw new IOException("The source track exceeds the configured input-size limit.");
+                        }
+                        runFfmpegRechannel(ffmpeg, stereo, monoDirectory.resolve(id + ".ogg"), quality, 1);
+                    }
+                }
+            }
+            packBuilder.addMonoVariant(track.namespace(), sourcePack, monoDirectory, streamed, track.segmentCount());
+            MusicTrack refreshed = refreshPackMetadata(track, sourcePack);
+            publishAudioVariants();
+            return refreshed;
+        } finally {
+            deleteQuietly(work);
+        }
+    }
+
+    private void copyZipEntry(ZipFile zip, String entryName, Path destination, long maximumBytes)
+            throws IOException {
+        ZipEntry entry = zip.getEntry(entryName);
+        if (entry == null || entry.isDirectory()) {
+            throw new IOException("The stereo source asset is missing: " + entryName);
+        }
+        if (entry.getSize() > maximumBytes) {
+            throw new IOException("The stereo source asset exceeds the configured input-size limit.");
+        }
+        long copied = 0L;
+        try (InputStream input = zip.getInputStream(entry);
+             OutputStream output = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                copied += read;
+                if (copied > maximumBytes) {
+                    throw new IOException("The stereo source asset exceeds the configured input-size limit.");
+                }
+                output.write(buffer, 0, read);
+            }
+        }
+    }
+
+    private MusicTrack refreshPackMetadata(MusicTrack track, Path pack) throws Exception {
+        String checksum = sha1(pack);
+        long size = Files.size(pack);
+        if (checksum.equals(track.sha1Hex()) && size == track.packSizeBytes()) return track;
+        MusicTrack updated = new MusicTrack(track.id(), track.title(), track.artist(), track.namespace(),
+                track.packFileName(), checksum, track.durationMs(), track.segmentMs(),
+                track.segmentCount(), size);
+        repository.updatePackMetadata(track.id(), checksum, size);
+        return updated;
+    }
+
+    private void publishAudioVariants() throws IOException {
+        packBuilder.buildBasePack();
+        try {
+            packBuilder.rebuildBedrockLibrary();
+        } catch (IOException error) {
+            plugin.getLogger().warning("Mono audio is ready for Java, but the Bedrock library could not be refreshed: "
+                    + error.getMessage());
+        }
+    }
+
+    public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs) {
+        return createResumeTrack(sourceTrack, startMs, false);
+    }
+
+    /** Generate a mono tail only when the requesting session is mono. */
+    public CompletableFuture<MusicTrack> createResumeTrack(MusicTrack sourceTrack, long startMs,
+                                                            boolean includeMono) {
+        if (sourceTrack == null) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "A source track is required for timestamp-based synchronization."));
+        }
+        if (!toolchain.isInitialized()) {
+            return toolchain.initializeAsync().thenCompose(ignored ->
+                    createResumeTrack(sourceTrack, startMs, includeMono));
+        }
+        if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "FFmpeg is not ready; timestamp-based resume cannot be generated yet."));
         }
         try {
             return CompletableFuture.supplyAsync(() -> {
                 try {
-                    return processResumeTrack(sourceTrack, startMs);
+                    return processResumeTrack(sourceTrack, startMs, includeMono);
                 } catch (Exception ex) {
                     throw new CompletionException(ex);
                 }
@@ -324,7 +1026,8 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private MusicTrack processResumeTrack(MusicTrack sourceTrack, long requestedStartMs) throws Exception {
+    private MusicTrack processResumeTrack(MusicTrack sourceTrack, long requestedStartMs,
+                                          boolean includeMono) throws Exception {
         Path data = plugin.getDataFolder().toPath().toAbsolutePath().normalize();
         Path packs = data.resolve("packs").normalize();
         Path sourcePack = packs.resolve(sourceTrack.packFileName()).normalize();
@@ -336,37 +1039,91 @@ public final class AudioProcessor implements AutoCloseable {
             throw new IOException("The track has already reached its end.");
         }
 
-        Path incoming = data.resolve("incoming");
-        Files.createDirectories(incoming);
-        Path work = Files.createTempDirectory(incoming, ".musicolide-resume-");
+        Path temporaryRoot = data.resolve("temp");
+        Files.createDirectories(temporaryRoot);
+        Path work = Files.createTempDirectory(temporaryRoot, ".musicolide-resume-");
         Path outputPack = null;
         try {
-            Path input = work.resolve("source.ogg");
-            String entryName = "assets/" + sourceTrack.namespace() + "/sounds/music.ogg";
-            try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
-                ZipEntry entry = zip.getEntry(entryName);
-                if (entry == null || entry.isDirectory()) {
-                    throw new IOException("The original streamed OGG is missing from its resource pack.");
-                }
-                long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
-                if (entry.getSize() > maxBytes) {
-                    throw new IOException("The streamed OGG exceeds the configured input-size limit.");
-                }
-                try (var stream = zip.getInputStream(entry)) {
-                    Files.copy(stream, input, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-
             String ffmpeg = toolchain.executable(NativeToolchain.Tool.FFMPEG);
             Path remainder = work.resolve("remainder.ogg");
-            runFfmpegRemainder(ffmpeg, input, remainder, startMs, 
-                    bounded(plugin.getConfig().getInt("audio.stereo-quality", 5), 0, 10));
+            Path monoRemainder = includeMono ? work.resolve("mono-remainder.ogg") : null;
+            int stereoQuality = configuredQuality("stereo", 5);
+            int monoQuality = includeMono
+                    ? configuredQuality("mono", stereoQuality)
+                    : stereoQuality;
+            if (sourceTrack.isStreamed()) {
+                Path input = work.resolve("source.ogg");
+                String entryName = "assets/" + sourceTrack.namespace() + "/sounds/music.ogg";
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    ZipEntry entry = zip.getEntry(entryName);
+                    if (entry == null || entry.isDirectory()) {
+                        throw new IOException("The original streamed OGG is missing from its resource pack.");
+                    }
+                    long maxBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+                    if (entry.getSize() > maxBytes) {
+                        throw new IOException("The streamed OGG exceeds the configured input-size limit.");
+                    }
+                    try (var stream = zip.getInputStream(entry)) {
+                        Files.copy(stream, input, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                runFfmpegRemainder(ffmpeg, input, remainder, startMs, stereoQuality, 2);
+                if (includeMono) {
+                    runFfmpegRemainder(ffmpeg, input, monoRemainder, startMs, monoQuality, 1);
+                }
+            } else {
+                Path concatList = work.resolve("segments.txt");
+                List<String> entries = new ArrayList<>();
+                long maximumBytes = plugin.getConfig().getLong("audio.max-input-mb", 100) * 1024L * 1024L;
+                long extractedBytes = 0L;
+                if (sourceTrack.segmentCount() <= 0) {
+                    throw new IOException("The segmented resource pack contains no audio segments.");
+                }
+                int segmentDurationMs = Math.max(1, sourceTrack.segmentMs());
+                int firstSegment = (int) Math.min(sourceTrack.segmentCount() - 1L,
+                        startMs / segmentDurationMs);
+                long offsetWithinFirstSegmentMs = startMs - (long) firstSegment * segmentDurationMs;
+                try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
+                    for (int i = firstSegment; i < sourceTrack.segmentCount(); i++) {
+                        String segmentId = String.format(Locale.ROOT, "%05d", i);
+                        String entryName = "assets/" + sourceTrack.namespace() + "/sounds/"
+                                + sourceTrack.namespace() + "/stereo/" + segmentId + ".ogg";
+                        ZipEntry entry = zip.getEntry(entryName);
+                        if (entry == null || entry.isDirectory()) {
+                            throw new IOException("A segmented audio asset is missing: " + segmentId + ".ogg");
+                        }
+                        if (entry.getSize() > 0) {
+                            extractedBytes += entry.getSize();
+                            if (extractedBytes > maximumBytes) {
+                                throw new IOException("The segmented audio exceeds the configured input-size limit.");
+                            }
+                        }
+                        Path segmentFile = work.resolve("segment-" + segmentId + ".ogg");
+                        try (var stream = zip.getInputStream(entry)) {
+                            Files.copy(stream, segmentFile, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        String escapedPath = segmentFile.toAbsolutePath().toString()
+                                .replace("\\", "\\\\").replace("'", "\\'");
+                        entries.add("file '" + escapedPath + "'");
+                    }
+                }
+                if (entries.isEmpty()) throw new IOException("The segmented resource pack contains no audio segments.");
+                Files.writeString(concatList, String.join("\n", entries) + "\n", StandardCharsets.UTF_8);
+                runFfmpegSegmentedRemainder(ffmpeg, concatList, remainder,
+                        offsetWithinFirstSegmentMs, stereoQuality, 2);
+                if (includeMono) {
+                    runFfmpegSegmentedRemainder(ffmpeg, concatList, monoRemainder,
+                            offsetWithinFirstSegmentMs, monoQuality, 1);
+                }
+            }
             long durationMs = probeDuration(ffmpeg, remainder, data);
             if (durationMs <= 0) throw new IOException("FFmpeg produced an empty audio remainder.");
 
             String token = UUID.randomUUID().toString().replace("-", "");
             String namespace = "mr_" + token;
-            outputPack = packBuilder.buildStreamed(namespace, remainder);
+            outputPack = includeMono
+                    ? packBuilder.buildStreamed(namespace, remainder, monoRemainder)
+                    : packBuilder.buildStreamed(namespace, remainder);
             String id = "resume_" + token;
             String checksum = sha1(outputPack);
             int remainderDuration = (int) Math.min(Integer.MAX_VALUE, durationMs);
@@ -381,7 +1138,8 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private void runFfmpegRemainder(String executable, Path source, Path output, long startMs, int quality)
+    private void runFfmpegRemainder(String executable, Path source, Path output, long startMs,
+                                    int quality, int channels)
             throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
@@ -390,7 +1148,8 @@ public final class AudioProcessor implements AutoCloseable {
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error",
                 "-nostdin", "-y", "-i", source.toString(),
                 "-ss", String.format(Locale.ROOT, "%.3f", startMs / 1000.0),
-                "-vn", "-map", "0:a:0", "-ac", "2", "-ar", Integer.toString(sampleRate),
+                "-map_metadata", "-1", "-map_chapters", "-1", "-vn", "-sn", "-dn",
+                "-map", "0:a:0", "-ac", Integer.toString(channels), "-ar", Integer.toString(sampleRate),
                 "-c:a", "libvorbis", "-q:a", Integer.toString(quality),
                 "-threads", Integer.toString(threads), output.toString())
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -403,6 +1162,31 @@ public final class AudioProcessor implements AutoCloseable {
         }
         if (!Files.isRegularFile(output) || Files.size(output) == 0) {
             throw new IOException("FFmpeg completed without producing the resumed OGG.");
+        }
+    }
+
+    private void runFfmpegSegmentedRemainder(String executable, Path concatList, Path output,
+                                               long startMs, int quality, int channels)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error",
+                "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", concatList.toString(),
+                "-ss", String.format(Locale.ROOT, "%.3f", startMs / 1000.0),
+                "-map_metadata", "-1", "-map_chapters", "-1", "-vn", "-sn", "-dn",
+                "-map", "0:a:0", "-ac", Integer.toString(channels), "-ar", Integer.toString(sampleRate),
+                "-c:a", "libvorbis", "-q:a", Integer.toString(quality),
+                "-threads", Integer.toString(threads), output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg segmented synchronization-tail encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing the synchronized OGG remainder.");
         }
     }
 
@@ -428,12 +1212,13 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private void runFfmpegStreamed(String executable, Path source, Path output, int quality)
+    private void runFfmpegStreamed(String executable, Path source, Path output, int quality, int channels)
             throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
-                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-i", source.toString(), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", Integer.toString(channels),
                 "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
                 "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
                 output.toString())
@@ -452,13 +1237,14 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private void runFfmpeg(String executable, Path source, Path output, double start,
-                           double length, int quality) throws IOException, InterruptedException {
+                           double length, int quality, int channels) throws IOException, InterruptedException {
         int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
         int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
         Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", String.format(Locale.ROOT, "%.3f", start),
                 "-t", String.format(Locale.ROOT, "%.3f", length),
-                "-i", source.toString(), "-vn", "-map", "0:a:0", "-ac", "2",
+                "-i", source.toString(), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", Integer.toString(channels),
                 "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
                 "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads),
                 output.toString())
@@ -473,6 +1259,28 @@ public final class AudioProcessor implements AutoCloseable {
         }
         if (!Files.isRegularFile(output) || Files.size(output) == 0) {
             throw new IOException("FFmpeg completed without producing a valid OGG segment.");
+        }
+    }
+
+    private void runFfmpegRechannel(String executable, Path source, Path output, int quality, int channels)
+            throws IOException, InterruptedException {
+        int sampleRate = bounded(plugin.getConfig().getInt("audio.sample-rate", 44100), 8000, 192000);
+        int threads = bounded(plugin.getConfig().getInt("audio.processing.ffmpeg-threads", 1), 1, 4);
+        Process process = toolchain.start(new ProcessBuilder(executable, "-hide_banner", "-loglevel", "error", "-y",
+                "-i", source.toString(), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", Integer.toString(channels),
+                "-ar", Integer.toString(sampleRate), "-c:a", "libvorbis",
+                "-q:a", Integer.toString(quality), "-threads", Integer.toString(threads), output.toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD));
+        int timeout = bounded(plugin.getConfig().getInt("audio.processing.timeout-seconds", 1800), 10, 7200);
+        try {
+            waitForProcess(process, timeout, "FFmpeg mono variant encoding");
+        } finally {
+            toolchain.finished(process);
+        }
+        if (!Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("FFmpeg completed without producing a valid mono OGG.");
         }
     }
 
@@ -492,6 +1300,30 @@ public final class AudioProcessor implements AutoCloseable {
         }
         if (process.exitValue() != 0) {
             throw new IOException(label + " exited with code " + process.exitValue() + ".");
+        }
+    }
+
+    private int configuredQuality(String layout, int fallback) {
+        String profile = plugin.getConfig().getString("audio.profiles.active", "custom");
+        profile = profile == null ? "custom" : profile.trim().toLowerCase(Locale.ROOT);
+        if (!profile.isBlank() && !profile.equals("custom")) {
+            String profilePath = "audio.profiles.presets." + profile + "." + layout + "-quality";
+            if (plugin.getConfig().contains(profilePath)) {
+                return bounded(plugin.getConfig().getInt(profilePath, fallback), 0, 10);
+            }
+        }
+        return bounded(plugin.getConfig().getInt("audio." + layout + "-quality", fallback), 0, 10);
+    }
+
+    private void ensureSavedMusicCapacity(Path savedDirectory, long additionalBytes) throws IOException {
+        long maximumGb = Math.max(0L, Math.min(1024L,
+                plugin.getConfig().getLong("storage.saved-music.max-library-gb", 10L)));
+        if (maximumGb == 0L) return; // Zero explicitly disables this separate source-library limit.
+        long maximumBytes = maximumGb * 1024L * 1024L * 1024L;
+        long currentBytes = directorySize(savedDirectory);
+        long requiredBytes = Math.max(0L, additionalBytes);
+        if (currentBytes > maximumBytes || requiredBytes > maximumBytes - currentBytes) {
+            throw new IOException("The configured SavedMusic source-library size limit would be exceeded.");
         }
     }
 
@@ -548,6 +1380,7 @@ public final class AudioProcessor implements AutoCloseable {
     @Override
     public void close() {
         worker.shutdownNow();
+        searchWorker.shutdownNow();
         toolchain.close();
     }
 }
