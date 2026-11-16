@@ -140,6 +140,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("playback.mono.centered-audio-origin-by-default", false);
             migratedConfig = true;
         }
+        if (!getConfig().contains("playback.synchronization.action-bar-show-artist")) {
+            getConfig().set("playback.synchronization.action-bar-show-artist", false);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("permissions.allow-player-self-zones")) {
             getConfig().set("permissions.allow-player-self-zones", true);
             migratedConfig = true;

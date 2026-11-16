@@ -2,6 +2,7 @@ package io.github.escolide.musicolide.command;
 
 import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.audio.YtDlpDownloader;
+import io.github.escolide.musicolide.gui.MusicGui;
 import io.github.escolide.musicolide.model.MusicTrack;
 import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import io.github.escolide.musicolide.model.MusicZone;
@@ -43,6 +44,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final AudioProcessor processor;
     private final PlaybackEngine playback;
     private final DiscordAccountLinkManager accountLinks;
+    private final MusicGui gui;
     private final ExternalMetadataResolver metadataResolver = new ExternalMetadataResolver();
     private final Map<UUID, PendingPlay> pending = new ConcurrentHashMap<>();
     private final Map<UUID, PendingSearch> pendingSearches = new ConcurrentHashMap<>();
@@ -60,6 +62,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         this.processor = processor;
         this.playback = playback;
         this.accountLinks = accountLinks;
+        this.gui = new MusicGui(plugin, repository, playback, this);
     }
 
     public boolean onPlayCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -118,7 +121,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "page" -> showNextSearchPage(sender, args);
                 case "play" -> play(sender, args);
                 case "confirm" -> confirm(sender);
-                case "pause", "resume", "skip", "stop" -> control(sender, sub);
+                case "pause", "resume", "skip", "stop" -> control(sender, sub, args);
+                case "gui" -> openGui(sender, args);
                 case "queue" -> queue(sender, args);
                 case "nowplaying", "progress" -> nowPlaying(sender);
                 case "volume" -> volume(sender, args);
@@ -1764,39 +1768,193 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    private void control(CommandSender sender, String action) {
+    private void control(CommandSender sender, String action, String[] args) throws SQLException {
         if (!dj(sender)) return;
-        UUID actor = sender instanceof Player player ? player.getUniqueId() : null;
-        if (actor == null) { sender.sendMessage(msg("&cConsole control is not supported; use an in-game DJ.")); return; }
-        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
-        if (action.equals("resume")) {
-            Optional<PlaybackSession> resumableSession = playback.findControllableSession(actor, admin);
-            boolean buildsAudioTail = "resumable".equalsIgnoreCase(
-                    plugin.getConfig().getString("audio.playback-mode", "resumable"))
-                    && resumableSession.filter(session -> session.paused()
-                    && session.current() != null && session.current().isStreamed()).isPresent();
-            if (buildsAudioTail && !admitHeavyRequest(sender, "transform",
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cPlayback control requires an in-game player."));
+            return;
+        }
+        UUID actor = player.getUniqueId();
+        boolean admin = isGuiAdmin(player);
+        if (args.length > 2) {
+            sender.sendMessage(msg("&eUsage: /music " + action + (action.equals("skip") ? "" : " [TrackID]")));
+            return;
+        }
+        if (args.length == 2) {
+            if (action.equals("skip")) {
+                sender.sendMessage(msg("&eSkip does not accept a TrackID."));
+                return;
+            }
+            if (!admin) {
+                sender.sendMessage(msg("&cOnly admins may target another session by TrackID."));
+                return;
+            }
+            MusicTrack selected = repository.getTrack(args[1])
+                    .orElseThrow(() -> new IllegalArgumentException("TrackID not found."));
+            List<PlaybackSession> targets = playback.findSessionsForTrack(selected.id());
+            if (targets.isEmpty()) {
+                sender.sendMessage(msg("&cThat TrackID is not currently playing in any session."));
+                return;
+            }
+            if (action.equals("resume") && targets.stream().anyMatch(this::buildsResumeAudioTail)
+                    && !admitHeavyRequest(sender, "transform",
                     "audio.processing.transform-cooldown-seconds", 3,
                     "audio.processing.global-transform-cooldown-seconds", 1,
                     "another audio preparation")) return;
-            PlaybackEngine.ResumeStart result = playback.resume(actor, admin, notification -> {
-                if (sender instanceof Player player && player.isOnline()) sender.sendMessage(msg(notification));
-            });
-            switch (result) {
-                case NOT_FOUND -> sender.sendMessage(msg("&cNo controllable session was found."));
-                case RESUMED -> sender.sendMessage(msg("&aPlayback resumed."));
-                case PREPARING -> sender.sendMessage(msg(
-                        "&ePreparing the remaining audio. Playback will continue after its temporary pack is ready."));
-                case BEDROCK_FALLBACK -> sender.sendMessage(msg(
-                        "&eA Bedrock player is in this session, so playback restarted from the beginning for compatibility."));
-                case ALREADY_PREPARING -> sender.sendMessage(msg("&eThe remaining audio is already being prepared."));
+            int applied = 0;
+            for (PlaybackSession target : targets) {
+                if (applyControlToSession(player, target, action, true)) applied++;
             }
+            sender.sendMessage(msg(applied == 0
+                    ? "&eNo matching session needed that action."
+                    : "&a" + action + " applied to &f" + applied + " session(s) &afor TrackID &f"
+                    + displayTrackId(selected) + "&a."));
             return;
         }
-        if (!playback.control(actor, admin, action)) {
-            sender.sendMessage(msg("&cNo controllable session was found."));
+
+        if (action.equals("skip")) {
+            if (!playback.control(actor, admin, action)) {
+                sender.sendMessage(msg("&cNo session is available to skip."));
+            } else sender.sendMessage(msg("&aPlayback skipped."));
+            return;
+        }
+        PlaybackSession own = playback.findOwned(actor).orElse(null);
+        if (own == null || own.current() == null) {
+            sender.sendMessage(msg("&cYou do not own an active track. Admins must specify a TrackID to control someone else's track."));
+            return;
+        }
+        if (action.equals("resume") && buildsResumeAudioTail(own)
+                && !admitHeavyRequest(sender, "transform",
+                "audio.processing.transform-cooldown-seconds", 3,
+                "audio.processing.global-transform-cooldown-seconds", 1,
+                "another audio preparation")) return;
+        if (!applyControlToSession(player, own, action, false)) {
+            sender.sendMessage(msg("&eThat action is not available for your current track."));
         } else {
-            sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT) + action.substring(1) + " applied."));
+            sender.sendMessage(msg("&a" + action.substring(0, 1).toUpperCase(Locale.ROOT)
+                    + action.substring(1) + " applied to your track."));
+        }
+    }
+
+    private boolean buildsResumeAudioTail(PlaybackSession session) {
+        return session != null && session.paused() && session.current() != null
+                && session.current().isStreamed()
+                && "resumable".equalsIgnoreCase(plugin.getConfig().getString("audio.playback-mode", "resumable"));
+    }
+
+    private boolean applyControlToSession(Player player, PlaybackSession session, String action, boolean admin) {
+        if (session == null || !playback.isSessionActive(session)) return false;
+        if (action.equals("resume")) {
+            PlaybackEngine.ResumeStart result = playback.resumeSession(player.getUniqueId(), admin, session.id(),
+                    notification -> {
+                        if (player.isOnline()) player.sendMessage(msg(notification));
+                    });
+            switch (result) {
+                case NOT_FOUND -> player.sendMessage(msg("&cThat session no longer exists or you cannot control it."));
+                case RESUMED -> player.sendMessage(msg("&aPlayback resumed."));
+                case PREPARING -> player.sendMessage(msg("&ePreparing the remaining audio; playback will continue when its pack is ready."));
+                case BEDROCK_FALLBACK -> player.sendMessage(msg("&eA Bedrock player is in this session, so playback restarted from the beginning for compatibility."));
+                case ALREADY_PREPARING -> player.sendMessage(msg("&eThe remaining audio is already being prepared."));
+                case ALREADY_PLAYING -> player.sendMessage(msg("&eThat track is already playing."));
+            }
+            return result == PlaybackEngine.ResumeStart.RESUMED
+                    || result == PlaybackEngine.ResumeStart.PREPARING
+                    || result == PlaybackEngine.ResumeStart.BEDROCK_FALLBACK;
+        }
+        return playback.controlSession(player.getUniqueId(), admin, session.id(), action);
+    }
+
+    private void openGui(CommandSender sender, String[] args) throws SQLException {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(msg("&cThe music GUI can only be opened in-game."));
+            return;
+        }
+        if (!player.hasPermission(plugin.getConfig().getString("permissions.use", "musicolide.use"))) {
+            sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
+            return;
+        }
+        if (args.length > 2) throw new IllegalArgumentException("Usage: /music gui [TrackID]");
+        PlaybackSession selected = null;
+        if (args.length == 2) {
+            if (!isGuiAdmin(player)) {
+                sender.sendMessage(msg("&cOnly admins may open a session by TrackID."));
+                return;
+            }
+            MusicTrack track = repository.getTrack(args[1])
+                    .orElseThrow(() -> new IllegalArgumentException("TrackID not found."));
+            selected = playback.findSessionsForTrack(track.id()).stream()
+                    .max(Comparator.comparingLong(PlaybackSession::startedAt)).orElse(null);
+            if (selected == null) {
+                sender.sendMessage(msg("&cThat TrackID is not currently playing."));
+                return;
+            }
+        } else {
+            selected = playback.findOwned(player.getUniqueId())
+                    .orElseGet(() -> playback.sessionAffectingPlayer(player).orElse(null));
+        }
+        gui.open(player, selected);
+    }
+
+    /** Used by the GUI to render permission-aware states and recheck them on clicks. */
+    public boolean isGuiAdmin(Player player) {
+        return player != null && player.hasPermission(plugin.getConfig().getString(
+                "permissions.admin", "musicolide.admin"));
+    }
+
+    public boolean canControlGui(Player player, PlaybackSession session) {
+        return player != null && session != null
+                && player.hasPermission(plugin.getConfig().getString("permissions.dj", "musicolide.dj"))
+                && (isGuiAdmin(player) || session.isOwner(player.getUniqueId()));
+    }
+
+    public void guiControl(Player player, UUID sessionId, String action) {
+        PlaybackSession session = playback.findSession(sessionId).orElse(null);
+        if (session == null) {
+            player.sendMessage(msg("&cThat playback session has ended."));
+            return;
+        }
+        if (!canControlGui(player, session)) {
+            player.sendMessage(msg("&cOnly the track executor or an admin may control this track."));
+            return;
+        }
+        if (action.equals("resume") && buildsResumeAudioTail(session)
+                && !admitHeavyRequest(player, "transform",
+                "audio.processing.transform-cooldown-seconds", 3,
+                "audio.processing.global-transform-cooldown-seconds", 1,
+                "another audio preparation")) return;
+        if (!applyControlToSession(player, session, action, isGuiAdmin(player))) {
+            player.sendMessage(msg("&eThat action is not available for this track."));
+        }
+    }
+
+    public void guiToggleDiscord(Player player, UUID sessionId) {
+        if (!admin(player)) return;
+        PlaybackSession session = playback.findSession(sessionId).orElse(null);
+        if (session == null || session.current() == null) {
+            player.sendMessage(msg("&cNo active track is available to broadcast."));
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("discord.enabled", false)) {
+            player.sendMessage(msg("&cDiscord integration is disabled in the server configuration."));
+            return;
+        }
+        Optional<Boolean> state = playback.toggleDiscordBroadcast(sessionId);
+        if (state.isEmpty()) player.sendMessage(msg("&cCould not change Discord broadcast for this track."));
+        else player.sendMessage(msg(state.get()
+                ? "&aDiscord broadcasting enabled for this track only."
+                : "&cDiscord broadcasting disabled for this track. The next track follows the server default."));
+    }
+
+    public void guiBroadcast(Player player, UUID sessionId) {
+        if (!admin(player)) return;
+        PlaybackEngine.PromotionResult result = playback.promoteSessionToServerWide(sessionId);
+        switch (result) {
+            case NOT_FOUND -> player.sendMessage(msg("&cThat playback session has ended."));
+            case ALREADY_GLOBAL -> player.sendMessage(msg("&eThis track is already broadcasting to the entire server."));
+            case PROMOTED -> {
+                player.sendMessage(msg("&aThis track is now broadcasting server-wide. Its previous audience returns on the next track."));
+                gui.open(player, playback.findSession(sessionId).orElse(null));
+            }
         }
     }
 
@@ -2126,7 +2284,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&dPLAYBACK &8| &7Most-used commands"));
         sender.sendMessage(msg("&f/play <TrackID/title/query/URL> &8- &7play for yourself"));
         sender.sendMessage(msg("&f/play <track> @a &8- &7play for everyone (admin)"));
-        sender.sendMessage(msg("&f/music pause &8• &fresume &8• &fskip &8• &fstop &8• &fqueue"));
+        sender.sendMessage(msg("&f/music gui &8- &7open the playback controls for your current/affected track"));
+        sender.sendMessage(msg("&f/music pause [TrackID] &8• &fresume [TrackID] &8• &fstop [TrackID]"));
+        sender.sendMessage(msg("&7TrackID targeting is admin-only; without an ID, controls affect only your own track."));
+        sender.sendMessage(msg("&f/music skip &8• &fqueue &8- &7manage your current playback"));
         sender.sendMessage(msg("&f/music nowplaying &8• &fprogress &8• &fvolume <0-100> &8• &fspeed <0.5-2>"));
         sender.sendMessage(msg("&f/music mute &8• &funmute [player] &8• &f/deafen &8• &f/undeafen"));
         sender.sendMessage(msg("&f/music speed <0.5-2> &8- &7sets a personal default when no session is active"));
@@ -2199,7 +2360,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (sender instanceof Player player
                 && playback.isIgnoredBedrockPlayer(player.getUniqueId())) return List.of();
-        if (args.length == 1) return partial(List.of("help", "play", "pause", "resume", "skip", "stop", "queue",
+        if (args.length == 1) return partial(List.of("help", "play", "pause", "resume", "skip", "stop", "gui", "queue",
                 "nowplaying", "progress", "volume", "speed", "mute", "unmute", "seek", "sync",
                 "list", "search", "select", "page", "save", "delete", "playlist", "import", "import-url",
                 "download", "clear", "disable", "enable", "unload", "discord",
@@ -2236,6 +2397,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(options::add);
             return partial(options, prefix);
+        }
+        if (args.length == 2 && List.of("pause", "resume", "stop").contains(args[0].toLowerCase(Locale.ROOT))
+                && sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"))) {
+            try {
+                return partial(repository.allTracks(600).stream().map(this::displayTrackId).toList(), args[1]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("page")) {
             return partial(java.util.stream.IntStream.rangeClosed(2, configuredSearchMaxPages())

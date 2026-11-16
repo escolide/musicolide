@@ -229,6 +229,8 @@ playback:
     centered-audio-origin-by-default: false
   synchronization:
     action-bar-now-playing: true
+    # Keep the action bar title-only by default; set true to append the artist name.
+    action-bar-show-artist: false
     # Synchronize Java recipients, but never let one slow client hold playback indefinitely.
     start-barrier: true
     # Maximum time to wait for slow Java resource packs after at least one Java

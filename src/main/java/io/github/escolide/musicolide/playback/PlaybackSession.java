@@ -10,9 +10,9 @@ public final class PlaybackSession {
     private final UUID owner;
     private final String ownerName;
     private final long startedAt;
-    private final MusicZone zone;
+    private volatile MusicZone zone;
     private final Set<UUID> explicitListeners;
-    private final boolean allPlayers;
+    private volatile boolean allPlayers;
     private final boolean monoAudio;
     private final Deque<MusicTrack> queue = new ArrayDeque<>();
     private final List<MusicTrack> repeatSource;
@@ -35,6 +35,12 @@ public final class PlaybackSession {
     private int priority;
     private double speed = 1.0;
     private Double pendingSpeed;
+    // null follows the configured server default; a value applies to this track only.
+    private Boolean discordBroadcastOverride;
+    private boolean serverWidePromotion;
+    private MusicZone preBroadcastZone;
+    private boolean preBroadcastAllPlayers;
+    private Set<UUID> preBroadcastListeners;
 
     public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
                            Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority) {
@@ -61,11 +67,28 @@ public final class PlaybackSession {
     public UUID owner() { return owner; }
     public String ownerName() { return ownerName; }
     public long startedAt() { return startedAt; }
-    public MusicZone zone() { return zone; }
+    public synchronized MusicZone zone() { return zone; }
     public boolean isMono() { return monoAudio; }
     /** True only for sessions explicitly addressed to all players in the global zone. */
-    public boolean isServerWideGlobalSession() {
+    public synchronized boolean isServerWideGlobalSession() {
         return allPlayers && zone.shape() == MusicZone.Shape.GLOBAL;
+    }
+    public synchronized Boolean discordBroadcastOverride() { return discordBroadcastOverride; }
+    public synchronized void discordBroadcastOverride(Boolean value) { discordBroadcastOverride = value; }
+    public synchronized boolean serverWidePromotion() { return serverWidePromotion; }
+    /** Temporarily expands only this track's audience; advance() restores the original scope. */
+    public synchronized boolean promoteToServerWide() {
+        if (current == null || (allPlayers && zone.shape() == MusicZone.Shape.GLOBAL)) return false;
+        if (!serverWidePromotion) {
+            preBroadcastZone = zone;
+            preBroadcastAllPlayers = allPlayers;
+            preBroadcastListeners = new HashSet<>(explicitListeners);
+        }
+        allPlayers = true;
+        explicitListeners.clear();
+        zone = MusicZone.global();
+        serverWidePromotion = true;
+        return true;
     }
     public synchronized MusicTrack current() { return current; }
     /** Original catalogue track or the temporary OGG tail currently being played. */
@@ -115,7 +138,7 @@ public final class PlaybackSession {
     public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending; }
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
-    public boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
+    public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
 
     /** Checks whether a new /play request has the same audience and zone. */
@@ -159,6 +182,17 @@ public final class PlaybackSession {
     }
 
     public synchronized boolean advance() {
+        if (serverWidePromotion) {
+            zone = preBroadcastZone == null ? zone : preBroadcastZone;
+            allPlayers = preBroadcastAllPlayers;
+            explicitListeners.clear();
+            if (preBroadcastListeners != null) explicitListeners.addAll(preBroadcastListeners);
+            preBroadcastZone = null;
+            preBroadcastListeners = null;
+            serverWidePromotion = false;
+        }
+        // Per-track overrides never leak into the next queued/playlist track.
+        discordBroadcastOverride = null;
         timelineGeneration++;
         if (pendingSpeed != null) {
             speed = pendingSpeed;
