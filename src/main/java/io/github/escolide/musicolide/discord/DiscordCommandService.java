@@ -84,7 +84,7 @@ public final class DiscordCommandService extends ListenerAdapter {
                         .addOption(OptionType.STRING, "id", "Optional custom track ID/name for a new import", false)
                         .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
                         .addOption(OptionType.STRING, "mode", "Audio mode: stereo (default) or mono", false)
-                        .addOption(OptionType.BOOLEAN, "center", "Anchor mono audio at the centre of the circle or square zone", false)
+                        .addOption(OptionType.BOOLEAN, "center", "Optional: anchor mono audio at the zone centre (default is listener-relative)", false)
                         .addOption(OptionType.NUMBER, "fade", "Optional spatial fade distance", false),
                 Commands.slash("music", "Run an existing Musicolide game command as your linked Minecraft account")
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
@@ -218,13 +218,15 @@ public final class DiscordCommandService extends ListenerAdapter {
                 .thenAccept(suggestions -> {
                     List<Command.Choice> choices = new ArrayList<>();
                     Set<String> seenValues = new java.util.HashSet<>();
+                    Set<String> seenLabels = new java.util.HashSet<>();
                     for (MusicCommand.DiscordPlaySuggestion suggestion : suggestions) {
                         if (suggestion.label() == null || suggestion.label().isBlank()
                                 || suggestion.value() == null || suggestion.value().isBlank()
                                 || suggestion.value().length() > 100
                                 || !seenValues.add(suggestion.value())) continue;
-                        choices.add(new Command.Choice(TextUtil.truncate(suggestion.label(), 100),
-                                suggestion.value()));
+                        String label = TextUtil.truncate(suggestion.label(), 100);
+                        if (!seenLabels.add(label)) continue;
+                        choices.add(new Command.Choice(label, suggestion.value()));
                         if (choices.size() == 25) break;
                     }
                     event.replyChoices(choices).queue(
