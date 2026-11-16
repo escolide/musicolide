@@ -347,7 +347,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                                 }
                             });
             return remoteFuture.completeOnTimeout(immediate, 1_200L,
-                    java.util.concurrent.TimeUnit.MILLISECONDS);
+                    java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .whenComplete((ignored, error) -> discordAutocompleteInFlight.remove(lookupKey));
         } catch (RuntimeException error) {
             discordAutocompleteInFlight.remove(lookupKey);
             plugin.getLogger().log(Level.FINE,
