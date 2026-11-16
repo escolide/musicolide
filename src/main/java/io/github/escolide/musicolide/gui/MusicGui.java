@@ -9,7 +9,6 @@ import io.github.escolide.musicolide.storage.TrackRepository;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
-import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -17,7 +16,6 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
-import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -168,7 +166,7 @@ public final class MusicGui implements Listener {
     private void setControlItem(Inventory inventory, int slot, Material material, String name,
                                 boolean available, boolean permitted, String status) {
         List<String> lore = new ArrayList<>();
-        lore.add(gray("Status: ") + (available ? green("Available") : red("Unavailable")));
+        lore.add(gray("Status: ") + (available && permitted ? green("Available") : red("Unavailable")));
         lore.add(status.startsWith("Permission:") ? red(status) : gray(status));
         if (available && permitted) lore.add(green("Click to apply."));
         else if (available) lore.add(red("You cannot control this session."));
@@ -288,10 +286,7 @@ public final class MusicGui implements Listener {
         ItemMeta meta = stack.getItemMeta();
         meta.setDisplayName(ChatColor.GOLD + name);
         meta.setLore(lore);
-        if (glow) {
-            meta.addEnchant(Enchantment.UNBREAKING, 1, true);
-            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
-        }
+        if (glow) meta.setEnchantmentGlintOverride(true);
         stack.setItemMeta(meta);
         return stack;
     }
