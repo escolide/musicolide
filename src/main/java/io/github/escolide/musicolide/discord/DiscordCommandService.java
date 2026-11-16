@@ -192,13 +192,9 @@ public final class DiscordCommandService extends ListenerAdapter {
             return;
         }
         String guildScopedUser = event.getGuild().getId() + ":" + event.getUser().getId();
-        if (!allowAutocompleteUserResponse(guildScopedUser)
-                || !allowAutocompleteGlobalResponse()) {
-            event.replyChoices(List.of()).queue();
-            return;
-        }
-        // Rate-limit autocomplete at trusted-guild ingress before checking
-        // account links or touching the local audio catalogue.
+        // Do not rate-limit interaction acknowledgements: every autocomplete
+        // interaction must receive a response. Only the remote yt-dlp lookup is
+        // throttled below; local and cached choices are returned immediately.
         try {
             if (accountLinks.findByDiscord(event.getUser().getId()).isEmpty()) {
                 event.replyChoices(List.of()).queue();
@@ -219,20 +215,31 @@ public final class DiscordCommandService extends ListenerAdapter {
                 "discord-autocomplete", event.getUser().getId(),
                 autocompleteCooldown, autocompleteGlobalCooldown) == 0L;
         musicCommand.discordPlaySuggestions(query, allowRemoteSearch, guildScopedUser)
-                // Discord autocomplete is time-limited. Return quickly; completed
-                // remote results are cached for subsequent keystrokes.
-                .completeOnTimeout(List.of(), 2500, TimeUnit.MILLISECONDS)
-                .exceptionally(error -> List.of())
                 .thenAccept(suggestions -> {
                     List<Command.Choice> choices = new ArrayList<>();
+                    Set<String> seenValues = new java.util.HashSet<>();
                     for (MusicCommand.DiscordPlaySuggestion suggestion : suggestions) {
-                        if (suggestion.value() == null || suggestion.value().length() > 100) continue;
-                        choices.add(new Command.Choice(TextUtil.truncate(suggestion.label(), 100), suggestion.value()));
+                        if (suggestion.label() == null || suggestion.label().isBlank()
+                                || suggestion.value() == null || suggestion.value().isBlank()
+                                || suggestion.value().length() > 100
+                                || !seenValues.add(suggestion.value())) continue;
+                        choices.add(new Command.Choice(TextUtil.truncate(suggestion.label(), 100),
+                                suggestion.value()));
                         if (choices.size() == 25) break;
                     }
                     event.replyChoices(choices).queue(
                             ignored -> {},
-                            error -> plugin.getLogger().log(Level.FINE, "Discord play autocomplete response expired.", error));
+                            error -> plugin.getLogger().log(Level.WARNING,
+                                    "Discord rejected the Musicolide /play autocomplete response.", error));
+                })
+                .exceptionally(error -> {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Could not prepare Musicolide /play autocomplete choices.", error);
+                    event.replyChoices(List.of()).queue(
+                            ignored -> {},
+                            replyError -> plugin.getLogger().log(Level.WARNING,
+                                    "Discord rejected the fallback /play autocomplete response.", replyError));
+                    return null;
                 });
     }
 
@@ -340,39 +347,6 @@ public final class DiscordCommandService extends ListenerAdapter {
             return voiceChannel != null && voiceChannel.getGuild().getId().equals(guildId);
         }
         return false;
-    }
-
-    private final Map<String, Long> autocompleteLastReply = new HashMap<>();
-    private long autocompleteGlobalLastReplyNanos;
-
-    private boolean allowAutocompleteUserResponse(String discordUserId) {
-        long now = System.nanoTime();
-        long userCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
-                Math.min(5_000L, plugin.getConfig().getLong(
-                        "discord.commands.autocomplete-response-cooldown-ms", 250L))));
-        synchronized (autocompleteLastReply) {
-            Long previous = autocompleteLastReply.get(discordUserId);
-            if (previous != null && now - previous < userCooldown) return false;
-            autocompleteLastReply.put(discordUserId, now);
-            if (autocompleteLastReply.size() > 10_000) {
-                autocompleteLastReply.entrySet().removeIf(entry -> now - entry.getValue()
-                        >= TimeUnit.MINUTES.toNanos(10));
-            }
-            return true;
-        }
-    }
-
-    private boolean allowAutocompleteGlobalResponse() {
-        long now = System.nanoTime();
-        long globalCooldown = TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
-                Math.min(1_000L, plugin.getConfig().getLong(
-                        "discord.commands.autocomplete-global-response-cooldown-ms", 50L))));
-        synchronized (autocompleteLastReply) {
-            if (globalCooldown > 0 && autocompleteGlobalLastReplyNanos != 0L
-                    && now - autocompleteGlobalLastReplyNanos < globalCooldown) return false;
-            if (globalCooldown > 0) autocompleteGlobalLastReplyNanos = now;
-            return true;
-        }
     }
 
     private boolean allowSlashCommandUser(String discordUserId) {
