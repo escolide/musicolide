@@ -47,6 +47,7 @@ public final class PlaybackEngine {
     // or entering after start must use a timeline-aligned private audio tail.
     private final Map<String, Set<UUID>> sessionStartCohorts = new HashMap<>();
     private final Map<UUID, Long> syncGenerations = new HashMap<>();
+    private final Set<UUID> actionBarPlayers = ConcurrentHashMap.newKeySet();
     private volatile Optional<DiscordPlaybackSnapshot> discordSnapshot = Optional.empty();
     private BukkitTask task;
     private BukkitTask segmentTask;
@@ -582,7 +583,7 @@ public final class PlaybackEngine {
             case PACK_NOT_READY -> {
                 barrierExcludedTracks.put(player.getUniqueId(), trackKey);
                 stopPlayer(player);
-                player.sendActionBar(message("messages.playback-synchronizing"));
+                sendActionBar(player, message("messages.playback-synchronizing"));
                 yield VolumeChangeResult.RESYNCHRONIZING;
             }
             case TRACK_NEAR_END -> {
@@ -590,7 +591,7 @@ public final class PlaybackEngine {
                     barrierExcludedTracks.put(player.getUniqueId(), trackKey);
                     automaticSyncAttempts.put(player.getUniqueId(), trackKey);
                     stopPlayer(player);
-                    player.sendActionBar(message("messages.playback-sync-too-late"));
+                    sendActionBar(player, message("messages.playback-sync-too-late"));
                 }
                 yield VolumeChangeResult.NEXT_TRACK;
             }
@@ -675,11 +676,8 @@ public final class PlaybackEngine {
         if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
             return SyncStart.BEDROCK_UNSUPPORTED;
         }
-        if (packs.isBaseDeclined(player) || packs.isDeclined(player, sourceTrack)) {
-            return SyncStart.PACK_DECLINED;
-        }
-        if (!packs.isReady(player, sourceTrack)) return SyncStart.PACK_NOT_READY;
-
+        // The generated resume tail is self-contained, so a listener does not
+        // need the aggregate library pack before they can synchronize to it.
         UUID playerId = player.getUniqueId();
         PlayerPlayback existing = playerPlayback.get(playerId);
         if (existing != null && (existing.syncPreparing
@@ -883,6 +881,10 @@ public final class PlaybackEngine {
                         "resource-packs.prefetch.tracks-ahead", 2));
                 MusicTrack playingTrack = candidate.session.playbackTrack();
                 boolean alreadyPlaying = isAlreadyPlayingTrack(player, candidate.session, playingTrack);
+                // Late entrants and returning listeners are served by a private,
+                // self-contained timeline tail. Do not also request the aggregate
+                // library, which would cause a second client resource reload.
+                if (requiresTimelineCatchUp(candidate, player.getUniqueId())) continue;
                 // A resumed tail is a private, disposable pack. It may have been
                 // deleted server-side after current listeners loaded it, so a
                 // reconnecting player must regenerate their own tail from the
@@ -961,6 +963,31 @@ public final class PlaybackEngine {
      * and listeners who leave and re-enter, use timeline-aligned catch-up instead
      * of starting a streamed OGG at 00:00 against an advanced session clock.
      */
+    private boolean requiresTimelineCatchUp(Candidate candidate, UUID playerId) {
+        if (candidate == null || playerId == null || candidate.session.playbackTrack() == null) return false;
+        String trackKey = barrierTrackKey(candidate.session, candidate.session.playbackTrack());
+        if (trackKey.equals(barrierExcludedTracks.get(playerId))) return true;
+
+        // Once a private tail is playing, keep the catalogue deferred until this
+        // source track advances. Otherwise the next prefetch tick would apply a
+        // second pack during the very song we just synchronized.
+        PlayerPlayback state = playerPlayback.get(playerId);
+        if (state != null && state.syncTrack != null && state.syncSessionId != null
+                && candidate.session.id().equals(state.syncSessionId)
+                && candidate.session.current() != null
+                && candidate.session.current().id().equals(state.syncSourceTrackId)) return true;
+
+        Set<UUID> cohort = sessionStartCohorts.get(trackKey);
+        return candidate.session.clockStarted() && cohort != null && !cohort.contains(playerId);
+    }
+
+    public boolean shouldDeferLibraryOnJoin(Player player) {
+        if (player == null || isIgnoredBedrockPlayer(player)) return false;
+        Candidate candidate = findCandidate(player);
+        return candidate != null && candidate.session.clockStarted()
+                && requiresTimelineCatchUp(candidate, player.getUniqueId());
+    }
+
     private void recordSessionStartCohorts(List<Player> online, Map<UUID, Candidate> winners,
                                            List<PlaybackSession> active) {
         for (PlaybackSession session : active) {
@@ -1243,7 +1270,7 @@ public final class PlaybackEngine {
                 && originalTrack.id().equals(state.syncSourceTrackId);
         if (!bedrock && state.syncPreparing) {
             stopCurrentSound(player, state);
-            player.sendActionBar(message("messages.playback-synchronizing"));
+            sendActionBar(player, message("messages.playback-synchronizing"));
             return;
         }
 
@@ -1254,7 +1281,7 @@ public final class PlaybackEngine {
             if (bedrock) {
                 warnBedrockUnavailable(player, "messages.bedrock-resume-unsupported");
             } else {
-                player.sendActionBar(message("messages.playback-synchronizing"));
+                sendActionBar(player, message("messages.playback-synchronizing"));
             }
             stopPlayer(player);
             return;
@@ -1283,7 +1310,7 @@ public final class PlaybackEngine {
             if (!geyser.hasCurrentPackFor(player.getUniqueId())) {
                 stopPlayer(player);
                 if (geyser.isAwaitingPackReady(player.getUniqueId())) {
-                    player.sendActionBar(message("messages.playback-synchronizing"));
+                    sendActionBar(player, message("messages.playback-synchronizing"));
                 } else {
                     // The player is already in-game with an older pack revision.
                     // Bedrock cannot add the changed library to this live connection.
@@ -1303,7 +1330,7 @@ public final class PlaybackEngine {
                 } else {
                     stopPlayer(player);
                 }
-                player.sendActionBar(message("messages.pack-not-ready"));
+                sendActionBar(player, message("messages.pack-not-ready"));
                 return;
             }
         }
@@ -1312,7 +1339,7 @@ public final class PlaybackEngine {
         }
         if (!session.clockStarted()) {
             stopPlayer(player);
-            player.sendActionBar(message("messages.playback-synchronizing"));
+            sendActionBar(player, message("messages.playback-synchronizing"));
             return;
         }
         int segment = synchronizedTail ? 0 : session.segmentIndex();
@@ -1345,7 +1372,7 @@ public final class PlaybackEngine {
             String title = TextUtil.truncate(displayTrack.title(), 34);
             String artist = TextUtil.truncate(displayTrack.artist(), 18);
             String label = artist.isBlank() ? title : title + " by " + artist;
-            player.sendActionBar(Component.text("♫ " + label + "  •  " + formatTime(session.elapsedMs())
+            sendActionBar(player, Component.text("♫ " + label + "  •  " + formatTime(session.elapsedMs())
                     + " / " + formatTime(displayTrack.durationMs())));
         }
     }
@@ -1389,6 +1416,19 @@ public final class PlaybackEngine {
         }
     }
 
+    private void sendActionBar(Player player, Component component) {
+        if (player == null || !player.isOnline() || component == null) return;
+        player.sendActionBar(component);
+        actionBarPlayers.add(player.getUniqueId());
+    }
+
+    private void clearActionBar(Player player) {
+        if (player == null) return;
+        if (actionBarPlayers.remove(player.getUniqueId()) && player.isOnline()) {
+            player.sendActionBar(Component.empty());
+        }
+    }
+
     private void stopPlayer(Player player) {
         UUID playerId = player.getUniqueId();
         PlayerPlayback state = playerPlayback.remove(playerId);
@@ -1397,6 +1437,7 @@ public final class PlaybackEngine {
             stopCurrentSound(player, state);
             if (state.syncTrack != null) releaseGeneratedTrack(state.syncTrack);
         }
+        clearActionBar(player);
     }
 
     private void stopPlayersInSession(PlaybackSession session) {
@@ -1466,7 +1507,9 @@ public final class PlaybackEngine {
         // intentionally deleted from the server after the original listeners
         // downloaded it. Reconnect recovery always derives a fresh tail from
         // the original catalogue track, whose aggregate library must be ready.
-        if (!packs.isReady(player, catalogueTrack) || packs.isDeclined(player, catalogueTrack)) return;
+        // The synchronization tail contains its own audio and sound definition;
+        // requesting the aggregate catalogue here would cause an unnecessary
+        // second resource-pack application for late/reconnecting listeners.
 
         // Attempt once per session-track. A failed temporary-pack delivery must
         // not start a new FFmpeg job every playback tick; the player can still
@@ -1480,9 +1523,9 @@ public final class PlaybackEngine {
         if (result == SyncStart.TRACK_NEAR_END) {
             // Do not restart a streamed track from 00:00 when its tail is too short.
             // Keep this player out of the current track; the next track gets a fresh start.
-            player.sendActionBar(message("messages.playback-sync-too-late"));
+            sendActionBar(player, message("messages.playback-sync-too-late"));
         } else if (result != SyncStart.PREPARING && result != SyncStart.ALREADY_PREPARING) {
-            player.sendActionBar(message("messages.playback-synchronizing"));
+            sendActionBar(player, message("messages.playback-synchronizing"));
         }
     }
 

@@ -815,11 +815,15 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (playback != null) playback.onJoin(event.getPlayer());
         if (packManager != null && !packManager.isPerTrackDeliveryEnabled()
                 && getConfig().getString("resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
+            // Give PlaybackEngine's join handler time to identify a reconnecting
+            // listener. Their private catch-up tail is enough for this track; the
+            // catalogue can be requested normally on the next track.
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                if (event.getPlayer().isOnline() && packManager != null) {
+                if (event.getPlayer().isOnline() && packManager != null
+                        && (playback == null || !playback.shouldDeferLibraryOnJoin(event.getPlayer()))) {
                     packManager.requestLibrary(event.getPlayer(), false);
                 }
-            }, 1L);
+            }, 3L);
         }
     }
 

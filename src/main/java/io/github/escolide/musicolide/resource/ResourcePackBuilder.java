@@ -16,6 +16,9 @@ public final class ResourcePackBuilder {
     private static final String LEGACY_LIBRARY_FILE = "musicolide-base.zip";
     private static final String LIBRARY_FILE_PREFIX = "musicolide-library-";
     private static final int ZIP_COMPRESSION_LEVEL = Deflater.BEST_COMPRESSION;
+    // Mono zone audio is point-positioned. The vanilla default is 16 blocks,
+    // which clips otherwise eligible listeners in larger Musicolide zones.
+    private static final int MONO_ATTENUATION_DISTANCE = 256;
     private static final UUID LIBRARY_ID = UUID.nameUUIDFromBytes(
             "musicolide:java:base-pack".getBytes(StandardCharsets.UTF_8));
 
@@ -245,7 +248,11 @@ public final class ResourcePackBuilder {
     private void appendSegmentSound(StringBuilder json, String namespace, String key,
                                     String path, boolean comma) {
         json.append("  \"").append(key).append("\": {\"sounds\":[{\"name\":\"")
-                .append(namespace).append(':').append(path).append("\",\"stream\":false}]}");
+                .append(namespace).append(':').append(path).append("\",\"stream\":false");
+        if (key.startsWith("m_")) {
+            json.append(",\"attenuation_distance\":").append(MONO_ATTENUATION_DISTANCE);
+        }
+        json.append("}]}");
         if (comma) json.append(',');
         json.append('\n');
     }
@@ -262,7 +269,8 @@ public final class ResourcePackBuilder {
                 + "  \"music\": {\"sounds\":[{\"name\":\"" + namespace
                 + ":music\",\"stream\":true}]}"
                 + (monoAudioFile == null ? "" : ",\n  \"mono\": {\"sounds\":[{\"name\":\""
-                + namespace + ":mono\",\"stream\":true}]}")
+                + namespace + ":mono\",\"stream\":true,\"attenuation_distance\":"
+                + MONO_ATTENUATION_DISTANCE + "}]}")
                 + "\n}\n";
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
@@ -310,7 +318,8 @@ public final class ResourcePackBuilder {
                 if (streamed) {
                     requireAudioFile(monoDirectory.resolve("mono.ogg"), "The generated mono OGG is missing.");
                     definitions.add("  \"mono\": {\"sounds\":[{\"name\":\"" + namespace
-                            + ":mono\",\"stream\":true}]}");
+                            + ":mono\",\"stream\":true,\"attenuation_distance\":"
+                            + MONO_ATTENUATION_DISTANCE + "}]}");
                 } else {
                     for (int i = 0; i < segmentCount; i++) {
                         String id = String.format("%05d", i);
@@ -318,7 +327,8 @@ public final class ResourcePackBuilder {
                                 "A generated mono segment is missing: " + id);
                         definitions.add("  \"m_" + id + "\": {\"sounds\":[{\"name\":\""
                                 + namespace + ":" + namespace + "/mono/" + id
-                                + "\",\"stream\":false}]}");
+                                + "\",\"stream\":false,\"attenuation_distance\":"
+                                + MONO_ATTENUATION_DISTANCE + "}]}");
                     }
                 }
 

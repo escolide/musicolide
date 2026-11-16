@@ -84,6 +84,7 @@ public final class DiscordCommandService extends ListenerAdapter {
                         .addOption(OptionType.STRING, "id", "Optional custom track ID/name for a new import", false)
                         .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
                         .addOption(OptionType.STRING, "mode", "Audio mode: stereo (default) or mono", false)
+                        .addOption(OptionType.BOOLEAN, "center", "Anchor mono audio at the centre of the circle or square zone", false)
                         .addOption(OptionType.NUMBER, "fade", "Optional spatial fade distance", false),
                 Commands.slash("music", "Run an existing Musicolide game command as your linked Minecraft account")
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
@@ -589,7 +590,7 @@ public final class DiscordCommandService extends ListenerAdapter {
         EmbedBuilder builder = embed().setTitle("Musicolide Discord help")
                 .setDescription("Use /link in Minecraft and DM the one-time code to this bot before running player commands.");
         builder.addField("/play query", "Searches saved server tracks first, then YouTube. Choose a result using /music command with select <number>.", false);
-        builder.addField("Optional /play options", "target: @s, @p, @a or an online player. Other-player targets and zones require Minecraft admin permission. id: custom ID for a new import. zone: circle 50, square 50x50, or region <id>. fade: optional fade distance. mode: stereo (default) or mono, using one-channel audio. Circle/square mono zones fade over 10 blocks by default; the fade distance is configurable.", false);
+        builder.addField("Optional /play options", "target: @s, @p, @a or an online player. Other-player targets and zones require Minecraft admin permission. id: custom ID for a new import. zone: circle 50, square 50x50, or region <id>. fade: optional fade distance. mode: stereo (default) or mono, using one-channel audio. For mono circle/square zones, center anchors the sound at the zone centre; otherwise it uses each listener's position when playback starts. Circle/square mono zones fade over 10 blocks by default; the fade distance is configurable.", false);
         builder.addField("/music command", "Runs an existing Musicolide command as your linked Minecraft player, such as pause, resume, queue <id>, page 2, select 1, or playlist list.", false);
         builder.addField("/info", "Shows current broadcast playback, optional server details and the YouTube thumbnail when available.", false);
         builder.addField("Search pages", "After a search, request page 2, then page 3, and so on. Pages contain six results and must be opened in order.", false);
@@ -604,6 +605,10 @@ public final class DiscordCommandService extends ListenerAdapter {
         String zone = option(event, "zone");
         String mode = option(event, "mode");
         Double fade = event.getOption("fade") == null ? null : event.getOption("fade").getAsDouble();
+        boolean centered = event.getOption("center") != null && event.getOption("center").getAsBoolean();
+        if (centered && (mode == null || !mode.trim().equalsIgnoreCase("mono"))) {
+            throw new IllegalArgumentException("The center option is available only with mode:mono.");
+        }
         if (target != null && !target.isBlank()) command.append(" --target ").append(quoteCommandArgument(target.trim()));
         if (customId != null && !customId.isBlank()) command.append(" --id ").append(quoteCommandArgument(customId.trim()));
         if (zone != null && !zone.isBlank()) command.append(' ').append(parseZoneOption(zone));
@@ -614,6 +619,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             }
             command.append(" --mode ").append(normalized);
         }
+        if (centered) command.append(" center");
         if (fade != null) {
             if (!Double.isFinite(fade) || fade < 0) throw new IllegalArgumentException("Fade distance must be a finite, non-negative number.");
             command.append(" --fade ").append(fade);
