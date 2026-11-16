@@ -119,6 +119,16 @@ The bot can display the current track and elapsed time using Discord listening a
 
 Discord `/info` shows the selected Musicolide track, artist, current timestamp, duration and playback state. Set `info.show-server-address: true` and configure `server-ip` plus `server-port` to show a public server address; the address is hidden by default. `info.show-thumbnail: true` displays a YouTube thumbnail only inside Discord when a saved YouTube source ID exists. It does not add an image to Java or Bedrock resource packs, so player downloads are unchanged. `info.custom-message` adds a final embed field after the standard details; it supports `{state}`, `{track}`/`{title}`, `{artist}`, `{position}`, `{duration}`, and `{server}`. The embed accent is configured through `embed-color` (six-digit hex, default purple). Per-command visibility is controlled by `discord.commands.visibility.<command>`: `requester` (private/ephemeral, default) or `everyone` (public).
 
+### In-game playback GUI and session controls
+
+Run `/music gui` to open the 54-slot chest-style player. It opens for the command executor and the online players currently inside that session's intended audience/zone. The paper shows the current title and elapsed/duration time, with an enchantment glint only while playback is actively running. The book opens the track metadata page, including the short and internal TrackIDs, saved/temporary status, audio format, pack details, playback state, owner and session ID.
+
+The red and green banners pause and resume; the barrier stops the selected session. Non-admins can use these controls only for a session they started. Admins can target another active session explicitly with `/music pause <TrackID>`, `/music resume <TrackID>`, or `/music stop <TrackID>`. When a TrackID is active in more than one session, the admin command applies to each matching active session. The same ownership check is used by linked Discord `/music command` controls and GUI clicks.
+
+The beacon expands the current track to all players and restores its original audience when the next track begins. Promotion does not rebuild or re-request the shared library pack; its normal readiness/cache check is reused. Existing listeners continue without a pack reload. Players newly added mid-track use the existing late-entry synchronization path; streamed tracks may need a separate generated remainder/tail pack to start at the shared playback time, but that is not a download of the shared library again.
+
+The now-playing action bar uses a purple `🎵` icon and shows only the track title by default. Set `playback.synchronization.action-bar-show-artist: true` to append the artist.
+
 ### Secure account linking and controls
 
 A player runs `/link` in Minecraft. Musicolide privately displays an eight-digit, one-use code valid for five minutes. The player DMs that code to the bot. The plugin stores only the Discord user ID, Minecraft UUID/name and link timestamp; it does not ask for or store Microsoft passwords, Minecraft passwords, session tokens or other authentication secrets. Each Discord account and each Minecraft account can be linked to only one counterpart. The player runs `/unlink` in Minecraft to remove the link. Pending codes are memory-only and are invalidated on restart.

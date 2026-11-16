@@ -162,6 +162,76 @@ public final class PlaybackEngine {
 
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
 
+    public synchronized Optional<PlaybackSession> findSession(UUID sessionId) {
+        return sessions.stream().filter(session -> session.id().equals(sessionId)).findFirst();
+    }
+
+    /** Active sessions whose current catalogue track matches this full or short ID's resolved value. */
+    public synchronized List<PlaybackSession> findSessionsForTrack(String trackId) {
+        if (trackId == null || trackId.isBlank()) return List.of();
+        return sessions.stream().filter(session -> session.current() != null
+                && session.current().id().equalsIgnoreCase(trackId)).toList();
+    }
+
+    /** Online players in the session's intended audience and spatial area, including while paused. */
+    public List<Player> affectedPlayers(PlaybackSession session) {
+        if (!isSessionActive(session)) return List.of();
+        return Bukkit.getOnlinePlayers().stream()
+                .map(player -> (Player) player)
+                .filter(player -> !isIgnoredBedrockPlayer(player)
+                        && !packs.isPlayerDisabled(player.getUniqueId())
+                        && session.targets(player.getUniqueId()) && isInsideSession(session, player))
+                .toList();
+    }
+
+    /** Selects a session affecting a player even when it is paused and therefore inaudible this tick. */
+    public Optional<PlaybackSession> sessionAffectingPlayer(Player player) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return Optional.empty();
+        boolean manualPriority = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
+        return sessions().stream().filter(session -> session.current() != null
+                        && session.targets(player.getUniqueId()) && isInsideSession(session, player))
+                .sorted((first, second) -> {
+                    if (manualPriority && first.priority() != second.priority())
+                        return Integer.compare(second.priority(), first.priority());
+                    return Long.compare(first.startedAt(), second.startedAt());
+                }).findFirst();
+    }
+
+    private boolean isInsideSession(PlaybackSession session, Player player) {
+        MusicZone zone = session.zone();
+        if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) return false;
+        if (zone.shape() == MusicZone.Shape.REGION)
+            return worldGuard != null && worldGuard.isInside(player.getLocation(), zone.regionId());
+        return zone.audioMode(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ())
+                != MusicZone.AudioMode.NONE;
+    }
+
+    public boolean effectiveDiscordBroadcast(PlaybackSession session) {
+        if (session == null || !plugin.getConfig().getBoolean("discord.enabled", false)) return false;
+        Boolean override = session.discordBroadcastOverride();
+        if (override != null) return override;
+        return "zone-aware".equalsIgnoreCase(plugin.getConfig().getString("discord.broadcast-scope", "global-only"))
+                || session.isServerWideGlobalSession();
+    }
+
+    public synchronized Optional<Boolean> toggleDiscordBroadcast(UUID sessionId) {
+        PlaybackSession session = sessions.stream().filter(value -> value.id().equals(sessionId)).findFirst().orElse(null);
+        if (session == null || session.current() == null
+                || !plugin.getConfig().getBoolean("discord.enabled", false)) return Optional.empty();
+        boolean next = !effectiveDiscordBroadcast(session);
+        session.discordBroadcastOverride(next);
+        return Optional.of(next);
+    }
+
+    public enum PromotionResult { NOT_FOUND, ALREADY_GLOBAL, PROMOTED }
+
+    public synchronized PromotionResult promoteSessionToServerWide(UUID sessionId) {
+        PlaybackSession session = sessions.stream().filter(value -> value.id().equals(sessionId)).findFirst().orElse(null);
+        if (session == null || session.current() == null) return PromotionResult.NOT_FOUND;
+        if (session.isServerWideGlobalSession()) return PromotionResult.ALREADY_GLOBAL;
+        return session.promoteToServerWide() ? PromotionResult.PROMOTED : PromotionResult.ALREADY_GLOBAL;
+    }
+
     public Optional<MusicTrack> currentPlaybackTrackFor(Player player) {
         Candidate candidate = findCandidate(player);
         return candidate == null ? Optional.empty() : Optional.ofNullable(candidate.session.playbackTrack());
@@ -204,7 +274,9 @@ public final class PlaybackEngine {
         Optional<DiscordPlaybackSnapshot> previousSnapshot = discordSnapshot;
 
         for (PlaybackSession session : active) {
-            if (!zoneAware && !session.isServerWideGlobalSession()) continue;
+            if (Boolean.FALSE.equals(session.discordBroadcastOverride())) continue;
+            if (!zoneAware && !session.isServerWideGlobalSession()
+                    && !Boolean.TRUE.equals(session.discordBroadcastOverride())) continue;
             boolean wasPreviouslySelected = previousSnapshot
                     .map(snapshot -> snapshot.sessionId().equals(session.id())).orElse(false);
             if (session.current() == null || session.isEmpty() || session.finished()
@@ -287,15 +359,33 @@ public final class PlaybackEngine {
     }
 
     public synchronized boolean control(UUID actor, boolean admin, String action) {
-        PlaybackSession session = findOwned(actor).orElseGet(() -> admin && !sessions.isEmpty()
-                ? sessions.get(sessions.size() - 1) : null);
-        if (session == null) return false;
+        // Pause/resume/stop without a TrackID are always confined to the caller's
+        // own session. Admins must choose an explicit TrackID to affect somebody else.
+        PlaybackSession session = "skip".equals(action)
+                ? findOwned(actor).orElseGet(() -> admin && !sessions.isEmpty()
+                    ? sessions.get(sessions.size() - 1) : null)
+                : findOwned(actor).orElse(null);
+        return session != null && applyControl(session, action);
+    }
+
+    public synchronized boolean controlSession(UUID actor, boolean admin, UUID sessionId, String action) {
+        PlaybackSession session = sessions.stream()
+                .filter(value -> value.id().equals(sessionId)).findFirst().orElse(null);
+        if (session == null || (!admin && !session.isOwner(actor))) return false;
+        return applyControl(session, action);
+    }
+
+    private boolean applyControl(PlaybackSession session, String action) {
         switch (action) {
             case "pause" -> {
+                if (session.current() == null || session.paused()) return false;
                 session.pause();
                 stopPlayersInSession(session);
             }
-            case "resume" -> session.resume();
+            case "resume" -> {
+                if (session.current() == null || !session.paused()) return false;
+                session.resume();
+            }
             case "skip" -> {
                 MusicTrack playedTrack = session.current();
                 MusicTrack previousPlaybackTrack = session.playbackTrack();
@@ -311,6 +401,7 @@ public final class PlaybackEngine {
                 if (session.isEmpty()) sessions.remove(session);
             }
             case "stop" -> {
+                if (session.current() == null) return false;
                 MusicTrack playedTrack = session.current();
                 MusicTrack previousPlaybackTrack = session.playbackTrack();
                 if (session.owner() != null && playedTrack != null) {
@@ -326,7 +417,7 @@ public final class PlaybackEngine {
         return true;
     }
 
-    public enum ResumeStart { NOT_FOUND, RESUMED, PREPARING, BEDROCK_FALLBACK, ALREADY_PREPARING }
+    public enum ResumeStart { NOT_FOUND, RESUMED, ALREADY_PLAYING, PREPARING, BEDROCK_FALLBACK, ALREADY_PREPARING }
 
     /**
      * Resumes a paused session. In resumable mode, Java Edition gets a newly
@@ -334,9 +425,20 @@ public final class PlaybackEngine {
      * processing and starts its clock when the new pack becomes playable.
      */
     public ResumeStart resume(UUID actor, boolean admin, Consumer<String> completion) {
-        PlaybackSession session = findControllable(actor, admin);
-        if (session == null) return ResumeStart.NOT_FOUND;
-        if (!session.paused()) return ResumeStart.RESUMED;
+        PlaybackSession owned = findOwned(actor).orElse(null);
+        return owned == null ? ResumeStart.NOT_FOUND
+                : resumeSession(actor, false, owned.id(), completion);
+    }
+
+    /** Resumes only a session explicitly selected by ID and authorized for this actor. */
+    public ResumeStart resumeSession(UUID actor, boolean admin, UUID sessionId, Consumer<String> completion) {
+        PlaybackSession session;
+        synchronized (this) {
+            session = sessions.stream().filter(value -> value.id().equals(sessionId)).findFirst().orElse(null);
+            if (session == null || (!admin && !session.isOwner(actor))) return ResumeStart.NOT_FOUND;
+        }
+        if (session.current() == null) return ResumeStart.NOT_FOUND;
+        if (!session.paused()) return ResumeStart.ALREADY_PLAYING;
 
         MusicTrack original = session.current();
         boolean resumableMode = "resumable".equalsIgnoreCase(
@@ -1277,6 +1379,8 @@ public final class PlaybackEngine {
     }
 
     private int compare(Candidate a, Candidate b) {
+        if (a.session.serverWidePromotion() != b.session.serverWidePromotion())
+            return a.session.serverWidePromotion() ? -1 : 1;
         boolean manual = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
         if (manual && a.session.priority() != b.session.priority()) {
             return Integer.compare(b.session.priority(), a.session.priority());
@@ -1410,9 +1514,12 @@ public final class PlaybackEngine {
             MusicTrack displayTrack = originalTrack == null ? track : originalTrack;
             String title = TextUtil.truncate(displayTrack.title(), 34);
             String artist = TextUtil.truncate(displayTrack.artist(), 18);
-            String label = artist.isBlank() ? title : title + " by " + artist;
-            sendActionBar(player, Component.text("♫ " + label + "  •  " + formatTime(session.elapsedMs())
-                    + " / " + formatTime(displayTrack.durationMs())));
+            boolean showArtist = plugin.getConfig().getBoolean(
+                    "playback.synchronization.action-bar-show-artist", false);
+            String label = showArtist && !artist.isBlank() ? title + " by " + artist : title;
+            sendActionBar(player, Component.text("🎵 ", net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE)
+                    .append(Component.text(label + "  •  " + formatTime(session.elapsedMs())
+                            + " / " + formatTime(displayTrack.durationMs()))));
         }
     }
 

@@ -272,6 +272,16 @@ public final class TrackRepository implements AutoCloseable {
         }
     }
 
+    public synchronized boolean isTemporaryTrack(String trackId) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM ephemeral_tracks WHERE track_id=?")) {
+            ps.setString(1, trackId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
     public synchronized Optional<MusicTrack> getTrack(String id) throws SQLException {
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement("""
                 SELECT t.* FROM tracks t

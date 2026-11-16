@@ -11,6 +11,51 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaybackSessionTest {
     @Test
+    void discordBroadcastOverrideResetsWhenTheSessionAdvancesToANewTrack() {
+        MusicTrack first = sampleTrack("discord-override-first");
+        MusicTrack second = sampleTrack("discord-override-second");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first, second), 0);
+
+        session.discordBroadcastOverride(false);
+        assertEquals(Boolean.FALSE, session.discordBroadcastOverride());
+
+        session.advance();
+        assertEquals("discord-override-second", session.current().id());
+        assertNull(session.discordBroadcastOverride(),
+                "The next track must follow the configured server-wide Discord default.");
+    }
+
+    @Test
+    void serverWidePromotionRestoresTheOriginalAudienceAfterTheCurrentTrack() {
+        UUID owner = UUID.randomUUID();
+        UUID listener = UUID.randomUUID();
+        UUID unrelated = UUID.randomUUID();
+        MusicZone originalZone = MusicZone.circle(UUID.randomUUID(), 10, 64, 20,
+                30, false, 0, false, 0);
+        MusicTrack first = sampleTrack("promotion-first");
+        MusicTrack second = sampleTrack("promotion-second");
+        PlaybackSession session = new PlaybackSession(owner, "tester", originalZone,
+                false, List.of(listener), List.of(first, second), 0);
+
+        assertTrue(session.targets(listener));
+        assertFalse(session.targets(unrelated));
+        assertTrue(session.promoteToServerWide());
+        assertTrue(session.serverWidePromotion());
+        assertTrue(session.isServerWideGlobalSession());
+        assertTrue(session.targets(unrelated));
+
+        session.advance();
+
+        assertEquals("promotion-second", session.current().id());
+        assertFalse(session.serverWidePromotion());
+        assertFalse(session.isServerWideGlobalSession());
+        assertTrue(session.targets(listener));
+        assertFalse(session.targets(unrelated));
+        assertTrue(session.zone().sameAs(originalZone));
+    }
+
+    @Test
     void urlPlaylistStoresItsOwnDeliveryOverrideWithoutChangingOrdinarySessions() {
         PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "playlist",
                 MusicZone.global(), true, List.of(), List.of(sampleTrack("playlist-delivery")), 0);
