@@ -1489,7 +1489,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         private int skipped;
         private boolean closed;
         private long observedTimelineGeneration = Long.MIN_VALUE;
-        private long nextImportAtMillis;
+        private boolean observedClockStarted;
+        private long nextImportAtMillis = Long.MAX_VALUE;
         private BukkitTask task;
 
         private PlaylistRunner(CommandSender sender, PlayRequest request, PlaybackSession session,
@@ -1524,8 +1525,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             long generation = session.timelineGeneration();
             if (generation != observedTimelineGeneration) {
                 observedTimelineGeneration = generation;
-                // Each newly active track gets its own import cadence. A short
-                // track bypasses the cooldown so the next item is prepared at once.
+                observedClockStarted = false;
+                nextImportAtMillis = Long.MAX_VALUE;
+            }
+            if (current != null && session.clockStarted() && !observedClockStarted) {
+                // Start the cooldown from actual playback, not from the time the
+                // first track was imported or its resource pack began downloading.
+                observedClockStarted = true;
                 nextImportAtMillis = now + importIntervalSeconds * 1000L;
             }
 
