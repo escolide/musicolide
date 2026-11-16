@@ -1526,7 +1526,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 observedTimelineGeneration = generation;
                 // Each newly active track gets its own import cadence. A short
                 // track bypasses the cooldown so the next item is prepared at once.
-                nextImportAtMillis = now + TimeUnit.SECONDS.toMillis(importIntervalSeconds);
+                nextImportAtMillis = now + importIntervalSeconds * 1000L;
             }
 
             if (session.paused() || session.resumePreparing()) return;
