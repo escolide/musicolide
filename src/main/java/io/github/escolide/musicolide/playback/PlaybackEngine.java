@@ -177,6 +177,7 @@ public final class PlaybackEngine {
     public List<Player> affectedPlayers(PlaybackSession session) {
         if (!isSessionActive(session)) return List.of();
         return Bukkit.getOnlinePlayers().stream()
+                .map(player -> (Player) player)
                 .filter(player -> !isIgnoredBedrockPlayer(player)
                         && !packs.isPlayerDisabled(player.getUniqueId())
                         && session.targets(player.getUniqueId()) && isInsideSession(session, player))
