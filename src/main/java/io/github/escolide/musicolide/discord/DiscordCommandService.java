@@ -593,7 +593,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             }
             command.append(" --mode ").append(normalized);
         }
-        if (centered) command.append(" center");
+        if (centered) command.append(" --center");
         if (fade != null) {
             if (!Double.isFinite(fade) || fade < 0) throw new IllegalArgumentException("Fade distance must be a finite, non-negative number.");
             command.append(" --fade ").append(fade);
