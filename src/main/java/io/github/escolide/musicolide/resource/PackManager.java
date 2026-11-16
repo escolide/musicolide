@@ -49,6 +49,9 @@ public final class PackManager {
     // Back off immediate request failures (for example a temporary URL/address issue)
     // so a current track is not re-requested and logged on every playback tick.
     private final Map<UUID, Long> sendRetryAfter = new ConcurrentHashMap<>();
+    // A playlist may require strictly serial per-track pack application even when
+    // the server-wide default remains library mode.
+    private final Set<UUID> serialDeliveryPlayers = ConcurrentHashMap.newKeySet();
     private final Path acceptedPlayersFile;
     private final Path disabledPlayersFile;
 
@@ -310,6 +313,8 @@ public final class PackManager {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
                 || isPlayerDisabled(player.getUniqueId())) return;
         UUID playerId = player.getUniqueId();
+        if (perTrackDelivery) serialDeliveryPlayers.add(playerId);
+        else serialDeliveryPlayers.remove(playerId);
         String deferredTrackId = deferredLibraryReload.get(playerId);
         if (deferredTrackId != null) {
             if (current == null || (!deferredTrackId.isBlank() && deferredTrackId.equals(current.id()))) return;
@@ -477,8 +482,9 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         int maximum = Math.max(1, plugin.getConfig().getInt("resource-packs.prefetch.max-concurrent-downloads", 2));
         // Applying multiple independent Java packs at once can cause concurrent
-        // client resource-stack rebuilds. Keep the experimental path serial.
-        if (isPerTrackDeliveryEnabled()) maximum = 1;
+        // client resource-stack rebuilds. Keep per-track delivery serial, including
+        // playlist-only overrides when universal playback is library mode.
+        if (isPerTrackDeliveryEnabled() || serialDeliveryPlayers.contains(playerId)) maximum = 1;
         LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
         if (queue == null) return;
         // Address discovery is asynchronous. Never block the Bukkit main thread
