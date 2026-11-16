@@ -81,6 +81,9 @@ class ResourcePackBuilderTest {
             assertTrue(sounds.contains("mono"), sounds);
             assertTrue(sounds.contains("ms_demo:music"), sounds);
             assertTrue(sounds.contains("ms_demo:mono"), sounds);
+            assertTrue(sounds.contains("\"attenuation_distance\":256"), sounds);
+            assertFalse(sounds.substring(sounds.indexOf("\"music\""),
+                    sounds.indexOf("\"mono\"")).contains("attenuation_distance"), sounds);
         }
     }
 
@@ -102,6 +105,9 @@ class ResourcePackBuilderTest {
             assertTrue(sounds.contains("s_00000"), sounds);
             assertTrue(sounds.contains("m_00000"), sounds);
             assertTrue(sounds.contains("mc_dual:mc_dual/mono/00000"), sounds);
+            assertTrue(sounds.contains("\"m_00000\": {\"sounds\":[{\"name\":\"mc_dual:mc_dual/mono/00000\",\"stream\":false,\"attenuation_distance\":256}]}"), sounds);
+            assertFalse(sounds.substring(sounds.indexOf("\"s_00000\""),
+                    sounds.indexOf("\"m_00000\"")).contains("attenuation_distance"), sounds);
         }
     }
 
@@ -126,6 +132,7 @@ class ResourcePackBuilderTest {
             String sounds = readSoundDefinitions(zip, "mc_legacy");
             assertTrue(sounds.contains("s_00000"), sounds);
             assertTrue(sounds.contains("m_00000"), sounds);
+            assertTrue(sounds.contains("\"attenuation_distance\":256"), sounds);
         }
     }
 

@@ -278,13 +278,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return CompletableFuture.failedFuture(error);
         }
 
-        boolean allowRemote = allowRemoteLookup
-                && plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
-                && plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
-        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)
-                || !plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
-            return CompletableFuture.completedFuture(local);
-        }
+        // Metadata-only YouTube suggestions are safe to show when yt-dlp is enabled.
+        // The separate auto-import setting is still enforced when a user selects a
+        // remote result that is not already present in the local catalogue.
+        boolean youtubeSearchEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
+        boolean allowRemote = allowRemoteLookup && youtubeSearchEnabled;
+        if (!youtubeSearchEnabled) return CompletableFuture.completedFuture(local);
 
         long now = System.currentTimeMillis();
         CachedDiscordAutocomplete cached = discordAutocompleteCache.get(requesterKey);
@@ -648,7 +647,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [id:music100]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [center] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
