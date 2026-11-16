@@ -263,7 +263,9 @@ public final class PackManager {
             }
             Player player = Bukkit.getPlayer(playerId);
             if (player != null && player.isOnline() && !isIgnoredBedrockPlayer(player)) {
-                if (isPerTrackDeliveryEnabled()) pump(player);
+                // A queued temporary resume tail is self-contained and can be
+                // delivered in library mode without first applying the catalogue.
+                if (isPerTrackDeliveryEnabled() || waiting.containsKey(playerId)) pump(player);
                 else ensureLibrary(player);
             } else {
                 waitingForPublicAddress.remove(playerId);
@@ -337,17 +339,15 @@ public final class PackManager {
                 || isPlayerDisabled(player.getUniqueId()) || !isTemporary(track)) return false;
 
         UUID playerId = player.getUniqueId();
-        // A private resume/synchronization tail is self-contained. Do not refresh
-        // an outdated aggregate library as a side effect of requesting the tail.
-        // In library mode, wait for the base pack before pumping the tail. In
-        // per-track mode, no aggregate pack is required.
-        if (!isPerTrackDeliveryEnabled() && !libraryReadyHash.containsKey(playerId)) ensureLibrary(player);
+        // A private resume/synchronization tail is a complete resource pack of
+        // its own. Send it directly in both Java delivery modes; requiring the
+        // aggregate library here creates two consecutive client resource reloads.
         pinnedTemporaryPacks.computeIfAbsent(playerId, ignored -> ConcurrentHashMap.newKeySet())
                 .add(track.packId());
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 playerId, ignored -> new LinkedHashMap<>());
         enqueueIfNeeded(playerId, queue, track);
-        if (isPerTrackDeliveryEnabled() || libraryReadyHash.containsKey(playerId)) pump(player);
+        pump(player);
         return true;
     }
 

@@ -44,6 +44,8 @@ class ResourcePackBuilderStreamTest {
             assertTrue(json.contains("\"music\""), json);
             assertTrue(json.contains("\"name\":\"ms_stream_demo:music\""), json);
             assertTrue(json.contains("\"stream\":true"), json);
+            assertFalse(json.contains("attenuation_distance"), json,
+                    "stereo-only streams should keep their original non-positional behavior");
             assertNull(zip.getEntry("assets/ms_stream_demo/sounds/ms_stream_demo/stereo/00000.ogg"));
         }
     }
