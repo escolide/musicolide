@@ -817,7 +817,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             boolean compact = normalized.startsWith("target:") || normalized.startsWith("id:")
                     || normalized.startsWith("mode:") || normalized.startsWith("circle:")
                     || normalized.startsWith("square:") || normalized.startsWith("region:")
-                    || normalized.equals("center")
+                    // A bare word such as "center" may be part of the search query.
+                    // Centered audio must be an explicit --center option.
                     || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
             if (normalized.startsWith("--") || compact || normalized.equals("mono") || normalized.equals("stereo")
                     || normalized.equals("@a") || normalized.equals("@p") || normalized.equals("@s")
