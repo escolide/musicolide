@@ -739,6 +739,7 @@ public final class PackManager {
         active.remove(playerId);
         removeWhenReady.remove(playerId);
         pinnedTemporaryPacks.remove(playerId);
+        serialDeliveryPlayers.remove(playerId);
         inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
         cleanupLibraryArchivesAsync();
