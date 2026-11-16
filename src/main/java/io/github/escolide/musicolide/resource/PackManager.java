@@ -52,6 +52,8 @@ public final class PackManager {
     // A playlist may require strictly serial per-track pack application even when
     // the server-wide default remains library mode.
     private final Set<UUID> serialDeliveryPlayers = ConcurrentHashMap.newKeySet();
+    // URL-playlist library revisions are coalesced until the next track boundary.
+    private final Set<UUID> deferredPlaylistLibraryUpdates = ConcurrentHashMap.newKeySet();
     private final Path acceptedPlayersFile;
     private final Path disabledPlayersFile;
 
@@ -310,11 +312,27 @@ public final class PackManager {
      */
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
                          int tracksAhead, boolean deferLibraryRefresh, boolean perTrackDelivery) {
+        prefetch(player, current, upcoming, tracksAhead, deferLibraryRefresh, perTrackDelivery, false);
+    }
+
+    /**
+     * URL-playlist library mode can coalesce several server-side imports into one
+     * aggregate-pack update at the next track boundary, instead of reloading the
+     * resource stack while the current song is still playing.
+     */
+    public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
+                         int tracksAhead, boolean deferLibraryRefresh, boolean perTrackDelivery,
+                         boolean coalescePlaylistLibraryUpdates) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
                 || isPlayerDisabled(player.getUniqueId())) return;
         UUID playerId = player.getUniqueId();
         if (perTrackDelivery) serialDeliveryPlayers.add(playerId);
         else serialDeliveryPlayers.remove(playerId);
+        if (coalescePlaylistLibraryUpdates && deferLibraryRefresh && !perTrackDelivery) {
+            deferredPlaylistLibraryUpdates.add(playerId);
+        } else if (!deferLibraryRefresh || perTrackDelivery || !coalescePlaylistLibraryUpdates) {
+            deferredPlaylistLibraryUpdates.remove(playerId);
+        }
         String deferredTrackId = deferredLibraryReload.get(playerId);
         if (deferredTrackId != null) {
             if (current == null || (!deferredTrackId.isBlank() && deferredTrackId.equals(current.id()))) return;
@@ -649,7 +667,8 @@ public final class PackManager {
                 }
                 // If the library changed during a download, request the current revision once.
                 String currentHash = currentLibraryHash();
-                if (currentHash != null && !currentHash.equals(requestedHash)) {
+                if (currentHash != null && !currentHash.equals(requestedHash)
+                        && !deferredPlaylistLibraryUpdates.contains(playerId)) {
                     Player player = Bukkit.getPlayer(playerId);
                     if (player != null && player.isOnline()) ensureLibrary(player);
                 }
@@ -740,6 +759,7 @@ public final class PackManager {
         removeWhenReady.remove(playerId);
         pinnedTemporaryPacks.remove(playerId);
         serialDeliveryPlayers.remove(playerId);
+        deferredPlaylistLibraryUpdates.remove(playerId);
         inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
         cleanupLibraryArchivesAsync();
