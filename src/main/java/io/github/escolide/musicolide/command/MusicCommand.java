@@ -820,7 +820,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private int firstPlayModifierIndex(CommandSender sender, String[] args) {
         for (int i = 2; i < args.length; i++) {
             String value = args[i];
-            if (PlayCommandOptionPolicy.isModifierToken(value)
+            String normalized = value.toLowerCase(Locale.ROOT);
+            boolean compact = normalized.startsWith("target:") || normalized.startsWith("id:")
+                    || normalized.startsWith("mode:") || normalized.startsWith("circle:")
+                    || normalized.startsWith("square:") || normalized.startsWith("region:")
+                    // Bare "center" is ordinary search text; use --center to opt in.
+                    || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
+            if (normalized.startsWith("--") || compact || normalized.equals("mono")
+                    || normalized.equals("stereo") || normalized.equals("@a")
+                    || normalized.equals("@p") || normalized.equals("@s")
                     || Bukkit.getPlayerExact(value) != null) return i;
         }
         return args.length;
