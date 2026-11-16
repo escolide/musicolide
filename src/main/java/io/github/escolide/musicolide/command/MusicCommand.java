@@ -1273,6 +1273,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     audioMode = args[i].toLowerCase(Locale.ROOT);
                     if (!audioMode.equals("mono") && !audioMode.equals("stereo")) throw new IllegalArgumentException("Audio mode must be mono or stereo.");
                 }
+                case "--center" -> centeredMono = true;
                 case "mono", "stereo" -> audioMode = option;
                 case "--circle" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--circle requires a radius.");
@@ -1301,6 +1302,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 }
             }
         }
+
+        // A centred sound origin is opt-in. The shipped/default setting is false,
+        // so mono listeners hear audio from their own playback-start position.
+        centeredMono = centeredMono || (audioMode.equals("mono")
+                && plugin.getConfig().getBoolean("playback.mono.centered-audio-origin-by-default", false));
 
         if (centeredMono && !audioMode.equals("mono")) {
             throw new IllegalArgumentException("The center option is only available with mode:mono.");
