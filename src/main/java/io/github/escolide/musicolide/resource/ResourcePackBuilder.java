@@ -7,6 +7,7 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
@@ -14,6 +15,7 @@ import java.util.zip.ZipOutputStream;
 public final class ResourcePackBuilder {
     private static final String LEGACY_LIBRARY_FILE = "musicolide-base.zip";
     private static final String LIBRARY_FILE_PREFIX = "musicolide-library-";
+    private static final int ZIP_COMPRESSION_LEVEL = Deflater.BEST_COMPRESSION;
     private static final UUID LIBRARY_ID = UUID.nameUUIDFromBytes(
             "musicolide:java:base-pack".getBytes(StandardCharsets.UTF_8));
 
@@ -31,31 +33,71 @@ public final class ResourcePackBuilder {
 
     /**
      * Builds one Java resource pack containing the complete immutable track
-     * library. This replaces the old empty consent pack plus one pack per song,
-     * so a normal player receives one library pack instead of sequential pack
-     * applications for the first track.
+     * library. The aggregate pack is retained for the default delivery mode and
+     * for explicit full-library downloads.
      *
-     * New imports rebuild this archive. Its stable UUID and content SHA-1 allow
-     * clients to reuse an unchanged cached copy after reconnecting.
+     * Identical OGG payloads are stored once. Per-track sounds.json files are
+     * rewritten to reference the first identical asset, preserving each track's
+     * independent sound key and namespace.
+     *
+     * Every entry gets a fixed timestamp and the ZIP uses maximum DEFLATE
+     * compression. This makes an unchanged library produce the same SHA-1,
+     * allowing vanilla clients to reuse the exact cached revision.
      */
     public synchronized BasePackInfo buildBasePack() throws IOException {
         Path temporary = Files.createTempFile(packsDirectory, ".musicolide-library-", ".zip");
         try {
-            Set<String> writtenEntries = new HashSet<>();
-            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(temporary))) {
-                add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
-                List<Path> archives;
-                try (var stream = Files.list(packsDirectory)) {
-                    archives = stream.filter(Files::isRegularFile)
-                            .filter(path -> path.getFileName().toString().endsWith(".zip"))
-                            .filter(path -> !path.getFileName().toString().equals(LEGACY_LIBRARY_FILE))
-                            .filter(path -> !path.getFileName().toString().startsWith(LIBRARY_FILE_PREFIX))
-                            // Exclude the archive currently being written and per-session resume tails.
-                            .filter(path -> !path.getFileName().toString().startsWith(".musicolide-library-"))
-                            .filter(path -> !path.getFileName().toString().startsWith("mr_"))
-                            .sorted(Comparator.comparing(path -> path.getFileName().toString()))
-                            .toList();
+            List<Path> archives;
+            try (var stream = Files.list(packsDirectory)) {
+                archives = stream.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".zip"))
+                        .filter(path -> !path.getFileName().toString().equals(LEGACY_LIBRARY_FILE))
+                        .filter(path -> !path.getFileName().toString().startsWith(LIBRARY_FILE_PREFIX))
+                        // Exclude the archive currently being written and per-session resume tails.
+                        .filter(path -> !path.getFileName().toString().startsWith(".musicolide-library-"))
+                        .filter(path -> !path.getFileName().toString().startsWith("mr_"))
+                        .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                        .toList();
+            }
+
+            Set<String> assetNames = new HashSet<>();
+            Map<String, String> firstAudioResourceByHash = new LinkedHashMap<>();
+            Map<Path, Set<String>> duplicateAudioEntries = new HashMap<>();
+            Map<String, String> soundReferenceAliases = new LinkedHashMap<>();
+
+            // Scan first so sounds.json entries can be rewritten regardless of ZIP entry order.
+            for (Path archive : archives) {
+                try (ZipFile source = new ZipFile(archive.toFile())) {
+                    Enumeration<? extends ZipEntry> entries = source.entries();
+                    while (entries.hasMoreElements()) {
+                        ZipEntry entry = entries.nextElement();
+                        if (entry.isDirectory() || !entry.getName().startsWith("assets/")) continue;
+                        String name = entry.getName();
+                        validateAssetPath(archive, name);
+                        if (!assetNames.add(name)) {
+                            throw new IOException("Duplicate resource-pack asset while building the Java library: " + name);
+                        }
+
+                        String resourceLocation = soundResourceLocation(name);
+                        if (resourceLocation == null) continue;
+                        String digest;
+                        try (InputStream input = source.getInputStream(entry)) {
+                            digest = digest(input, "SHA-256");
+                        }
+                        String canonical = firstAudioResourceByHash.putIfAbsent(digest, resourceLocation);
+                        if (canonical != null) {
+                            duplicateAudioEntries.computeIfAbsent(archive, ignored -> new HashSet<>()).add(name);
+                            soundReferenceAliases.put(resourceLocation, canonical);
+                        }
+                    }
+                } catch (java.util.zip.ZipException ex) {
+                    throw new IOException("Invalid track resource pack: " + archive.getFileName(), ex);
                 }
+            }
+
+            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(temporary))) {
+                zip.setLevel(ZIP_COMPRESSION_LEVEL);
+                add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
 
                 for (Path archive : archives) {
                     try (ZipFile source = new ZipFile(archive.toFile())) {
@@ -64,13 +106,22 @@ public final class ResourcePackBuilder {
                             ZipEntry entry = entries.nextElement();
                             if (entry.isDirectory() || !entry.getName().startsWith("assets/")) continue;
                             String name = entry.getName();
-                            if (name.startsWith("/") || name.contains("../") || name.contains("\\")
-                                    || name.contains("/..")) {
-                                throw new IOException("Unsafe asset path in " + archive.getFileName() + ": " + name);
+                            if (duplicateAudioEntries.getOrDefault(archive, Set.of()).contains(name)) continue;
+
+                            if (name.endsWith("/sounds.json")) {
+                                String json;
+                                try (InputStream input = source.getInputStream(entry)) {
+                                    json = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                                }
+                                for (Map.Entry<String, String> alias : soundReferenceAliases.entrySet()) {
+                                    // The generated sound definitions store resource locations as JSON strings.
+                                    json = json.replace("\"" + alias.getKey() + "\"",
+                                            "\"" + alias.getValue() + "\"");
+                                }
+                                add(zip, name, json.getBytes(StandardCharsets.UTF_8));
+                                continue;
                             }
-                            if (!writtenEntries.add(name)) {
-                                throw new IOException("Duplicate resource-pack asset while building the Java library: " + name);
-                            }
+
                             ZipEntry copy = new ZipEntry(name);
                             copy.setTime(0L);
                             zip.putNextEntry(copy);
@@ -103,6 +154,26 @@ public final class ResourcePackBuilder {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    private static void validateAssetPath(Path archive, String name) throws IOException {
+        if (name.startsWith("/") || name.contains("../") || name.contains("\\")
+                || name.contains("/..")) {
+            throw new IOException("Unsafe asset path in " + archive.getFileName() + ": " + name);
+        }
+    }
+
+    /**
+     * Converts assets/<namespace>/sounds/<path>.ogg into the corresponding
+     * Minecraft resource location. Non-sound OGG assets are left untouched.
+     */
+    private static String soundResourceLocation(String entryName) {
+        if (!entryName.endsWith(".ogg")) return null;
+        String[] parts = entryName.split("/", 4);
+        if (parts.length != 4 || !parts[0].equals("assets") || !parts[2].equals("sounds")
+                || parts[1].isBlank() || parts[3].isBlank()) return null;
+        String soundPath = parts[3].substring(0, parts[3].length() - 4);
+        return soundPath.isBlank() ? null : parts[1] + ":" + soundPath;
     }
 
     /**
@@ -144,7 +215,7 @@ public final class ResourcePackBuilder {
         int total = segmentCount * (hasMono ? 2 : 1);
         int index = 0;
         for (int i = 0; i < segmentCount; i++) {
-            String id = String.format("%05d", i);
+            String id = String.format(Locale.ROOT, "%05d", i);
             appendSegmentSound(soundsJson, namespace, "s_" + id, namespace + "/stereo/" + id,
                     ++index < total);
             if (hasMono) {
@@ -155,10 +226,11 @@ public final class ResourcePackBuilder {
         soundsJson.append("}\n");
 
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
-            add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
+                zip.setLevel(ZIP_COMPRESSION_LEVEL);
+                add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
             add(zip, "assets/" + namespace + "/sounds.json", soundsJson.toString().getBytes(StandardCharsets.UTF_8));
             for (int i = 0; i < segmentCount; i++) {
-                String id = String.format("%05d", i);
+                String id = String.format(Locale.ROOT, "%05d", i);
                 addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/stereo/" + id + ".ogg",
                         trackDirectory.resolve("stereo").resolve(id + ".ogg"));
                 if (hasMono) {
@@ -194,6 +266,7 @@ public final class ResourcePackBuilder {
                 + "\n}\n";
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
+            zip.setLevel(ZIP_COMPRESSION_LEVEL);
             add(zip, "pack.mcmeta", format.toPackMcmeta().getBytes(StandardCharsets.UTF_8));
             add(zip, "assets/" + namespace + "/sounds.json", soundsJson.getBytes(StandardCharsets.UTF_8));
             addFile(zip, "assets/" + namespace + "/sounds/music.ogg", audioFile);
@@ -314,27 +387,35 @@ public final class ResourcePackBuilder {
     }
 
     private String sha1(Path file) throws IOException {
+        try (InputStream input = Files.newInputStream(file)) {
+            return digest(input, "SHA-1");
+        }
+    }
+
+    private static String digest(InputStream input, String algorithm) throws IOException {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            try (var input = Files.newInputStream(file)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
-            }
+            MessageDigest digest = MessageDigest.getInstance(algorithm);
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("The Java runtime does not provide SHA-1.", ex);
+            throw new IllegalStateException("The Java runtime does not provide " + algorithm + ".", ex);
         }
     }
 
     private void addFile(ZipOutputStream zip, String name, Path file) throws IOException {
-        zip.putNextEntry(new ZipEntry(name));
+        ZipEntry entry = new ZipEntry(name);
+        entry.setTime(0L);
+        zip.putNextEntry(entry);
         Files.copy(file, zip);
         zip.closeEntry();
     }
 
     private void add(ZipOutputStream zip, String name, byte[] bytes) throws IOException {
-        zip.putNextEntry(new ZipEntry(name));
+        ZipEntry entry = new ZipEntry(name);
+        entry.setTime(0L);
+        zip.putNextEntry(entry);
         zip.write(bytes);
         zip.closeEntry();
     }
