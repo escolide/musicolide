@@ -985,14 +985,32 @@ public final class PlaybackEngine {
         return candidate.session.clockStarted() && cohort != null && !cohort.contains(playerId);
     }
 
+    /** Resolve a player's effective mode, including an active URL-playlist override. */
+    public boolean isPerTrackDeliveryForPlayer(Player player) {
+        if (player == null || isIgnoredBedrockPlayer(player)) return packs.isPerTrackDeliveryEnabled();
+        Candidate candidate = findCandidate(player);
+        if (candidate != null) return perTrackDelivery(candidate.session);
+        for (PlaybackSession session : sessions()) {
+            if (session.isUrlPlaylist() && session.targets(player.getUniqueId())
+                    && session.current() != null) {
+                return session.playlistPerTrackDelivery();
+            }
+        }
+        return packs.isPerTrackDeliveryEnabled();
+    }
+
     public boolean shouldDeferLibraryOnJoin(Player player) {
         if (player == null || isIgnoredBedrockPlayer(player)) return false;
         Candidate candidate = findCandidate(player);
-        if (candidate == null) return false;
-        // A playlist configured for on-demand per-track delivery must not also
-        // receive an on-join aggregate library pack.
-        if (candidate.session.isUrlPlaylist() && candidate.session.playlistPerTrackDelivery()) return true;
-        return candidate.session.clockStarted()
+        if (candidate != null && candidate.session.isUrlPlaylist()
+                && candidate.session.playlistPerTrackDelivery()) return true;
+        // This also covers a targeted listener who is currently outside a spatial
+        // zone; do not pre-apply the aggregate pack before they enter a per-track playlist.
+        for (PlaybackSession session : sessions()) {
+            if (session.isUrlPlaylist() && session.playlistPerTrackDelivery()
+                    && session.targets(player.getUniqueId()) && session.current() != null) return true;
+        }
+        return candidate != null && candidate.session.clockStarted()
                 && requiresTimelineCatchUp(candidate, player.getUniqueId());
     }
 
