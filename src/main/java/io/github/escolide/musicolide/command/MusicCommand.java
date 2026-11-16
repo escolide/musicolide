@@ -1563,7 +1563,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             YtDlpDownloader.PlaylistEntry entry = entries.get(nextIndex++);
             inFlight++;
-            nextImportAtMillis = now + TimeUnit.SECONDS.toMillis(importIntervalSeconds);
+            nextImportAtMillis = now + importIntervalSeconds * 1000L;
             processor.importPlaylistEntry(entry)
                     .thenCompose(track -> mono ? processor.ensureMonoVariant(track)
                             : CompletableFuture.completedFuture(track))
