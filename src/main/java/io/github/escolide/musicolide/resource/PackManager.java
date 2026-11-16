@@ -44,7 +44,6 @@ public final class PackManager {
     private final Map<UUID, Set<UUID>> pinnedTemporaryPacks = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> inFlight = new ConcurrentHashMap<>();
     private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
-    private final Map<UUID, Path> deleteGeneratedWhenIdle = new ConcurrentHashMap<>();
     private final Set<UUID> disabledPlayers = ConcurrentHashMap.newKeySet();
     private final Map<UUID, String> deferredLibraryReload = new ConcurrentHashMap<>();
     // Back off immediate request failures (for example a temporary URL/address issue)
