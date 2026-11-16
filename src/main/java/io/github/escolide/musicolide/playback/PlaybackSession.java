@@ -30,6 +30,8 @@ public final class PlaybackSession {
     private boolean clockStarted;
     private boolean repeat;
     private boolean queuePending;
+    private boolean urlPlaylist;
+    private boolean playlistPerTrackDelivery;
     private int priority;
     private double speed = 1.0;
     private Double pendingSpeed;
@@ -71,6 +73,15 @@ public final class PlaybackSession {
     public synchronized boolean paused() { return paused; }
     public synchronized boolean queuePending() { return queuePending; }
     public synchronized void queuePending(boolean pending) { queuePending = pending; }
+    /** Marks a yt-dlp URL playlist and its session-scoped Java pack delivery override. */
+    public synchronized void configureUrlPlaylist(boolean perTrackDelivery) {
+        urlPlaylist = true;
+        playlistPerTrackDelivery = perTrackDelivery;
+    }
+    public synchronized boolean isUrlPlaylist() { return urlPlaylist; }
+    public synchronized boolean playlistPerTrackDelivery() {
+        return urlPlaylist && playlistPerTrackDelivery;
+    }
     public synchronized boolean resumePreparing() { return resumePreparing; }
     public synchronized boolean clockStarted() { return clockStarted; }
     /** Changes whenever this session starts a new track timeline, including a restart of the same track. */
