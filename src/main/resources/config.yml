@@ -148,13 +148,16 @@ storage:
 resource-packs:
   required-on-first-use: false
   prompt: "Musicolide needs its music library to play tracks."
-  # Java delivery mode:
-  # library: default; one aggregate Java resource pack containing the complete track catalogue.
-  # per-track: experimental; send independent track packs on demand plus the configured prefetch window.
-  # Per-track mode avoids retransmitting the whole library after a new import, but first-time
-  # delivery of a new track may trigger a client resource reload. Test with real clients before production.
+  # Java delivery modes. Playlist playback can override the universal setting below.
+  # library: one aggregate pack; newly imported tracks are included in the next immutable revision.
+  # per-track: independent packs, requested only for the active track when used by a URL playlist.
   # Geyser/Bedrock continues to use its aggregate Bedrock pack in either mode.
-  java-delivery-mode: "library"
+  universal-playback-system: "library"
+  # URL playlist override, independent of the universal mode above.
+  # per-track (default): server imports ahead, but players receive only the currently active track pack.
+  # library: the aggregate pack is updated as imports finish and applied at track boundaries,
+  # combining multiple prepared tracks into one update to reduce repeated client reloads.
+  playlist-playback-system: "per-track"
   # on-play: request the aggregate Java library when a player first needs music (library mode).
   # on-join: request the aggregate Java library as a player joins, even when no music is playing.
   # Per-track mode skips automatic on-join library requests; individual tracks are still sent on demand.
@@ -242,9 +245,10 @@ playlists:
   shuffle: false
   repeat: false
   preimport:
-    # Begin preparing the next playlist track this many seconds before the current one ends.
-    # Short tracks start their next import immediately when the remaining time is below this value.
-    lead-seconds: 20
+    # Space server-side URL playlist imports by this many seconds (clamped to 10-20).
+    # Short tracks and tracks nearing their end bypass the cooldown to avoid queue gaps.
+    # Players never prefetch URL playlist tracks in playlist per-track mode.
+    interval-seconds: 15
     # Maximum imported future tracks waiting in the queue (not including the current track).
     max-preimported-tracks: 2
 

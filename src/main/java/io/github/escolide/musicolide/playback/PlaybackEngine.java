@@ -232,13 +232,15 @@ public final class PlaybackEngine {
                         continue;
                     }
                     if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
-                    if (packs.isBaseDeclined(player) || packs.isDeclined(player, catalogueTrack)) continue;
+                    boolean perTrack = perTrackDelivery(session);
+                    if (packs.isBaseDeclined(player, perTrack)
+                            || packs.isDeclined(player, catalogueTrack, perTrack)) continue;
                     // Discord reads the original catalogue archive at the shared
                     // session clock. A Java entrant may still be downloading a
                     // private timestamp tail, so requiring the session's temporary
                     // playback pack here would wrongly suppress zone-only sessions.
                     if (!packs.isReady(player, catalogueTrack,
-                            isAlreadyPlayingTrack(player, session, playbackTrack))) continue;
+                            isAlreadyPlayingTrack(player, session, playbackTrack), perTrackDelivery(session))) continue;
                     hasEligibleJavaListener = true;
                     break;
                 }
@@ -829,8 +831,8 @@ public final class PlaybackEngine {
                 if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
                     if (!geyser.isBedrockPackAvailable()
                             || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
-                } else if (packs.isBaseDeclined(player)
-                        || packs.isDeclined(player, session.playbackTrack())) {
+                } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
+                        || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
                     warnPackDeclined(player, session.current(), session.playbackTrack());
                     continue;
                 }
@@ -877,8 +879,10 @@ public final class PlaybackEngine {
             Candidate candidate = winners.get(player.getUniqueId());
             if (candidate != null && !isPlayerMuted(player)
                     && (geyser == null || !geyser.isBedrockPlayer(player.getUniqueId()))) {
-                int prefetch = Math.max(0, plugin.getConfig().getInt(
-                        "resource-packs.prefetch.tracks-ahead", 2));
+                boolean perTrack = perTrackDelivery(candidate.session);
+                int prefetch = perTrack && candidate.session.isUrlPlaylist() ? 0
+                        : Math.max(0, plugin.getConfig().getInt(
+                                "resource-packs.prefetch.tracks-ahead", 2));
                 MusicTrack playingTrack = candidate.session.playbackTrack();
                 boolean alreadyPlaying = isAlreadyPlayingTrack(player, candidate.session, playingTrack);
                 // Late entrants and returning listeners are served by a private,
@@ -894,7 +898,8 @@ public final class PlaybackEngine {
                         ? candidate.session.current() : playingTrack;
                 packs.prefetch(player, packTrack, candidate.session.upcoming(prefetch),
                         plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0,
-                        alreadyPlaying);
+                        alreadyPlaying, perTrack,
+                        candidate.session.isUrlPlaylist() && !perTrack);
             }
         }
         startReadySessionClocks(online, winners);
@@ -981,9 +986,31 @@ public final class PlaybackEngine {
         return candidate.session.clockStarted() && cohort != null && !cohort.contains(playerId);
     }
 
+    /** Resolve a player's effective mode, including an active URL-playlist override. */
+    public boolean isPerTrackDeliveryForPlayer(Player player) {
+        if (player == null || isIgnoredBedrockPlayer(player)) return packs.isPerTrackDeliveryEnabled();
+        Candidate candidate = findCandidate(player);
+        if (candidate != null) return perTrackDelivery(candidate.session);
+        for (PlaybackSession session : sessions()) {
+            if (session.isUrlPlaylist() && session.targets(player.getUniqueId())
+                    && session.current() != null) {
+                return session.playlistPerTrackDelivery();
+            }
+        }
+        return packs.isPerTrackDeliveryEnabled();
+    }
+
     public boolean shouldDeferLibraryOnJoin(Player player) {
         if (player == null || isIgnoredBedrockPlayer(player)) return false;
         Candidate candidate = findCandidate(player);
+        if (candidate != null && candidate.session.isUrlPlaylist()
+                && candidate.session.playlistPerTrackDelivery()) return true;
+        // This also covers a targeted listener who is currently outside a spatial
+        // zone; do not pre-apply the aggregate pack before they enter a per-track playlist.
+        for (PlaybackSession session : sessions()) {
+            if (session.isUrlPlaylist() && session.playlistPerTrackDelivery()
+                    && session.targets(player.getUniqueId()) && session.current() != null) return true;
+        }
         return candidate != null && candidate.session.clockStarted()
                 && requiresTimelineCatchUp(candidate, player.getUniqueId());
     }
@@ -1006,7 +1033,8 @@ public final class PlaybackEngine {
                     }
                     boolean packReady = geyser != null && geyser.isBedrockPlayer(player.getUniqueId())
                             ? geyser.isBedrockPackAvailable() && geyser.hasCurrentPackFor(player.getUniqueId())
-                            : packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track));
+                            : packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track),
+                                    perTrackDelivery(session));
                     if (packReady) readyAtStart.add(player.getUniqueId());
                 }
                 return readyAtStart;
@@ -1092,9 +1120,10 @@ public final class PlaybackEngine {
                     continue;
                 }
 
-                if (packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track))) {
+                if (packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track),
+                        perTrackDelivery(session))) {
                     hasReadyJavaRecipient = true;
-                } else if (!packs.isDeclined(player, track)) {
+                } else if (!packs.isDeclined(player, track, perTrackDelivery(session))) {
                     hasPendingJavaRecipient = true;
                     allJavaRecipientsSettled = false;
                 }
@@ -1127,8 +1156,9 @@ public final class PlaybackEngine {
                     if (candidate == null || candidate.session != session || isPlayerMuted(player)) continue;
                     if (playbackVolume(player, session, candidate.mode == MusicZone.AudioMode.FADE) <= 0) continue;
                     if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) continue;
-                    if (!packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track))
-                            && !packs.isDeclined(player, track)) {
+                    if (!packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track),
+                            perTrackDelivery(session))
+                            && !packs.isDeclined(player, track, perTrackDelivery(session))) {
                         barrierExcludedTracks.put(player.getUniqueId(), timedOutTrackKey);
                     }
                 }
@@ -1217,6 +1247,13 @@ public final class PlaybackEngine {
         float volume = baseVolume;
         if (fading) volume *= (float) session.zone().fadeFactor(player.getX(), player.getZ());
         return Math.max(0, Math.min(1, volume));
+    }
+
+    /** Resolves the Java delivery policy for a session; URL playlists may override the universal default. */
+    private boolean perTrackDelivery(PlaybackSession session) {
+        return session != null && session.isUrlPlaylist()
+                ? session.playlistPerTrackDelivery()
+                : packs.isPerTrackDeliveryEnabled();
     }
 
     private boolean isAlreadyPlayingTrack(Player player, PlaybackSession session, MusicTrack track) {
@@ -1319,12 +1356,14 @@ public final class PlaybackEngine {
                 return;
             }
         } else {
-            if (packs.isBaseDeclined(player) || packs.isDeclined(player, track)) {
+            if (packs.isBaseDeclined(player, perTrackDelivery(session))
+                    || packs.isDeclined(player, track, perTrackDelivery(session))) {
                 warnPackDeclined(player, originalTrack, track);
                 stopPlayer(player);
                 return;
             }
-            if (!packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track))) {
+            if (!packs.isReady(player, track, isAlreadyPlayingTrack(player, session, track),
+                    perTrackDelivery(session))) {
                 if (synchronizedTail) {
                     stopCurrentSound(player, state);
                 } else {
@@ -1539,8 +1578,8 @@ public final class PlaybackEngine {
             if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
                 if (!geyser.isBedrockPackAvailable()
                         || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
-            } else if (packs.isBaseDeclined(player)
-                    || packs.isDeclined(player, session.playbackTrack())) {
+            } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
+                    || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
                 continue;
             }
             MusicZone zone = session.zone();

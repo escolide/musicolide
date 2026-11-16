@@ -49,6 +49,11 @@ public final class PackManager {
     // Back off immediate request failures (for example a temporary URL/address issue)
     // so a current track is not re-requested and logged on every playback tick.
     private final Map<UUID, Long> sendRetryAfter = new ConcurrentHashMap<>();
+    // A playlist may require strictly serial per-track pack application even when
+    // the server-wide default remains library mode.
+    private final Set<UUID> serialDeliveryPlayers = ConcurrentHashMap.newKeySet();
+    // URL-playlist library revisions are coalesced until the next track boundary.
+    private final Set<UUID> deferredPlaylistLibraryUpdates = ConcurrentHashMap.newKeySet();
     private final Path acceptedPlayersFile;
     private final Path disabledPlayersFile;
 
@@ -187,14 +192,22 @@ public final class PackManager {
     }
 
     public boolean isBaseDeclined(Player player) {
-        // Per-track delivery does not depend on the aggregate library revision.
-        if (isPerTrackDeliveryEnabled()) return false;
+        return isBaseDeclined(player, isPerTrackDeliveryEnabled());
+    }
+
+    /** Uses the session's effective delivery mode when a playlist overrides the universal mode. */
+    public boolean isBaseDeclined(Player player, boolean perTrackDelivery) {
+        if (player == null || perTrackDelivery) return false;
         String hash = currentLibraryHash();
         return hash != null && hash.equals(libraryDeclinedHash.get(player.getUniqueId()));
     }
 
     public boolean isReady(Player player, MusicTrack track) {
-        return isReady(player, track, false);
+        return isReady(player, track, false, isPerTrackDeliveryEnabled());
+    }
+
+    public boolean isReady(Player player, MusicTrack track, boolean allowOlderLibraryRevision) {
+        return isReady(player, track, allowOlderLibraryRevision, isPerTrackDeliveryEnabled());
     }
 
     /**
@@ -203,9 +216,10 @@ public final class PackManager {
      * latest revision, but updating the pack during the current song can interrupt
      * its client-side sound and trigger another resource-pack application.
      */
-    public boolean isReady(Player player, MusicTrack track, boolean allowOlderLibraryRevision) {
+    public boolean isReady(Player player, MusicTrack track, boolean allowOlderLibraryRevision,
+                           boolean perTrackDelivery) {
         if (player == null || isPlayerDisabled(player.getUniqueId())) return false;
-        if (isTemporary(track) || isPerTrackDeliveryEnabled()) {
+        if (isTemporary(track) || perTrackDelivery) {
             return ready.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
         }
         String hash = currentLibraryHash();
@@ -215,10 +229,14 @@ public final class PackManager {
     }
 
     public boolean isDeclined(Player player, MusicTrack track) {
-        if (isTemporary(track) || isPerTrackDeliveryEnabled()) {
+        return isDeclined(player, track, isPerTrackDeliveryEnabled());
+    }
+
+    public boolean isDeclined(Player player, MusicTrack track, boolean perTrackDelivery) {
+        if (isTemporary(track) || perTrackDelivery) {
             return declined.getOrDefault(player.getUniqueId(), Set.of()).contains(track.packId());
         }
-        return isBaseDeclined(player);
+        return isBaseDeclined(player, perTrackDelivery);
     }
 
     /**
@@ -285,9 +303,36 @@ public final class PackManager {
 
     public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
                          int tracksAhead, boolean deferLibraryRefresh) {
+        prefetch(player, current, upcoming, tracksAhead, deferLibraryRefresh, isPerTrackDeliveryEnabled());
+    }
+
+    /**
+     * Requests resources using the effective mode for this listener/session.
+     * URL playlists can override the server-wide default without changing ordinary /play.
+     */
+    public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
+                         int tracksAhead, boolean deferLibraryRefresh, boolean perTrackDelivery) {
+        prefetch(player, current, upcoming, tracksAhead, deferLibraryRefresh, perTrackDelivery, false);
+    }
+
+    /**
+     * URL-playlist library mode can coalesce several server-side imports into one
+     * aggregate-pack update at the next track boundary, instead of reloading the
+     * resource stack while the current song is still playing.
+     */
+    public void prefetch(Player player, MusicTrack current, List<MusicTrack> upcoming,
+                         int tracksAhead, boolean deferLibraryRefresh, boolean perTrackDelivery,
+                         boolean coalescePlaylistLibraryUpdates) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
                 || isPlayerDisabled(player.getUniqueId())) return;
         UUID playerId = player.getUniqueId();
+        if (perTrackDelivery) serialDeliveryPlayers.add(playerId);
+        else serialDeliveryPlayers.remove(playerId);
+        if (coalescePlaylistLibraryUpdates && deferLibraryRefresh && !perTrackDelivery) {
+            deferredPlaylistLibraryUpdates.add(playerId);
+        } else if (!deferLibraryRefresh || perTrackDelivery || !coalescePlaylistLibraryUpdates) {
+            deferredPlaylistLibraryUpdates.remove(playerId);
+        }
         String deferredTrackId = deferredLibraryReload.get(playerId);
         if (deferredTrackId != null) {
             if (current == null || (!deferredTrackId.isBlank() && deferredTrackId.equals(current.id()))) return;
@@ -295,7 +340,6 @@ public final class PackManager {
         }
         // Existing listeners keep their current immutable library revision until
         // this track finishes. A newly joining player still requests the latest pack.
-        boolean perTrackDelivery = isPerTrackDeliveryEnabled();
         if (!perTrackDelivery) {
             if (deferLibraryRefresh) {
                 if (!libraryReadyHash.containsKey(playerId) && !ensureLibrary(player)) return;
@@ -304,8 +348,8 @@ public final class PackManager {
             }
         }
 
-        // Normal tracks are already in the single library pack. Only FFmpeg
-        // generated resume/synchronization tails need their own temporary pack.
+        // Normal catalogue tracks use the aggregate library only in library mode.
+        // Generated resume tails remain self-contained packs in either mode.
         LinkedHashMap<UUID, MusicTrack> queue = waiting.computeIfAbsent(
                 player.getUniqueId(), ignored -> new LinkedHashMap<>());
         Set<UUID> desired = new HashSet<>(pinnedTemporaryPacks.getOrDefault(player.getUniqueId(), Set.of()));
@@ -427,9 +471,10 @@ public final class PackManager {
         return PackUrlBuilder.build(base, prefix, fileName, detected, configured, sharedPortMode);
     }
 
-    /** True when Java clients receive independent, cached packs for each track. */
+    /** True when ordinary Java playback uses independent, cached packs for each track. */
     public boolean isPerTrackDeliveryEnabled() {
-        String mode = plugin.getConfig().getString("resource-packs.java-delivery-mode", "library");
+        String legacy = plugin.getConfig().getString("resource-packs.java-delivery-mode", "library");
+        String mode = plugin.getConfig().getString("resource-packs.universal-playback-system", legacy);
         return mode != null && mode.trim().equalsIgnoreCase("per-track");
     }
 
@@ -455,8 +500,9 @@ public final class PackManager {
         UUID playerId = player.getUniqueId();
         int maximum = Math.max(1, plugin.getConfig().getInt("resource-packs.prefetch.max-concurrent-downloads", 2));
         // Applying multiple independent Java packs at once can cause concurrent
-        // client resource-stack rebuilds. Keep the experimental path serial.
-        if (isPerTrackDeliveryEnabled()) maximum = 1;
+        // client resource-stack rebuilds. Keep per-track delivery serial, including
+        // playlist-only overrides when universal playback is library mode.
+        if (isPerTrackDeliveryEnabled() || serialDeliveryPlayers.contains(playerId)) maximum = 1;
         LinkedHashMap<UUID, MusicTrack> queue = waiting.get(playerId);
         if (queue == null) return;
         // Address discovery is asynchronous. Never block the Bukkit main thread
@@ -621,7 +667,8 @@ public final class PackManager {
                 }
                 // If the library changed during a download, request the current revision once.
                 String currentHash = currentLibraryHash();
-                if (currentHash != null && !currentHash.equals(requestedHash)) {
+                if (currentHash != null && !currentHash.equals(requestedHash)
+                        && !deferredPlaylistLibraryUpdates.contains(playerId)) {
                     Player player = Bukkit.getPlayer(playerId);
                     if (player != null && player.isOnline()) ensureLibrary(player);
                 }
@@ -711,6 +758,8 @@ public final class PackManager {
         active.remove(playerId);
         removeWhenReady.remove(playerId);
         pinnedTemporaryPacks.remove(playerId);
+        serialDeliveryPlayers.remove(playerId);
+        deferredPlaylistLibraryUpdates.remove(playerId);
         inFlight.remove(playerId);
         for (UUID packId : new HashSet<>(deleteGeneratedWhenIdle.keySet())) deleteGeneratedFileIfIdle(packId);
         cleanupLibraryArchivesAsync();

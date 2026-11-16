@@ -11,6 +11,23 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaybackSessionTest {
     @Test
+    void urlPlaylistStoresItsOwnDeliveryOverrideWithoutChangingOrdinarySessions() {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "playlist",
+                MusicZone.global(), true, List.of(), List.of(sampleTrack("playlist-delivery")), 0);
+
+        assertFalse(session.isUrlPlaylist());
+        session.configureUrlPlaylist(true);
+        assertTrue(session.isUrlPlaylist());
+        assertTrue(session.playlistPerTrackDelivery());
+
+        PlaybackSession libraryPlaylist = new PlaybackSession(UUID.randomUUID(), "playlist-library",
+                MusicZone.global(), true, List.of(), List.of(sampleTrack("playlist-library")), 0);
+        libraryPlaylist.configureUrlPlaylist(false);
+        assertTrue(libraryPlaylist.isUrlPlaylist());
+        assertFalse(libraryPlaylist.playlistPerTrackDelivery());
+    }
+
+    @Test
     void playbackRequestMatchesOnlyTheSameAudienceAndZone() {
         UUID owner = UUID.randomUUID();
         UUID listener = UUID.randomUUID();

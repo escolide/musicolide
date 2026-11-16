@@ -1457,8 +1457,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                         return;
                     }
                     session.queuePending(true);
+                    String playlistDelivery = plugin.getConfig().getString(
+                            "resource-packs.playlist-playback-system", "per-track");
+                    boolean playlistPerTrack = playlistDelivery == null
+                            || playlistDelivery.trim().equalsIgnoreCase("per-track");
+                    session.configureUrlPlaylist(playlistPerTrack);
                     sender.sendMessage(msg("&aStarted playlist with &f" + track.title()
-                            + "&a. Additional tracks will be prepared shortly before they are needed."));
+                            + "&a. The server will prepare up to two upcoming tracks gradually; players receive only the active track when per-track playlist delivery is selected."));
                     PlaylistRunner runner = new PlaylistRunner(sender, request, session, entries, 1);
                     playlistRunners.add(runner);
                     runner.start();
@@ -1477,12 +1482,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         private final List<YtDlpDownloader.PlaylistEntry> entries;
         private final boolean mono;
         private final boolean repeat;
-        private final int leadSeconds;
+        private final int importIntervalSeconds;
         private final int maximumAhead;
         private int nextIndex;
         private int inFlight;
         private int skipped;
         private boolean closed;
+        private long observedTimelineGeneration = Long.MIN_VALUE;
+        private boolean observedClockStarted;
+        private long nextImportAtMillis = Long.MAX_VALUE;
         private BukkitTask task;
 
         private PlaylistRunner(CommandSender sender, PlayRequest request, PlaybackSession session,
@@ -1494,8 +1502,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             this.nextIndex = nextIndex;
             this.mono = "mono".equalsIgnoreCase(request.audioMode);
             this.repeat = plugin.getConfig().getBoolean("playlists.repeat", false);
-            this.leadSeconds = Math.max(0, Math.min(300,
-                    plugin.getConfig().getInt("playlists.preimport.lead-seconds", 20)));
+            this.importIntervalSeconds = Math.max(10, Math.min(20,
+                    plugin.getConfig().getInt("playlists.preimport.interval-seconds", 15)));
             this.maximumAhead = Math.max(1, Math.min(8,
                     plugin.getConfig().getInt("playlists.preimport.max-preimported-tracks", 2)));
         }
@@ -1512,23 +1520,31 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 return;
             }
 
+            long now = System.currentTimeMillis();
             MusicTrack current = session.current();
-            boolean insidePrefetchWindow = current == null || session.paused()
-                    || current.durationMs() - session.elapsedMs() <= leadSeconds * 1000L;
-            if (!insidePrefetchWindow) return;
+            long generation = session.timelineGeneration();
+            if (generation != observedTimelineGeneration) {
+                observedTimelineGeneration = generation;
+                observedClockStarted = false;
+                nextImportAtMillis = Long.MAX_VALUE;
+            }
+            if (current != null && session.clockStarted() && !observedClockStarted) {
+                // Start the cooldown from actual playback, not from the time the
+                // first track was imported or its resource pack began downloading.
+                observedClockStarted = true;
+                nextImportAtMillis = now + importIntervalSeconds * 1000L;
+            }
 
-            while (session.queueSize() + inFlight < maximumAhead) {
-                if (nextIndex >= entries.size()) {
-                    if (!repeat) break;
-                    nextIndex = 0;
-                }
-                YtDlpDownloader.PlaylistEntry entry = entries.get(nextIndex++);
-                inFlight++;
-                processor.importPlaylistEntry(entry)
-                        .thenCompose(track -> mono ? processor.ensureMonoVariant(track)
-                                : CompletableFuture.completedFuture(track))
-                        .whenComplete((track, error) ->
-                                Bukkit.getScheduler().runTask(plugin, () -> completeEntry(entry, track, error)));
+            if (session.paused() || session.resumePreparing()) return;
+            boolean currentMissing = current == null;
+            long elapsed = session.elapsedMs();
+            boolean shouldImport = PlaylistImportPolicy.shouldStartImport(
+                    session.clockStarted(), currentMissing,
+                    current == null ? 0L : current.durationMs(), elapsed,
+                    now, nextImportAtMillis, importIntervalSeconds,
+                    session.queueSize(), inFlight, maximumAhead);
+            if (shouldImport && inFlight == 0) {
+                startNextImport(now);
             }
 
             if (!repeat && nextIndex >= entries.size() && inFlight == 0) {
@@ -1536,8 +1552,23 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 close(false);
                 if (skipped > 0) sender.sendMessage(msg("&eSkipped " + skipped
                         + " playlist track(s) that could not be imported."));
-                sender.sendMessage(msg("&aPlaylist pre-import finished. Remaining queued tracks will play in order."));
+                sender.sendMessage(msg("&aPlaylist importing finished. Remaining queued tracks will play in order."));
             }
+        }
+
+        private void startNextImport(long now) {
+            if (nextIndex >= entries.size()) {
+                if (!repeat) return;
+                nextIndex = 0;
+            }
+            YtDlpDownloader.PlaylistEntry entry = entries.get(nextIndex++);
+            inFlight++;
+            nextImportAtMillis = now + importIntervalSeconds * 1000L;
+            processor.importPlaylistEntry(entry)
+                    .thenCompose(track -> mono ? processor.ensureMonoVariant(track)
+                            : CompletableFuture.completedFuture(track))
+                    .whenComplete((track, error) ->
+                            Bukkit.getScheduler().runTask(plugin, () -> completeEntry(entry, track, error)));
         }
 
         private void completeEntry(YtDlpDownloader.PlaylistEntry entry, MusicTrack track, Throwable error) {
