@@ -819,7 +819,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (playback != null && playback.isIgnoredBedrockPlayer(event.getPlayer().getUniqueId())) return;
         if (packManager != null) packManager.onPlayerJoin(event.getPlayer());
         if (playback != null) playback.onJoin(event.getPlayer());
-        if (packManager != null && !packManager.isPerTrackDeliveryEnabled()
+        boolean perTrackForJoiningPlayer = playback != null
+                ? playback.isPerTrackDeliveryForPlayer(event.getPlayer())
+                : packManager != null && packManager.isPerTrackDeliveryEnabled();
+        if (packManager != null && !perTrackForJoiningPlayer
                 && getConfig().getString("resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
             // Give PlaybackEngine's join handler time to identify a reconnecting
             // listener. Their private catch-up tail is enough for this track; the
