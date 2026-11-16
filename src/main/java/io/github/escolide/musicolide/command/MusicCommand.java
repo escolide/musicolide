@@ -49,6 +49,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final RequestCooldowns requestCooldowns = new RequestCooldowns();
     private final Set<PlaylistRunner> playlistRunners = ConcurrentHashMap.newKeySet();
     private final Map<String, CachedDiscordAutocomplete> discordAutocompleteCache = new ConcurrentHashMap<>();
+    private final Set<String> discordAutocompleteInFlight = ConcurrentHashMap.newKeySet();
 
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
@@ -247,7 +248,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return DiscordCommandPolicy.isAllowedRoot(command);
     }
 
-    /** YouTube metadata-only suggestions for Discord's short autocomplete response. */
+    /**
+     * Returns local/cached choices immediately and starts remote YouTube metadata
+     * lookup in the background. Discord autocomplete must be acknowledged quickly;
+     * waiting for yt-dlp here can exceed Discord's interaction response deadline.
+     */
     public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query) {
         return discordPlaySuggestions(query, true, "default");
     }
@@ -278,54 +283,71 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return CompletableFuture.failedFuture(error);
         }
 
-        // Metadata-only YouTube suggestions are safe to show when yt-dlp is enabled.
-        // The separate auto-import setting is still enforced when a user selects a
-        // remote result that is not already present in the local catalogue.
         boolean youtubeSearchEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
-        boolean allowRemote = allowRemoteLookup && youtubeSearchEnabled;
         if (!youtubeSearchEnabled) return CompletableFuture.completedFuture(local);
 
         long now = System.currentTimeMillis();
         CachedDiscordAutocomplete cached = discordAutocompleteCache.get(requesterKey);
-        if (!allowRemote) {
-            if (cached == null || now - cached.createdAtMillis() > 30_000L
-                    || !(cleaned.startsWith(cached.query()) || cached.query().startsWith(cleaned))) {
-                return CompletableFuture.completedFuture(local);
-            }
-            return CompletableFuture.completedFuture(mergeDiscordSuggestions(local, cached.results()));
-        }
-        if (local.size() >= 25) return CompletableFuture.completedFuture(local);
+        List<DiscordPlaySuggestion> cachedRemote = cached != null
+                && now - cached.createdAtMillis() <= 30_000L
+                && (cleaned.startsWith(cached.query()) || cached.query().startsWith(cleaned))
+                ? cached.results() : List.of();
 
-        int remoteLimit = Math.max(1, 25 - local.size());
-        return processor.searchYouTube(cleaned, Math.min(15, remoteLimit)).handle((results, error) -> {
-            if (error != null || results == null) return local;
-            List<DiscordPlaySuggestion> remote = new ArrayList<>();
-            Set<String> existing = new HashSet<>();
-            for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
-            for (YtDlpDownloader.SearchResult result : results) {
-                if (remote.size() + local.size() >= 25) break;
-                String url = result.url();
-                if (url == null || url.isBlank()) {
-                    url = "https://www.youtube.com/watch?v=" + result.videoId();
-                }
-                if (!existing.add(url)) continue;
-                String title = result.title() == null ? "Untitled" : result.title();
-                String uploader = result.uploader() == null ? "" : result.uploader();
-                String label = title + (uploader.isBlank() ? "" : " — " + uploader);
-                if (result.durationSeconds() > 0) {
-                    long seconds = result.durationSeconds();
-                    label += " • " + String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
-                }
-                remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+        List<DiscordPlaySuggestion> immediate = mergeDiscordSuggestions(local, cachedRemote);
+        if (!allowRemoteLookup || local.size() >= 25) {
+            return CompletableFuture.completedFuture(immediate);
+        }
+
+        // Remote metadata lookups are deliberately detached from the interaction
+        // response. A slow yt-dlp process must never leave Discord waiting.
+        String lookupKey = requesterKey + ":" + cleaned;
+        if (discordAutocompleteInFlight.add(lookupKey)) {
+            int remoteLimit = Math.max(1, 25 - local.size());
+            try {
+                processor.searchYouTube(cleaned, Math.min(15, remoteLimit))
+                        .whenComplete((results, error) -> {
+                            try {
+                                if (error != null || results == null) return;
+                                List<DiscordPlaySuggestion> remote = new ArrayList<>();
+                                Set<String> existing = new HashSet<>();
+                                for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
+                                for (YtDlpDownloader.SearchResult result : results) {
+                                    if (remote.size() + local.size() >= 25) break;
+                                    String url = result.url();
+                                    if (url == null || url.isBlank()) {
+                                        url = "https://www.youtube.com/watch?v=" + result.videoId();
+                                    }
+                                    if (url.length() > 100 || !existing.add(url)) continue;
+                                    String title = result.title() == null || result.title().isBlank()
+                                            ? "Untitled" : result.title();
+                                    String uploader = result.uploader() == null ? "" : result.uploader();
+                                    String label = title + (uploader.isBlank() ? "" : " — " + uploader);
+                                    if (result.durationSeconds() > 0) {
+                                        long seconds = result.durationSeconds();
+                                        label += " • " + String.format(Locale.ROOT, "%d:%02d",
+                                                seconds / 60, seconds % 60);
+                                    }
+                                    remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+                                }
+                                discordAutocompleteCache.put(requesterKey,
+                                        new CachedDiscordAutocomplete(cleaned, List.copyOf(remote),
+                                                System.currentTimeMillis()));
+                                if (discordAutocompleteCache.size() > 2_000) {
+                                    long completedAt = System.currentTimeMillis();
+                                    discordAutocompleteCache.entrySet().removeIf(entry ->
+                                            completedAt - entry.getValue().createdAtMillis() > 60_000L);
+                                }
+                            } finally {
+                                discordAutocompleteInFlight.remove(lookupKey);
+                            }
+                        });
+            } catch (RuntimeException error) {
+                discordAutocompleteInFlight.remove(lookupKey);
+                plugin.getLogger().log(Level.FINE,
+                        "Could not start background YouTube autocomplete lookup.", error);
             }
-            discordAutocompleteCache.put(requesterKey,
-                    new CachedDiscordAutocomplete(cleaned, List.copyOf(remote), now));
-            if (discordAutocompleteCache.size() > 2_000) {
-                discordAutocompleteCache.entrySet().removeIf(entry ->
-                        now - entry.getValue().createdAtMillis() > 60_000L);
-            }
-            return mergeDiscordSuggestions(local, remote);
-        });
+        }
+        return CompletableFuture.completedFuture(immediate);
     }
 
     private List<DiscordPlaySuggestion> mergeDiscordSuggestions(
