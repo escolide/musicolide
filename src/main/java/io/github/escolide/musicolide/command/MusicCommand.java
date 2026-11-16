@@ -35,6 +35,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final JavaPlugin plugin;
@@ -49,6 +50,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final RequestCooldowns requestCooldowns = new RequestCooldowns();
     private final Set<PlaylistRunner> playlistRunners = ConcurrentHashMap.newKeySet();
     private final Map<String, CachedDiscordAutocomplete> discordAutocompleteCache = new ConcurrentHashMap<>();
+    private final Set<String> discordAutocompleteInFlight = ConcurrentHashMap.newKeySet();
 
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
@@ -247,7 +249,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return DiscordCommandPolicy.isAllowedRoot(command);
     }
 
-    /** YouTube metadata-only suggestions for Discord's short autocomplete response. */
+    /**
+     * Returns local/cached choices immediately and starts remote YouTube metadata
+     * lookup in the background. Discord autocomplete must be acknowledged quickly;
+     * waiting for yt-dlp here can exceed Discord's interaction response deadline.
+     */
     public CompletableFuture<List<DiscordPlaySuggestion>> discordPlaySuggestions(String query) {
         return discordPlaySuggestions(query, true, "default");
     }
@@ -278,54 +284,78 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return CompletableFuture.failedFuture(error);
         }
 
-        // Metadata-only YouTube suggestions are safe to show when yt-dlp is enabled.
-        // The separate auto-import setting is still enforced when a user selects a
-        // remote result that is not already present in the local catalogue.
         boolean youtubeSearchEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
-        boolean allowRemote = allowRemoteLookup && youtubeSearchEnabled;
         if (!youtubeSearchEnabled) return CompletableFuture.completedFuture(local);
 
         long now = System.currentTimeMillis();
         CachedDiscordAutocomplete cached = discordAutocompleteCache.get(requesterKey);
-        if (!allowRemote) {
-            if (cached == null || now - cached.createdAtMillis() > 30_000L
-                    || !(cleaned.startsWith(cached.query()) || cached.query().startsWith(cleaned))) {
-                return CompletableFuture.completedFuture(local);
-            }
-            return CompletableFuture.completedFuture(mergeDiscordSuggestions(local, cached.results()));
+        List<DiscordPlaySuggestion> cachedRemote = cached != null
+                && now - cached.createdAtMillis() <= 30_000L
+                && (cleaned.startsWith(cached.query()) || cached.query().startsWith(cleaned))
+                ? cached.results() : List.of();
+
+        List<DiscordPlaySuggestion> immediate = mergeDiscordSuggestions(local, cachedRemote);
+        if (!allowRemoteLookup || local.size() >= 25) {
+            return CompletableFuture.completedFuture(immediate);
         }
-        if (local.size() >= 25) return CompletableFuture.completedFuture(local);
+
+        // Return remote choices if yt-dlp is fast, but always fall back to the
+        // local/cached list well before Discord's autocomplete response deadline.
+        String lookupKey = requesterKey + ":" + cleaned;
+        if (!discordAutocompleteInFlight.add(lookupKey)) {
+            return CompletableFuture.completedFuture(immediate);
+        }
 
         int remoteLimit = Math.max(1, 25 - local.size());
-        return processor.searchYouTube(cleaned, Math.min(15, remoteLimit)).handle((results, error) -> {
-            if (error != null || results == null) return local;
-            List<DiscordPlaySuggestion> remote = new ArrayList<>();
-            Set<String> existing = new HashSet<>();
-            for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
-            for (YtDlpDownloader.SearchResult result : results) {
-                if (remote.size() + local.size() >= 25) break;
-                String url = result.url();
-                if (url == null || url.isBlank()) {
-                    url = "https://www.youtube.com/watch?v=" + result.videoId();
-                }
-                if (!existing.add(url)) continue;
-                String title = result.title() == null ? "Untitled" : result.title();
-                String uploader = result.uploader() == null ? "" : result.uploader();
-                String label = title + (uploader.isBlank() ? "" : " — " + uploader);
-                if (result.durationSeconds() > 0) {
-                    long seconds = result.durationSeconds();
-                    label += " • " + String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
-                }
-                remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
-            }
-            discordAutocompleteCache.put(requesterKey,
-                    new CachedDiscordAutocomplete(cleaned, List.copyOf(remote), now));
-            if (discordAutocompleteCache.size() > 2_000) {
-                discordAutocompleteCache.entrySet().removeIf(entry ->
-                        now - entry.getValue().createdAtMillis() > 60_000L);
-            }
-            return mergeDiscordSuggestions(local, remote);
-        });
+        try {
+            CompletableFuture<List<DiscordPlaySuggestion>> remoteFuture =
+                    processor.searchYouTube(cleaned, Math.min(15, remoteLimit))
+                            .handle((results, error) -> {
+                                try {
+                                    if (error != null || results == null) return immediate;
+                                    List<DiscordPlaySuggestion> remote = new ArrayList<>();
+                                    Set<String> existing = new HashSet<>();
+                                    for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
+                                    for (YtDlpDownloader.SearchResult result : results) {
+                                        if (remote.size() + local.size() >= 25) break;
+                                        String url = result.url();
+                                        if (url == null || url.isBlank()) {
+                                            url = "https://www.youtube.com/watch?v=" + result.videoId();
+                                        }
+                                        if (url.length() > 100 || !existing.add(url)) continue;
+                                        String title = result.title() == null || result.title().isBlank()
+                                                ? "Untitled" : result.title();
+                                        String uploader = result.uploader() == null ? "" : result.uploader();
+                                        String label = title + (uploader.isBlank() ? "" : " — " + uploader);
+                                        if (result.durationSeconds() > 0) {
+                                            long seconds = result.durationSeconds();
+                                            label += " • " + String.format(Locale.ROOT, "%d:%02d",
+                                                    seconds / 60, seconds % 60);
+                                        }
+                                        remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+                                    }
+                                    discordAutocompleteCache.put(requesterKey,
+                                            new CachedDiscordAutocomplete(cleaned, List.copyOf(remote),
+                                                    System.currentTimeMillis()));
+                                    if (discordAutocompleteCache.size() > 2_000) {
+                                        long completedAt = System.currentTimeMillis();
+                                        discordAutocompleteCache.entrySet().removeIf(entry ->
+                                                completedAt - entry.getValue().createdAtMillis() > 60_000L);
+                                    }
+                                    return mergeDiscordSuggestions(local, remote);
+                                } finally {
+                                    discordAutocompleteInFlight.remove(lookupKey);
+                                }
+                            });
+            return remoteFuture.completeOnTimeout(immediate, 1_200L,
+                    java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .whenComplete((ignored, error) -> discordAutocompleteInFlight.remove(lookupKey));
+        } catch (RuntimeException error) {
+            discordAutocompleteInFlight.remove(lookupKey);
+            plugin.getLogger().log(Level.FINE,
+                    "Could not start background YouTube autocomplete lookup.", error);
+            return CompletableFuture.completedFuture(immediate);
+        }
     }
 
     private List<DiscordPlaySuggestion> mergeDiscordSuggestions(
@@ -647,7 +677,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [center] [id:music100]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [--center] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -795,10 +825,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             boolean compact = normalized.startsWith("target:") || normalized.startsWith("id:")
                     || normalized.startsWith("mode:") || normalized.startsWith("circle:")
                     || normalized.startsWith("square:") || normalized.startsWith("region:")
-                    || normalized.equals("center")
+                    // Bare "center" is ordinary search text; use --center to opt in.
                     || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
-            if (normalized.startsWith("--") || compact || normalized.equals("mono") || normalized.equals("stereo")
-                    || normalized.equals("@a") || normalized.equals("@p") || normalized.equals("@s")
+            if (normalized.startsWith("--") || compact || normalized.equals("mono")
+                    || normalized.equals("stereo") || normalized.equals("@a")
+                    || normalized.equals("@p") || normalized.equals("@s")
                     || Bukkit.getPlayerExact(value) != null) return i;
         }
         return args.length;
@@ -1251,6 +1282,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     audioMode = args[i].toLowerCase(Locale.ROOT);
                     if (!audioMode.equals("mono") && !audioMode.equals("stereo")) throw new IllegalArgumentException("Audio mode must be mono or stereo.");
                 }
+                case "--center" -> centeredMono = true;
                 case "mono", "stereo" -> audioMode = option;
                 case "--circle" -> {
                     if (++i >= args.length) throw new IllegalArgumentException("--circle requires a radius.");
@@ -1279,6 +1311,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 }
             }
         }
+
+        // A centred sound origin is opt-in. The shipped/default setting is false,
+        // so mono listeners hear audio from their own playback-start position.
+        centeredMono = centeredMono || (audioMode.equals("mono")
+                && plugin.getConfig().getBoolean("playback.mono.centered-audio-origin-by-default", false));
 
         if (centeredMono && !audioMode.equals("mono")) {
             throw new IllegalArgumentException("The center option is only available with mode:mono.");
@@ -2110,11 +2147,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
         sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10"));
-        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f center &8• &f id:custom_name"));
+        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f --center &8• &f id:custom_name"));
         sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:stereo"));
         sender.sendMessage(msg("&7Stereo is default. Mono circle/square zones use configured fade unless fadeN overrides it."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
-        sender.sendMessage(msg("&7The center option is mono-only and places the sound origin at the zone center."));
+        sender.sendMessage(msg("&7The --center option is mono-only and opt-in; by default each listener uses their own playback-start position."));
         sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
         sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
         sender.sendMessage(msg("&f/music disable &8• &fenable &8• &funload &8- &7manage your own music packs"));

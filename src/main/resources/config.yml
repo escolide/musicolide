@@ -224,6 +224,9 @@ playback:
     # Override per request with fade10; fade0 disables it.
     # WorldGuard polygon regions do not currently support edge-distance fading.
     fade-distance: 10
+    # Keep mono sound positioned at each listener's location when playback starts by default.
+    # Set true only when you want zone-centred mono audio; /play center can opt in per session.
+    centered-audio-origin-by-default: false
   synchronization:
     action-bar-now-playing: true
     # Synchronize Java recipients, but never let one slow client hold playback indefinitely.
