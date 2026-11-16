@@ -136,6 +136,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("playlists.preimport.max-preimported-tracks", 2);
             migratedConfig = true;
         }
+        if (!getConfig().contains("playback.mono.centered-audio-origin-by-default")) {
+            getConfig().set("playback.mono.centered-audio-origin-by-default", false);
+            migratedConfig = true;
+        }
         if (!getConfig().contains("permissions.allow-player-self-zones")) {
             getConfig().set("permissions.allow-player-self-zones", true);
             migratedConfig = true;
