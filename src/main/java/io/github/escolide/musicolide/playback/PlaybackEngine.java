@@ -898,7 +898,8 @@ public final class PlaybackEngine {
                         ? candidate.session.current() : playingTrack;
                 packs.prefetch(player, packTrack, candidate.session.upcoming(prefetch),
                         plugin.getConfig().getBoolean("resource-packs.prefetch.enabled", true) ? prefetch : 0,
-                        alreadyPlaying, perTrack);
+                        alreadyPlaying, perTrack,
+                        candidate.session.isUrlPlaylist() && !perTrack);
             }
         }
         startReadySessionClocks(online, winners);
