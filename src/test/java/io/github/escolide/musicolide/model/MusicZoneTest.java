@@ -26,7 +26,10 @@ class MusicZoneTest {
         MusicZone centered = MusicZone.centeredCircle(world, 10, 64, 20, 30, false, 0, true, 5);
         MusicZone sameCentered = MusicZone.centeredCircle(world, 10, 64, 20, 30, false, 0, true, 5);
 
+        MusicZone ordinarySquare = MusicZone.square(world, 10, 64, 20, 30, 30,
+                0, false, 0, false, 0);
         assertFalse(ordinary.centeredAudioOrigin());
+        assertFalse(ordinarySquare.centeredAudioOrigin());
         assertTrue(centered.centeredAudioOrigin());
         assertEquals(10, centered.centerX());
         assertEquals(64, centered.centerY());
