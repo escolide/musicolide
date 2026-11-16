@@ -73,12 +73,12 @@ class BedrockResourcePackBuilderTest {
     }
     @Test
     void deduplicatesIdenticalAudioAndKeepsUnchangedBedrockPackStable() throws Exception {
-        Path packs = Files.createDirectories(temporary.resolve("dedupe-packs"));
+        Path packs = Files.createDirectories(tempDir.resolve("dedupe-packs"));
         byte[] sharedAudio = new byte[]{'O', 'g', 'g', 'S', 11, 22, 33, 44};
         writeStreamArchive(packs.resolve("ms_alpha.zip"), "ms_alpha", sharedAudio);
         writeStreamArchive(packs.resolve("ms_beta.zip"), "ms_beta", sharedAudio);
 
-        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(temporary);
+        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(tempDir);
         Path output = builder.rebuild(packs);
         assertNotNull(output);
 
