@@ -152,6 +152,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("resource-packs.download-mode", "on-play");
             migratedConfig = true;
         }
+        if (!getConfig().contains("resource-packs.java-delivery-mode")) {
+            getConfig().set("resource-packs.java-delivery-mode", "library");
+            migratedConfig = true;
+        }
         // Existing installations keep Bedrock playback unless an administrator
         // explicitly enables the complete Bedrock exclusion option.
         if (!getConfig().contains("geyser.ignore-bedrock-players")) {
@@ -484,6 +488,12 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                         "server.public-base-url is empty and server.auto-detect-public-address is disabled."));
             }
             packManager = new PackManager(this, builder, publicPort, publicBaseUrl, geyserBridge);
+            if (packManager.isPerTrackDeliveryEnabled()) {
+                getLogger().warning("Experimental Java per-track resource-pack delivery is enabled. "
+                        + "First-time tracks are sent individually and may trigger client resource reloads. "
+                        + "Geyser/Bedrock continues to use its aggregate pack. Set "
+                        + "resource-packs.java-delivery-mode: library to restore the default delivery mode.");
+            }
             WorldGuardBridge worldGuard = null;
             if (getConfig().getBoolean("worldguard.enabled", true) && Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
                 try {
@@ -803,8 +813,8 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (playback != null && playback.isIgnoredBedrockPlayer(event.getPlayer().getUniqueId())) return;
         if (packManager != null) packManager.onPlayerJoin(event.getPlayer());
         if (playback != null) playback.onJoin(event.getPlayer());
-        if (packManager != null && getConfig().getString(
-                "resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
+        if (packManager != null && !packManager.isPerTrackDeliveryEnabled()
+                && getConfig().getString("resource-packs.download-mode", "on-play").equalsIgnoreCase("on-join")) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (event.getPlayer().isOnline() && packManager != null) {
                     packManager.requestLibrary(event.getPlayer(), false);

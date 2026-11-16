@@ -71,4 +71,58 @@ class BedrockResourcePackBuilderTest {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
+    @Test
+    void deduplicatesIdenticalAudioAndKeepsUnchangedBedrockPackStable() throws Exception {
+        Path packs = Files.createDirectories(tempDir.resolve("dedupe-packs"));
+        byte[] sharedAudio = new byte[]{'O', 'g', 'g', 'S', 11, 22, 33, 44};
+        writeStreamArchive(packs.resolve("ms_alpha.zip"), "ms_alpha", sharedAudio);
+        writeStreamArchive(packs.resolve("ms_beta.zip"), "ms_beta", sharedAudio);
+
+        BedrockResourcePackBuilder builder = new BedrockResourcePackBuilder(tempDir);
+        Path output = builder.rebuild(packs);
+        assertNotNull(output);
+
+        byte[] firstBuild = Files.readAllBytes(output);
+        try (ZipFile bedrock = new ZipFile(output.toFile())) {
+            assertNotNull(bedrock.getEntry("sounds/musicolide/ms_alpha/music.ogg"));
+            assertNull(bedrock.getEntry("sounds/musicolide/ms_beta/music.ogg"),
+                    "the second sound should reuse the first identical OGG asset");
+
+            int oggCount = 0;
+            var entries = bedrock.entries();
+            while (entries.hasMoreElements()) {
+                if (entries.nextElement().getName().endsWith(".ogg")) oggCount++;
+            }
+            assertEquals(1, oggCount);
+
+            String definitions;
+            try (var input = bedrock.getInputStream(bedrock.getEntry("sounds/sound_definitions.json"))) {
+                definitions = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+            assertTrue(definitions.contains("\"ms_alpha:music\""));
+            assertTrue(definitions.contains("\"ms_beta:music\""));
+            assertTrue(definitions.contains("sounds/musicolide/ms_alpha/music"));
+        }
+
+        Path unchanged = builder.rebuild(packs);
+        assertEquals(output, unchanged);
+        assertArrayEquals(firstBuild, Files.readAllBytes(unchanged),
+                "an unchanged Bedrock library should not receive a new manifest version or ZIP");
+
+        writeStreamArchive(packs.resolve("ms_gamma.zip"), "ms_gamma",
+                new byte[]{'O', 'g', 'g', 'S', 55, 66, 77, 88});
+        Path changed = builder.rebuild(packs);
+        assertNotNull(changed);
+        assertFalse(java.util.Arrays.equals(firstBuild, Files.readAllBytes(changed)),
+                "adding a new track must publish a changed Bedrock pack");
+    }
+
+    private void writeStreamArchive(Path archive, String namespace, byte[] audio) throws Exception {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            zip.putNextEntry(new ZipEntry("assets/" + namespace + "/sounds/music.ogg"));
+            zip.write(audio);
+            zip.closeEntry();
+        }
+    }
+
 }
