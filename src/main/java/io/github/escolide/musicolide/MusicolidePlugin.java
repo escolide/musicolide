@@ -128,8 +128,8 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("playback.continue-when-server-empty", true);
             migratedConfig = true;
         }
-        if (!getConfig().contains("playlists.preimport.lead-seconds")) {
-            getConfig().set("playlists.preimport.lead-seconds", 20);
+        if (!getConfig().contains("playlists.preimport.interval-seconds")) {
+            getConfig().set("playlists.preimport.interval-seconds", 15);
             migratedConfig = true;
         }
         if (!getConfig().contains("playlists.preimport.max-preimported-tracks")) {
@@ -152,8 +152,14 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("resource-packs.download-mode", "on-play");
             migratedConfig = true;
         }
-        if (!getConfig().contains("resource-packs.java-delivery-mode")) {
-            getConfig().set("resource-packs.java-delivery-mode", "library");
+        if (!getConfig().contains("resource-packs.universal-playback-system")) {
+            // Preserve the previous single Java delivery setting for existing installations.
+            getConfig().set("resource-packs.universal-playback-system",
+                    getConfig().getString("resource-packs.java-delivery-mode", "library"));
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("resource-packs.playlist-playback-system")) {
+            getConfig().set("resource-packs.playlist-playback-system", "per-track");
             migratedConfig = true;
         }
         // Existing installations keep Bedrock playback unless an administrator
