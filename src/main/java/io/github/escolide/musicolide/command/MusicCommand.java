@@ -669,7 +669,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [center] [id:music100]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10] [mode:mono] [--center] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -2139,11 +2139,11 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
         sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10"));
-        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f center &8• &f id:custom_name"));
+        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f --center &8• &f id:custom_name"));
         sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:stereo"));
         sender.sendMessage(msg("&7Stereo is default. Mono circle/square zones use configured fade unless fadeN overrides it."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
-        sender.sendMessage(msg("&7The center option is mono-only and places the sound origin at the zone center."));
+        sender.sendMessage(msg("&7The --center option is mono-only and opt-in; by default each listener uses their own playback-start position."));
         sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
         sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
         sender.sendMessage(msg("&f/music disable &8• &fenable &8• &funload &8- &7manage your own music packs"));
