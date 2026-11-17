@@ -2660,9 +2660,29 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length >= 3 && args[0].equalsIgnoreCase("play")) {
             String prefix = args[args.length - 1];
             String previous = args.length >= 2 ? args[args.length - 2].toLowerCase(Locale.ROOT) : "";
-            if (previous.startsWith("target:")) {
-                List<String> targets = new ArrayList<>(List.of("@s", "@p"));
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("target:")) {
+                List<String> targets = new ArrayList<>(List.of("target:@s", "target:@p"));
                 boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
+                        "permissions.admin", "musicolide.admin"))
+                        || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
+                if (canTargetAll) targets.add("target:@a");
+                Bukkit.getOnlinePlayers().stream().map(player -> "target:" + player.getName())
+                        .sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
+                return partial(targets, prefix);
+            }
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("mode:"))
+                return partial(List.of("mode:stereo", "mode:mono"), prefix);
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("circle:"))
+                return partial(List.of("circle:0", "circle:10", "circle:20", "circle:40", "circle:60", "circle:100"), prefix);
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("fade:"))
+                return partial(List.of("fade:0", "fade:10", "fade:20", "fade:40", "fade:60", "fade:100"), prefix);
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("square:"))
+                return partial(List.of("square:25x25", "square:50x50", "square:100x100"), prefix);
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("center:"))
+                return partial(List.of("center:true", "center:false"), prefix);
+            if (prefix.toLowerCase(Locale.ROOT).startsWith("region:")
+                    || prefix.toLowerCase(Locale.ROOT).startsWith("id:")) return List.of();
+            boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
                         "permissions.admin", "musicolide.admin"))
                         || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
                 if (canTargetAll) targets.add("@a");
