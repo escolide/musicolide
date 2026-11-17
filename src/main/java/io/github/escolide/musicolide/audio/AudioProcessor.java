@@ -128,8 +128,17 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(String query, int maximumResults) {
+        boolean prioritizeSongs = plugin.getConfig().getBoolean(
+                "audio.yt-dlp.search.prioritize-songs", true);
+        return searchYouTube(query, maximumResults, prioritizeSongs);
+    }
+
+    /** Fast metadata-only search variant for time-limited Discord autocomplete responses. */
+    public CompletableFuture<List<YtDlpDownloader.SearchResult>> searchYouTube(
+            String query, int maximumResults, boolean prioritizeSongs) {
         if (!toolchain.isInitialized()) {
-            return toolchain.initializeAsync().thenCompose(ignored -> searchYouTube(query, maximumResults));
+            return toolchain.initializeAsync().thenCompose(
+                    ignored -> searchYouTube(query, maximumResults, prioritizeSongs));
         }
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -146,7 +155,8 @@ public final class AudioProcessor implements AutoCloseable {
         try {
             return CompletableFuture.supplyAsync(() -> {
                 try {
-                    return new YtDlpDownloader(plugin, toolchain).searchYouTube(query, bounded(maximumResults, 1, 160));
+                    return new YtDlpDownloader(plugin, toolchain).searchYouTube(
+                            query, bounded(maximumResults, 1, 160), prioritizeSongs);
                 } catch (Exception ex) {
                     throw new CompletionException(ex);
                 }

@@ -332,7 +332,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         discordAutocompleteLatestQuery.put(requesterKey, cleaned);
         CompletableFuture<List<DiscordPlaySuggestion>> response = new CompletableFuture<>();
         int remoteLimit = Math.max(1, 25 - local.size());
-        CompletableFuture.delayedExecutor(300L, java.util.concurrent.TimeUnit.MILLISECONDS).execute(() -> {
+        CompletableFuture.delayedExecutor(100L, java.util.concurrent.TimeUnit.MILLISECONDS).execute(() -> {
             if (!cleaned.equals(discordAutocompleteLatestQuery.get(requesterKey))) {
                 response.complete(immediate);
                 return;
@@ -343,7 +343,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         // Keep Discord's response bounded. If an older query is already being
         // searched, the newest query is coalesced and cached as soon as that
         // lookup finishes, so a later keystroke can use the correct suggestions.
-        return response.copy().completeOnTimeout(immediate, 2_100L,
+        return response.copy().completeOnTimeout(immediate, 2_400L,
                 java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
@@ -368,7 +368,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             List<DiscordPlaySuggestion> immediate, int remoteLimit,
             CompletableFuture<List<DiscordPlaySuggestion>> response) {
         try {
-            processor.searchYouTube(query, Math.min(6, remoteLimit))
+            // Autocomplete only needs a few selectable results; skip the 3x fetch
+            // and ranking pass used by full in-game searches to meet Discord's deadline.
+            processor.searchYouTube(query, Math.min(6, remoteLimit), false)
                     .handle((results, error) -> {
                         if (error != null) {
                             plugin.getLogger().log(Level.WARNING,
