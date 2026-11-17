@@ -849,7 +849,15 @@ public final class AudioProcessor implements AutoCloseable {
         if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException("FFmpeg is unavailable for mono preparation."));
         }
-        if (monoVariantsReady.contains(track.id())) return CompletableFuture.completedFuture(track);
+        if (monoVariantsReady.contains(track.id())) {
+            // A concurrent/duplicate request may still hold the pre-upgrade object.
+            // Reload the persisted metadata so every mono session sees its chunk layout.
+            try {
+                return CompletableFuture.completedFuture(repository.getTrack(track.id()).orElse(track));
+            } catch (SQLException error) {
+                return CompletableFuture.failedFuture(error);
+            }
+        }
         CompletableFuture<MusicTrack> result = new CompletableFuture<>();
         CompletableFuture<MusicTrack> current = inFlightMonoVariants.putIfAbsent(track.id(), result);
         if (current != null) return current;

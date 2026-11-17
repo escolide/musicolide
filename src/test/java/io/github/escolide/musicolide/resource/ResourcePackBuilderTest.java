@@ -78,7 +78,7 @@ class ResourcePackBuilderTest {
 
     private Path audioFile(Path path) throws Exception {
         Files.createDirectories(path.getParent());
-        Files.write(path, new byte[]{'O', 'g', 'g', 'S', 1, 2, 3});
+        Files.write(path, new byte[]{79, 103, 103, 83, 1, 2, 3});
         return path;
     }
 }
