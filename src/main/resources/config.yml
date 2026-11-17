@@ -83,6 +83,7 @@ audio:
   mono:
     # Mono fade gain is sampled again at each segment boundary.
     # Shorter segments make fades more responsive but add small OGG assets to each track pack.
+    # Existing mono chunks keep their stored duration; this setting applies when creating new chunks.
     fade-segment-duration-ms: 500
   # Selects the encoder quality used for new imports. Existing tracks are not re-encoded.
   # balanced: a good balance between audio quality and file size.

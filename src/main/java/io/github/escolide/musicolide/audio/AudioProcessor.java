@@ -1154,7 +1154,10 @@ public final class AudioProcessor implements AutoCloseable {
 
             String token = UUID.randomUUID().toString().replace("-", "");
             String namespace = "mr_" + token;
-            MonoFadeLayout monoLayout = includeMono ? monoFadeLayout(durationMs)
+            int preferredMonoSegmentMs = sourceTrack.isStreamed() && !sourceTrack.hasMonoSegments()
+                    ? configuredMonoFadeSegmentMs() : Math.max(1, sourceTrack.segmentMs());
+            MonoFadeLayout monoLayout = includeMono
+                    ? monoFadeLayout(durationMs, preferredMonoSegmentMs)
                     : new MonoFadeLayout((int) Math.max(1L, Math.min(Integer.MAX_VALUE, durationMs)), 1);
             Path monoSegments = work.resolve("mono-segments");
             if (includeMono) {
@@ -1391,7 +1394,11 @@ public final class AudioProcessor implements AutoCloseable {
     }
 
     private MonoFadeLayout monoFadeLayout(long durationMs) {
-        int configuredSegmentMs = configuredMonoFadeSegmentMs();
+        return monoFadeLayout(durationMs, configuredMonoFadeSegmentMs());
+    }
+
+    private MonoFadeLayout monoFadeLayout(long durationMs, int segmentDurationMs) {
+        int configuredSegmentMs = Math.max(1, segmentDurationMs);
         long count = Math.max(1L, (Math.max(1L, durationMs) + configuredSegmentMs - 1L)
                 / configuredSegmentMs);
         if (count <= 1L) {

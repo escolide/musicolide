@@ -45,13 +45,16 @@ class ResourcePackBuilderTest {
         ResourcePackBuilder builder = new ResourcePackBuilder(temporaryDirectory,
                 new ResourcePackFormat(34, 0, false));
         Path stereo = audioFile("upgrade-stereo.ogg");
-        Path pack = builder.buildStreamed("ms_upgrade_test", stereo);
+        Path initialMono = audioFile("upgrade-mono-source.ogg");
+        Path pack = builder.buildStreamed("ms_upgrade_test", stereo, initialMono);
         Path monoDirectory = temporaryDirectory.resolve("upgrade-mono");
         Files.createDirectories(monoDirectory);
         audioFile(monoDirectory.resolve("mono.ogg"));
         audioFile(monoDirectory.resolve("00000.ogg"));
         audioFile(monoDirectory.resolve("00001.ogg"));
 
+        builder.addMonoVariant("ms_upgrade_test", pack, monoDirectory, true, 2);
+        // Re-running a partial migration must replace, not duplicate, the JSON events.
         builder.addMonoVariant("ms_upgrade_test", pack, monoDirectory, true, 2);
         try (ZipFile zip = new ZipFile(pack.toFile())) {
             String sounds = new String(zip.getInputStream(zip.getEntry("assets/ms_upgrade_test/sounds.json"))
@@ -60,6 +63,9 @@ class ResourcePackBuilderTest {
             assertTrue(sounds.contains("\"mono\""));
             assertTrue(sounds.contains("\"m_00000\""));
             assertTrue(sounds.contains("\"m_00001\""));
+            assertEquals(1, sounds.split("\"mono\":", -1).length - 1);
+            assertEquals(1, sounds.split("\"m_00000\":", -1).length - 1);
+            assertEquals(1, sounds.split("\"m_00001\":", -1).length - 1);
             assertNotNull(zip.getEntry("assets/ms_upgrade_test/sounds/mono.ogg"));
             assertNotNull(zip.getEntry("assets/ms_upgrade_test/sounds/ms_upgrade_test/mono/00000.ogg"));
             assertNotNull(zip.getEntry("assets/ms_upgrade_test/sounds/ms_upgrade_test/mono/00001.ogg"));
