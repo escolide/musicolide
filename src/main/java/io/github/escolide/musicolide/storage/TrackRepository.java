@@ -52,6 +52,22 @@ public final class TrackRepository implements AutoCloseable {
                     )
                     """);
             statement.execute("""
+                    CREATE TABLE IF NOT EXISTS private_playlists (
+                      owner_uuid TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL,
+                      PRIMARY KEY(owner_uuid, name)
+                    )
+                    """);
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS private_playlist_entries (
+                      owner_uuid TEXT NOT NULL, playlist_name TEXT NOT NULL,
+                      position INTEGER NOT NULL, track_id TEXT NOT NULL,
+                      PRIMARY KEY(owner_uuid, playlist_name, position),
+                      FOREIGN KEY(owner_uuid, playlist_name)
+                        REFERENCES private_playlists(owner_uuid, name) ON DELETE CASCADE,
+                      FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
+                    )
+                    """);
+            statement.execute("""
                     CREATE TABLE IF NOT EXISTS player_preferences (
                       player_uuid TEXT PRIMARY KEY, volume INTEGER NOT NULL DEFAULT 100,
                       muted INTEGER NOT NULL DEFAULT 0
@@ -532,6 +548,204 @@ public final class TrackRepository implements AutoCloseable {
             while (rs.next()) names.add(rs.getString(1));
         }
         return names;
+    }
+
+    public synchronized boolean playlistExists(String name) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM playlists WHERE name=?")) {
+            ps.setString(1, name.trim().toLowerCase(Locale.ROOT));
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    public synchronized boolean deletePlaylist(String name) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM playlists WHERE name=?")) {
+            ps.setString(1, name.trim().toLowerCase(Locale.ROOT));
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    /** Removes the one-based displayed entry number from a shared playlist. */
+    public synchronized boolean removePlaylistTrack(String name, int entryNumber) throws SQLException {
+        if (entryNumber < 1) throw new IllegalArgumentException("Playlist entry number must be 1 or greater.");
+        String normalizedName = name.trim().toLowerCase(Locale.ROOT);
+        String sql = """
+                DELETE FROM playlist_entries
+                WHERE playlist_name=? AND position=(
+                    SELECT position FROM playlist_entries
+                    WHERE playlist_name=? ORDER BY position LIMIT 1 OFFSET ?
+                )
+                """;
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, normalizedName);
+            ps.setString(2, normalizedName);
+            ps.setInt(3, entryNumber - 1);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    private static String normalizePrivatePlaylistName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new IllegalArgumentException("Playlist name cannot be empty.");
+        }
+        return name.trim().toLowerCase(Locale.ROOT);
+    }
+
+    public synchronized void createPrivatePlaylist(String ownerUuid, String name) throws SQLException {
+        String normalizedName = normalizePrivatePlaylistName(name);
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO private_playlists(owner_uuid,name,created_at) VALUES(?,?,?)")) {
+            ps.setString(1, ownerUuid);
+            ps.setString(2, normalizedName);
+            ps.setLong(3, System.currentTimeMillis());
+            ps.executeUpdate();
+        }
+    }
+
+    public synchronized boolean privatePlaylistExists(String ownerUuid, String name) throws SQLException {
+        String normalizedName = normalizePrivatePlaylistName(name);
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM private_playlists WHERE owner_uuid=? AND name=?")) {
+            ps.setString(1, ownerUuid);
+            ps.setString(2, normalizedName);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    public synchronized void addPrivatePlaylistTrack(String ownerUuid, String name, String trackId,
+                                                       int maximumTracks) throws SQLException {
+        String normalizedName = normalizePrivatePlaylistName(name);
+        int limit = Math.max(1, maximumTracks);
+        try (Connection c = open()) {
+            c.setAutoCommit(false);
+            try {
+                try (PreparedStatement exists = c.prepareStatement(
+                        "SELECT 1 FROM private_playlists WHERE owner_uuid=? AND name=?")) {
+                    exists.setString(1, ownerUuid);
+                    exists.setString(2, normalizedName);
+                    try (ResultSet rs = exists.executeQuery()) {
+                        if (!rs.next()) throw new SQLException("Private playlist does not exist.");
+                    }
+                }
+
+                int count;
+                try (PreparedStatement countQuery = c.prepareStatement("""
+                        SELECT COUNT(*) FROM private_playlist_entries
+                        WHERE owner_uuid=? AND playlist_name=?
+                        """)) {
+                    countQuery.setString(1, ownerUuid);
+                    countQuery.setString(2, normalizedName);
+                    try (ResultSet rs = countQuery.executeQuery()) {
+                        count = rs.next() ? rs.getInt(1) : 0;
+                    }
+                }
+                if (count >= limit) {
+                    throw new IllegalArgumentException("Playlist has reached its maximum of "
+                            + limit + " tracks. Remove a track before adding another.");
+                }
+
+                int position;
+                try (PreparedStatement next = c.prepareStatement("""
+                        SELECT COALESCE(MAX(position),-1)+1 FROM private_playlist_entries
+                        WHERE owner_uuid=? AND playlist_name=?
+                        """)) {
+                    next.setString(1, ownerUuid);
+                    next.setString(2, normalizedName);
+                    try (ResultSet rs = next.executeQuery()) {
+                        position = rs.next() ? rs.getInt(1) : 0;
+                    }
+                }
+                try (PreparedStatement insert = c.prepareStatement("""
+                        INSERT INTO private_playlist_entries(owner_uuid,playlist_name,position,track_id)
+                        VALUES(?,?,?,?)
+                        """)) {
+                    insert.setString(1, ownerUuid);
+                    insert.setString(2, normalizedName);
+                    insert.setInt(3, position);
+                    insert.setString(4, trackId);
+                    insert.executeUpdate();
+                }
+                c.commit();
+            } catch (SQLException | RuntimeException ex) {
+                try {
+                    c.rollback();
+                } catch (SQLException rollbackError) {
+                    ex.addSuppressed(rollbackError);
+                }
+                throw ex;
+            }
+        }
+    }
+
+    public synchronized List<MusicTrack> getPrivatePlaylist(String ownerUuid, String name, int limit)
+            throws SQLException {
+        String normalizedName = normalizePrivatePlaylistName(name);
+        List<MusicTrack> tracks = new ArrayList<>();
+        String sql = """
+                SELECT t.* FROM private_playlist_entries p
+                JOIN tracks t ON t.id=p.track_id
+                WHERE p.owner_uuid=? AND p.playlist_name=?
+                ORDER BY p.position LIMIT ?
+                """;
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, ownerUuid);
+            ps.setString(2, normalizedName);
+            ps.setInt(3, Math.max(1, limit));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) tracks.add(readTrack(rs));
+            }
+        }
+        return tracks;
+    }
+
+    public synchronized List<String> listPrivatePlaylists(String ownerUuid) throws SQLException {
+        List<String> names = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement("""
+                SELECT name FROM private_playlists WHERE owner_uuid=? ORDER BY name
+                """)) {
+            ps.setString(1, ownerUuid);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) names.add(rs.getString(1));
+            }
+        }
+        return names;
+    }
+
+    /** Removes the one-based displayed entry number from the owner's private playlist. */
+    public synchronized boolean removePrivatePlaylistTrack(String ownerUuid, String name, int entryNumber)
+            throws SQLException {
+        if (entryNumber < 1) throw new IllegalArgumentException("Playlist entry number must be 1 or greater.");
+        String normalizedName = normalizePrivatePlaylistName(name);
+        String sql = """
+                DELETE FROM private_playlist_entries
+                WHERE owner_uuid=? AND playlist_name=? AND position=(
+                    SELECT position FROM private_playlist_entries
+                    WHERE owner_uuid=? AND playlist_name=? ORDER BY position LIMIT 1 OFFSET ?
+                )
+                """;
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, ownerUuid);
+            ps.setString(2, normalizedName);
+            ps.setString(3, ownerUuid);
+            ps.setString(4, normalizedName);
+            ps.setInt(5, entryNumber - 1);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    public synchronized boolean deletePrivatePlaylist(String ownerUuid, String name) throws SQLException {
+        String normalizedName = normalizePrivatePlaylistName(name);
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM private_playlists WHERE owner_uuid=? AND name=?")) {
+            ps.setString(1, ownerUuid);
+            ps.setString(2, normalizedName);
+            return ps.executeUpdate() > 0;
+        }
     }
 
     public synchronized int[] getPreference(String playerUuid) throws SQLException {

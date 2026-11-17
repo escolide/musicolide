@@ -2459,51 +2459,261 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void playlist(CommandSender sender, String[] args) throws SQLException {
-        if (!plugin.getConfig().getBoolean("playlists.enabled", true)) throw new IllegalArgumentException("Playlists are disabled.");
-        if (args.length < 2) throw new IllegalArgumentException("Usage: /music playlist <create/add/list/play> ...");
+        if (!plugin.getConfig().getBoolean("playlists.enabled", true)) {
+            throw new IllegalArgumentException("Playlists are disabled.");
+        }
+        if (args.length < 2) {
+            throw new IllegalArgumentException("Usage: /music playlist <create/add/remove/delete/list/show/play/private> ...");
+        }
+        if (args[1].equalsIgnoreCase("private") || args[1].equalsIgnoreCase("personal")) {
+            privatePlaylist(sender, args);
+            return;
+        }
+
         switch (args[1].toLowerCase(Locale.ROOT)) {
             case "create" -> {
                 if (!admin(sender)) return;
                 if (args.length < 3) throw new IllegalArgumentException("Usage: /music playlist create <name>");
                 repository.createPlaylist(args[2]);
-                sender.sendMessage(msg("&aPlaylist created: " + args[2]));
+                sender.sendMessage(msg("&aShared playlist created: " + args[2]));
             }
             case "add" -> {
                 if (!admin(sender)) return;
-                if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist add <name> <track-id>");
+                if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist add <name> <TrackID>");
                 MusicTrack track = resolveTrack(args[3]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
                 int maximumTracks = Math.max(1, plugin.getConfig().getInt("limits.max-playlist-tracks", 500));
                 repository.addPlaylistTrack(args[2], track.id(), maximumTracks);
                 sender.sendMessage(msg("&aAdded &f" + track.title() + " &7[TrackID: "
-                        + displayTrackId(track) + "] &ato playlist &f" + args[2] + "."));
+                        + displayTrackId(track) + "] &ato shared playlist &f" + args[2] + "."));
             }
-            case "list" -> sender.sendMessage(msg("&5Playlists: &f" + String.join(", ", repository.listPlaylists())));
+            case "remove" -> {
+                if (!admin(sender)) return;
+                if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist remove <name> <entry-number>");
+                int entry = parsePlaylistEntryNumber(args[3]);
+                if (!repository.removePlaylistTrack(args[2], entry)) {
+                    throw new IllegalArgumentException("That playlist entry does not exist.");
+                }
+                sender.sendMessage(msg("&aRemoved entry &f" + entry + " &afrom shared playlist &f" + args[2] + "."));
+            }
+            case "delete" -> {
+                if (!admin(sender)) return;
+                if (args.length < 3) throw new IllegalArgumentException("Usage: /music playlist delete <name>");
+                if (!repository.deletePlaylist(args[2])) throw new IllegalArgumentException("Shared playlist not found.");
+                sender.sendMessage(msg("&aDeleted shared playlist &f" + args[2] + "."));
+            }
+            case "list" -> {
+                List<String> names = repository.listPlaylists();
+                sender.sendMessage(msg("&5Shared playlists: &f" + (names.isEmpty() ? "none" : String.join(", ", names))));
+            }
+            case "show" -> {
+                if (args.length < 3) throw new IllegalArgumentException("Usage: /music playlist show <name>");
+                if (!repository.playlistExists(args[2])) throw new IllegalArgumentException("Shared playlist not found.");
+                showPlaylist(sender, args[2], repository.getPlaylist(args[2],
+                        plugin.getConfig().getInt("limits.max-playlist-tracks", 500)));
+            }
             case "play" -> {
                 if (!dj(sender)) return;
-                if (args.length < 3) throw new IllegalArgumentException("Usage: /music playlist play <name>");
-                if (!(sender instanceof Player player)) throw new IllegalArgumentException("Players only for spatial playlists.");
+                if (args.length < 3) throw new IllegalArgumentException(
+                        "Usage: /music playlist play <name> [target:@s] [circle:60|square:50x50|region:id] [mode:mono]");
+                if (!repository.playlistExists(args[2])) throw new IllegalArgumentException("Shared playlist not found.");
                 List<MusicTrack> tracks = new ArrayList<>(repository.getPlaylist(args[2],
                         plugin.getConfig().getInt("limits.max-playlist-tracks", 500)));
                 if (tracks.isEmpty()) throw new IllegalArgumentException("Playlist is empty.");
                 if (plugin.getConfig().getBoolean("playlists.shuffle", false)) Collections.shuffle(tracks);
-                MusicZone zone = defaultPlayerZone(player);
-                PlaybackSession session = playback.startSession(player.getUniqueId(), player.getName(), zone,
-                        true, List.of(), tracks, 0);
-                session.repeat(plugin.getConfig().getBoolean("playlists.repeat", false));
-                sender.sendMessage(msg("&aStarted playlist &f" + args[2] + " &7(" + tracks.size()
-                        + " tracks; packs load gradually)."));
+                PlayRequest request = parsePlaylistPlayRequest(sender, args[2], args, 3);
+                boolean repeat = playlistRepeat(args, 3, request);
+                startPlaylistPlayback(sender, args[2], tracks, request, repeat);
             }
-            default -> throw new IllegalArgumentException("Unknown playlist subcommand.");
+            default -> throw new IllegalArgumentException("Unknown playlist subcommand. Use private for your own playlists.");
         }
     }
 
-    private MusicZone defaultPlayerZone(Player player) {
-        boolean limited = plugin.getConfig().getString("playback.range.vertical.mode", "unlimited").equalsIgnoreCase("limited");
-        return MusicZone.circle(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ(),
-                plugin.getConfig().getDouble("playback.range.circle.radius", 60), limited,
-                plugin.getConfig().getDouble("playback.range.vertical.max-distance", 32),
-                plugin.getConfig().getBoolean("playback.fade.enabled-by-default", false),
-                plugin.getConfig().getDouble("playback.fade.distance", 10));
+    private void privatePlaylist(CommandSender sender, String[] args) throws SQLException {
+        if (!(sender instanceof Player player)) {
+            throw new IllegalArgumentException("Private playlists can only be managed and played by an in-game player.");
+        }
+        if (!dj(sender)) return;
+        if (args.length < 3) {
+            throw new IllegalArgumentException("Usage: /music playlist private <create/add/remove/delete/list/show/play> ...");
+        }
+
+        String ownerUuid = player.getUniqueId().toString();
+        switch (args[2].toLowerCase(Locale.ROOT)) {
+            case "create" -> {
+                if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist private create <name>");
+                if (repository.privatePlaylistExists(ownerUuid, args[3])) {
+                    throw new IllegalArgumentException("You already have a private playlist with that name.");
+                }
+                repository.createPrivatePlaylist(ownerUuid, args[3]);
+                sender.sendMessage(msg("&aCreated your private playlist &f" + args[3] + "&a."));
+            }
+            case "add" -> {
+                if (args.length < 5) throw new IllegalArgumentException(
+                        "Usage: /music playlist private add <name> <TrackID>");
+                requirePrivatePlaylist(ownerUuid, args[3]);
+                MusicTrack track = resolveTrack(args[4]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
+                int maximumTracks = Math.max(1, plugin.getConfig().getInt("limits.max-playlist-tracks", 500));
+                repository.addPrivatePlaylistTrack(ownerUuid, args[3], track.id(), maximumTracks);
+                sender.sendMessage(msg("&aAdded &f" + track.title() + " &7[TrackID: "
+                        + displayTrackId(track) + "] &ato your private playlist &f" + args[3] + "."));
+            }
+            case "remove" -> {
+                if (args.length < 5) throw new IllegalArgumentException(
+                        "Usage: /music playlist private remove <name> <entry-number>");
+                requirePrivatePlaylist(ownerUuid, args[3]);
+                int entry = parsePlaylistEntryNumber(args[4]);
+                if (!repository.removePrivatePlaylistTrack(ownerUuid, args[3], entry)) {
+                    throw new IllegalArgumentException("That private playlist entry does not exist.");
+                }
+                sender.sendMessage(msg("&aRemoved entry &f" + entry + " &afrom your private playlist &f" + args[3] + "."));
+            }
+            case "delete" -> {
+                if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist private delete <name>");
+                if (!repository.deletePrivatePlaylist(ownerUuid, args[3])) {
+                    throw new IllegalArgumentException("Private playlist not found.");
+                }
+                sender.sendMessage(msg("&aDeleted your private playlist &f" + args[3] + "."));
+            }
+            case "list" -> {
+                List<String> names = repository.listPrivatePlaylists(ownerUuid);
+                sender.sendMessage(msg("&5Your private playlists: &f" + (names.isEmpty() ? "none" : String.join(", ", names))));
+            }
+            case "show" -> {
+                if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist private show <name>");
+                requirePrivatePlaylist(ownerUuid, args[3]);
+                showPlaylist(sender, args[3], repository.getPrivatePlaylist(ownerUuid, args[3],
+                        plugin.getConfig().getInt("limits.max-playlist-tracks", 500)));
+            }
+            case "play" -> {
+                if (args.length < 4) throw new IllegalArgumentException(
+                        "Usage: /music playlist private play <name> [target:@s] [circle:60|square:50x50|region:id] [mode:mono]");
+                requirePrivatePlaylist(ownerUuid, args[3]);
+                List<MusicTrack> tracks = new ArrayList<>(repository.getPrivatePlaylist(ownerUuid, args[3],
+                        plugin.getConfig().getInt("limits.max-playlist-tracks", 500)));
+                if (tracks.isEmpty()) throw new IllegalArgumentException("Private playlist is empty.");
+                if (plugin.getConfig().getBoolean("playlists.shuffle", false)) Collections.shuffle(tracks);
+                PlayRequest request = parsePlaylistPlayRequest(sender, args[3], args, 4);
+                boolean repeat = playlistRepeat(args, 4, request);
+                startPlaylistPlayback(sender, args[3], tracks, request, repeat);
+            }
+            default -> throw new IllegalArgumentException("Unknown private-playlist operation.");
+        }
+    }
+
+    private void requirePrivatePlaylist(String ownerUuid, String name) throws SQLException {
+        if (!repository.privatePlaylistExists(ownerUuid, name)) {
+            throw new IllegalArgumentException("Private playlist not found. It may belong to another player.");
+        }
+    }
+
+    private int parsePlaylistEntryNumber(String value) {
+        try {
+            int number = Integer.parseInt(value);
+            if (number < 1) throw new NumberFormatException();
+            return number;
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException("Entry number must be a positive number, as shown by /music playlist ... show.");
+        }
+    }
+
+    private void showPlaylist(CommandSender sender, String name, List<MusicTrack> tracks) {
+        sender.sendMessage(msg("&5Playlist &8• &f" + name + " &7(" + tracks.size() + " track(s))"));
+        if (tracks.isEmpty()) {
+            sender.sendMessage(msg("&7This playlist is empty."));
+            return;
+        }
+        for (int i = 0; i < tracks.size(); i++) {
+            MusicTrack track = tracks.get(i);
+            sender.sendMessage(msg("&7" + (i + 1) + ". &f" + TextUtil.truncate(track.title(), 48)
+                    + " &8[&d" + displayTrackId(track) + "&8] &7" + format(track.durationMs())));
+        }
+    }
+
+    private PlayRequest parsePlaylistPlayRequest(CommandSender sender, String name, String[] commandArgs,
+                                                 int firstOption) {
+        List<String> requestArgs = new ArrayList<>();
+        requestArgs.add("play");
+        requestArgs.add(name);
+        for (int i = firstOption; i < commandArgs.length; i++) requestArgs.add(commandArgs[i]);
+        PlayRequest request = parseRequest(sender, requestArgs.toArray(String[]::new));
+        if (request.customId != null) {
+            throw new IllegalArgumentException("id: is for importing or naming a single track and cannot be used when playing a playlist.");
+        }
+        return request;
+    }
+
+    private boolean playlistRepeat(String[] commandArgs, int firstOption, PlayRequest request) {
+        boolean explicit = false;
+        for (int i = firstOption; i < commandArgs.length; i++) {
+            if (commandArgs[i].toLowerCase(Locale.ROOT).startsWith("loop:")) {
+                explicit = true;
+                break;
+            }
+        }
+        return explicit ? request.loop : plugin.getConfig().getBoolean("playlists.repeat", false);
+    }
+
+    private void startPlaylistPlayback(CommandSender sender, String name, List<MusicTrack> tracks,
+                                       PlayRequest request, boolean repeat) {
+        boolean mono = "mono".equalsIgnoreCase(request.audioMode);
+        UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
+        Optional<Boolean> activeMode = playback.activeSessionMono(owner, sender.getName(),
+                request.zone, request.all, request.listeners);
+        if (activeMode.isPresent() && activeMode.get() != mono) {
+            sender.sendMessage(msg("&cAn active session for this target and zone is already using "
+                    + (activeMode.get() ? "mono" : "stereo") + ". Stop it before switching audio modes."));
+            return;
+        }
+
+        if (!mono) {
+            startPreparedPlaylist(sender, name, tracks, request, repeat, false);
+            return;
+        }
+
+        sender.sendMessage(msg("&ePreparing mono audio for &f" + tracks.size()
+                + " &eplaylist track(s)."));
+        CompletableFuture<List<MusicTrack>> prepared = CompletableFuture.completedFuture(new ArrayList<>());
+        for (MusicTrack track : tracks) {
+            prepared = prepared.thenCompose(ready -> processor.ensureMonoVariant(track)
+                    .thenApply(variant -> {
+                        ready.add(variant);
+                        return ready;
+                    }));
+        }
+        prepared.whenComplete((readyTracks, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (sender instanceof Player player && !player.isOnline()) return;
+            if (error != null) {
+                sender.sendMessage(msg("&cMono playlist preparation failed: " + rootMessage(error)));
+                return;
+            }
+            startPreparedPlaylist(sender, name, readyTracks, request, repeat, true);
+        }));
+    }
+
+    private void startPreparedPlaylist(CommandSender sender, String name, List<MusicTrack> tracks,
+                                       PlayRequest request, boolean repeat, boolean mono) {
+        try {
+            UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
+            PlaybackSession session = playback.startSession(owner, sender.getName(), request.zone,
+                    request.all, request.listeners, tracks, request.priority, mono, request.targetScope);
+            if (session.isEmpty()) {
+                sender.sendMessage(msg("&cThe playlist could not be started because it contains no playable tracks."));
+                return;
+            }
+            session.repeat(repeat);
+            String mode = mono ? " &7(mono)" : "";
+            String audience = switch (request.targetScope) {
+                case SELF -> " privately for you";
+                case ZONE -> " for listeners in the selected zone";
+                case TARGETED -> " for the selected player";
+                case PUBLIC -> " for everyone";
+            };
+            sender.sendMessage(msg("&aStarted playlist &f" + name + mode + audience + " &7("
+                    + tracks.size() + " tracks; packs load gradually)."
+                    + (repeat ? " &d(playlist loop)" : "")));
+        } catch (IllegalStateException error) {
+            sender.sendMessage(msg("&cCould not start playlist: " + error.getMessage()));
+        }
     }
 
     private void alias(CommandSender sender, String[] args) throws SQLException {
@@ -2586,7 +2796,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music save [TrackID] &8- &7save a temporary track, or your current/recent track when omitted"));
         sender.sendMessage(msg("&f/music delete <TrackID> &8- &7delete a track and its saved files (admin)"));
         sender.sendMessage(msg("&f/music clear &8- &7clear unused temporary tracks (admin)"));
-        sender.sendMessage(msg("&f/music playlist create/add/list/play ... &8- &7manage playlists"));
+        sender.sendMessage(msg("&f/music playlist create/add/remove/delete/list/show/play ... &8- &7shared playlists (admin manages)"));
+        sender.sendMessage(msg("&f/music playlist private create/add/remove/delete/list/show/play ... &8- &7your own DJ playlist"));
         sender.sendMessage(msg("&dIMPORTS &8| &7Server library files"));
         sender.sendMessage(msg("&f/music import <file> [title] [id:name] &8- &7import from SavedMusic/"));
         sender.sendMessage(msg("&f/music import all &8- &7import supported files in SavedMusic/"));
@@ -2654,7 +2865,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 "list", "search", "select", "page", "save", "delete", "playlist", "import", "import-url",
                 "download", "clear", "disable", "enable", "unload", "discord", "switch", "force",
                 "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
-        if (args.length >= 3 && args[0].equalsIgnoreCase("play")) {
+        boolean playlistPlayOptions = args.length >= 4 && args[0].equalsIgnoreCase("playlist")
+                && (args[1].equalsIgnoreCase("play")
+                || args.length >= 5 && args[1].equalsIgnoreCase("private") && args[2].equalsIgnoreCase("play"));
+        if ((args.length >= 3 && args[0].equalsIgnoreCase("play")) || playlistPlayOptions) {
             String prefix = args[args.length - 1];
             String lowerPrefix = prefix.toLowerCase(Locale.ROOT);
             if (lowerPrefix.startsWith("target:")) {
@@ -2759,11 +2973,65 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
-            return partial(List.of("create", "add", "list", "play"), args[1]);
+            return partial(List.of("create", "add", "remove", "delete", "list", "show", "play", "private"), args[1]);
+        if (args.length == 3 && args[0].equalsIgnoreCase("playlist")
+                && (args[1].equalsIgnoreCase("private") || args[1].equalsIgnoreCase("personal")))
+            return partial(List.of("create", "add", "remove", "delete", "list", "show", "play"), args[2]);
         if (args.length == 4 && args[0].equalsIgnoreCase("playlist")
                 && args[1].equalsIgnoreCase("add")) {
             try {
                 return partial(repository.allTracks(100).stream().map(this::displayTrackId).toList(), args[3]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
+        if (args.length == 5 && args[0].equalsIgnoreCase("playlist")
+                && args[1].equalsIgnoreCase("private") && args[2].equalsIgnoreCase("add")) {
+            try {
+                return partial(repository.allTracks(100).stream().map(this::displayTrackId).toList(), args[4]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("playlist")
+                && (args[1].equalsIgnoreCase("show") || args[1].equalsIgnoreCase("delete")
+                || args[1].equalsIgnoreCase("play") || args[1].equalsIgnoreCase("remove"))) {
+            try {
+                return partial(repository.listPlaylists(), args[2]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
+        if (args.length == 4 && args[0].equalsIgnoreCase("playlist")
+                && args[1].equalsIgnoreCase("private")
+                && List.of("show", "delete", "play", "remove", "add").contains(args[2].toLowerCase(Locale.ROOT))
+                && sender instanceof Player player) {
+            try {
+                return partial(repository.listPrivatePlaylists(player.getUniqueId().toString()), args[3]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
+        if (args.length == 4 && args[0].equalsIgnoreCase("playlist")
+                && args[1].equalsIgnoreCase("remove")) {
+            try {
+                if (!repository.playlistExists(args[2])) return List.of();
+                int count = repository.getPlaylist(args[2],
+                        plugin.getConfig().getInt("limits.max-playlist-tracks", 500)).size();
+                return partial(java.util.stream.IntStream.rangeClosed(1, count)
+                        .mapToObj(Integer::toString).toList(), args[3]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
+        if (args.length == 5 && args[0].equalsIgnoreCase("playlist")
+                && args[1].equalsIgnoreCase("private") && args[2].equalsIgnoreCase("remove")
+                && sender instanceof Player player) {
+            try {
+                List<MusicTrack> tracks = repository.getPrivatePlaylist(player.getUniqueId().toString(),
+                        args[3], plugin.getConfig().getInt("limits.max-playlist-tracks", 500));
+                return partial(java.util.stream.IntStream.rangeClosed(1, tracks.size())
+                        .mapToObj(Integer::toString).toList(), args[4]);
             } catch (SQLException ignored) {
                 return List.of();
             }
