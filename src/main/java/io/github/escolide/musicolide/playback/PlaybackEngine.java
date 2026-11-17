@@ -1075,6 +1075,7 @@ public final class PlaybackEngine {
         startReadySessionClocks(online, winners, suppressed.keySet());
         recordSessionStartCohorts(online, winners, active);
 
+        Set<UUID> zoneOwnersWarned = new HashSet<>();
         if (plugin.getConfig().getBoolean("playback.overlap.warn-session-owner", true)) {
             long cooldown = plugin.getConfig().getLong("playback.overlap.warning-cooldown-seconds", 60) * 1000L;
             for (Map.Entry<PlaybackSession, Set<UUID>> entry : suppressed.entrySet()) {
@@ -1094,12 +1095,13 @@ public final class PlaybackEngine {
                     Player owner = Bukkit.getPlayer(session.owner());
                     if (owner != null && !isIgnoredBedrockPlayer(owner)) {
                         owner.sendMessage(message("messages.overlap-warning"));
+                        zoneOwnersWarned.add(owner.getUniqueId());
                     }
                     warningTimes.put(session.id(), System.currentTimeMillis());
                 }
             }
         }
-        notifyOverlappingPlayers(online, winners, suppressed);
+        notifyOverlappingPlayers(online, winners, suppressed, zoneOwnersWarned);
 
         for (Player player : online) {
             if (packs.isPlayerDisabled(player.getUniqueId())) {
@@ -1148,7 +1150,8 @@ public final class PlaybackEngine {
 
     private void notifyOverlappingPlayers(List<Player> online,
                                           Map<UUID, Candidate> winners,
-                                          Map<PlaybackSession, Set<UUID>> suppressed) {
+                                          Map<PlaybackSession, Set<UUID>> suppressed,
+                                          Set<UUID> zoneOwnersWarned) {
         Map<UUID, Set<UUID>> competingSessions = new HashMap<>();
         for (Map.Entry<PlaybackSession, Set<UUID>> entry : suppressed.entrySet()) {
             UUID suppressedId = entry.getKey().id();
@@ -1175,13 +1178,7 @@ public final class PlaybackEngine {
             List<String> otherIds = competing.stream().map(UUID::toString).sorted().toList();
             String signature = winner.session.id() + "|" + String.join(",", otherIds);
             String previous = overlapNoticeState.put(playerId, signature);
-            boolean alreadyWarnedAsZoneOwner = plugin.getConfig().getBoolean(
-                    "playback.overlap.warn-session-owner", true)
-                    && suppressed.keySet().stream().anyMatch(session ->
-                            session.owner() != null && session.owner().equals(playerId)
-                                    && session.zone().shape() != MusicZone.Shape.GLOBAL
-                                    && competing.contains(session.id()));
-            if (!alreadyWarnedAsZoneOwner && !signature.equals(previous)
+            if (!zoneOwnersWarned.contains(playerId) && !signature.equals(previous)
                     && now - manualSelectionTimes.getOrDefault(playerId, 0L) >= 2000L) {
                 player.sendMessage(message("messages.competing-session"));
             }
