@@ -24,26 +24,44 @@ class PlaybackAudiencePolicyTest {
     }
 
     @Test
-    void switchCycleIsPersonalThenZoneThenPublic() {
-        UUID world = UUID.randomUUID();
-        MusicZone personal = MusicZone.global();
-        MusicZone zone = MusicZone.circle(world, 0, 64, 0, 30, false, 0, false, 0);
-
-        assertEquals(0, PlaybackAudiencePolicy.switchCycleRank(false, personal)); // @s / @p
-        assertEquals(1, PlaybackAudiencePolicy.switchCycleRank(false, zone));    // personal zone
-        assertEquals(1, PlaybackAudiencePolicy.switchCycleRank(true, zone));     // zone audience
-        assertEquals(2, PlaybackAudiencePolicy.switchCycleRank(true, personal)); // @a
+    void switchCycleIsPersonalThenZoneOrTargetedThenPublic() {
+        assertEquals(0, PlaybackAudiencePolicy.switchCycleRank(PlaybackAudiencePolicy.TargetScope.SELF));
+        assertEquals(1, PlaybackAudiencePolicy.switchCycleRank(PlaybackAudiencePolicy.TargetScope.ZONE));
+        assertEquals(1, PlaybackAudiencePolicy.switchCycleRank(PlaybackAudiencePolicy.TargetScope.TARGETED));
+        assertEquals(2, PlaybackAudiencePolicy.switchCycleRank(PlaybackAudiencePolicy.TargetScope.PUBLIC));
     }
 
     @Test
-    void forceIsLimitedToTheSingleExplicitListener() {
+    void targetScopeDistinguishesSelfTargetedZoneAndPublic() {
+        assertEquals(PlaybackAudiencePolicy.TargetScope.SELF,
+                PlaybackAudiencePolicy.resolveTargetScope("@s", false));
+        assertEquals(PlaybackAudiencePolicy.TargetScope.TARGETED,
+                PlaybackAudiencePolicy.resolveTargetScope("@p", false));
+        assertEquals(PlaybackAudiencePolicy.TargetScope.TARGETED,
+                PlaybackAudiencePolicy.resolveTargetScope("Alex", false));
+        assertEquals(PlaybackAudiencePolicy.TargetScope.PUBLIC,
+                PlaybackAudiencePolicy.resolveTargetScope("@a", false));
+        assertEquals(PlaybackAudiencePolicy.TargetScope.ZONE,
+                PlaybackAudiencePolicy.resolveTargetScope("@s", true));
+        assertEquals(PlaybackAudiencePolicy.TargetScope.ZONE,
+                PlaybackAudiencePolicy.resolveTargetScope("@a", true));
+    }
+
+    @Test
+    void forceIsLimitedToTheExplicitSelfTarget() {
         UUID player = UUID.randomUUID();
         UUID other = UUID.randomUUID();
 
-        assertTrue(PlaybackAudiencePolicy.isPersonalTarget(false, List.of(player), player));
-        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(true, List.of(), player));
-        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(false, List.of(player, other), player));
-        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(false, List.of(other), player));
+        assertTrue(PlaybackAudiencePolicy.isPersonalTarget(
+                PlaybackAudiencePolicy.TargetScope.SELF, false, List.of(player), player));
+        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(
+                PlaybackAudiencePolicy.TargetScope.PUBLIC, true, List.of(), player));
+        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(
+                PlaybackAudiencePolicy.TargetScope.TARGETED, false, List.of(player), player));
+        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(
+                PlaybackAudiencePolicy.TargetScope.SELF, false, List.of(player, other), player));
+        assertFalse(PlaybackAudiencePolicy.isPersonalTarget(
+                PlaybackAudiencePolicy.TargetScope.SELF, false, List.of(other), player));
     }
     @Test
     void manualChoiceWinsAndOtherwiseCurrentPlaybackStaysSelected() {
