@@ -9,7 +9,7 @@ public final class PlayTargetDefaults {
     private PlayTargetDefaults() {}
 
     public static boolean isExplicitCenterOption(String option) {
-        return option != null && option.equalsIgnoreCase("--center");
+        return option != null && (option.equalsIgnoreCase("center:true") || option.equalsIgnoreCase("--center"));
     }
 
     public static String defaultSelector(boolean playerSender, boolean spatialOption) {

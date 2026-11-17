@@ -787,7 +787,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10 (mode:mono only)] [mode:mono] [loop:true|false] [--center] [id:music100]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade:10 (mode:mono only)] [mode:mono] [loop:true|false] [center:true] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -939,7 +939,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     || normalized.startsWith("mode:") || normalized.startsWith("loop:")
                     || normalized.startsWith("circle:")
                     || normalized.startsWith("square:") || normalized.startsWith("region:")
-                    // Bare "center" is ordinary search text; use --center to opt in.
+                    || normalized.startsWith("center:")
                     || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
             if (normalized.startsWith("--") || compact || normalized.equals("mono")
                     || normalized.equals("stereo") || normalized.equals("@a")
@@ -1350,6 +1350,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 audioMode = option.substring(5);
                 if (!audioMode.equals("mono") && !audioMode.equals("stereo"))
                     throw new IllegalArgumentException("Use mode:mono or mode:stereo.");
+                continue;
+            }
+            if (option.startsWith("center:")) {
+                String value = option.substring("center:".length());
+                if (!value.equals("true") && !value.equals("false"))
+                    throw new IllegalArgumentException("Use center:true or center:false.");
+                centeredMono = Boolean.parseBoolean(value);
                 continue;
             }
             if (PlayTargetDefaults.isExplicitCenterOption(option)) {
@@ -2592,12 +2599,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&7Only import audio you own or have explicit rights to redistribute."));
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
-        sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10 (requires mode:mono)"));
-        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f loop:true|false &8• &f --center &8• &f id:custom_name"));
-        sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:mono"));
-        sender.sendMessage(msg("&7Stereo is default. fadeN requires mode:mono; mono circle/square zones use configured fade unless overridden."));
+        sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade:10 (requires mode:mono)"));
+        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f loop:true|false &8• &f center:true &8• &f id:custom_name"));
+        sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade:10 mode:mono"));
+        sender.sendMessage(msg("&7Stereo is default. fade:<distance> requires mode:mono; mono circle/square zones use configured fade unless overridden."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
-        sender.sendMessage(msg("&7The --center option is mono-only and opt-in; by default mono follows each listener as they move."));
+        sender.sendMessage(msg("&7The center:true option is mono-only and opt-in; by default mono follows each listener as they move."));
         sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
         sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
         sender.sendMessage(msg("&f/music disable &8• &fenable &8• &funload &8- &7manage your own music packs"));
@@ -2605,7 +2612,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music sync <seconds> &8• &f/music priority <number> &8• &f/music alias add <URL> <TrackID>"));
         sender.sendMessage(msg("&f/link &8• &f/unlink &8- &7connect or disconnect your Discord account"));
         sender.sendMessage(msg("&8TrackIDs use a00-f99 (600 active slots); delete/expiry frees a code. Existing long internal IDs remain accepted."));
-        sender.sendMessage(msg("&8Legacy --option syntax is still accepted for backward compatibility."));
+        sender.sendMessage(msg("&8Use named options in key:value form; older option syntax remains accepted for existing commands."));
     }
 
     private boolean admitHeavyRequest(CommandSender sender, String action,
@@ -2652,36 +2659,43 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
         if (args.length >= 3 && args[0].equalsIgnoreCase("play")) {
             String prefix = args[args.length - 1];
-            String previous = args.length >= 2 ? args[args.length - 2].toLowerCase(Locale.ROOT) : "";
-            if (previous.equals("--target")) {
-                List<String> targets = new ArrayList<>(List.of("@s", "@p"));
+            String lowerPrefix = prefix.toLowerCase(Locale.ROOT);
+            if (lowerPrefix.startsWith("target:")) {
+                List<String> targets = new ArrayList<>(List.of("target:@s", "target:@p"));
                 boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
                         "permissions.admin", "musicolide.admin"))
                         || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
-                if (canTargetAll) targets.add("@a");
-                Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
+                if (canTargetAll) targets.add("target:@a");
+                Bukkit.getOnlinePlayers().stream().map(online -> "target:" + online.getName())
+                        .sorted(String.CASE_INSENSITIVE_ORDER).forEach(targets::add);
                 return partial(targets, prefix);
             }
-            if (previous.equals("--mode")) return partial(List.of("stereo", "mono"), prefix);
-            if (previous.equals("--circle") || previous.equals("--fade")) return partial(List.of("0", "10", "20", "40", "60", "100"), prefix);
-            if (previous.equals("--square")) return partial(List.of("25x25", "50x50", "100x100"), prefix);
-            if (previous.equals("--region")) return List.of();
-            if (prefix.startsWith("--")) {
-                return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode", "--center"), prefix);
-            }
+            if (lowerPrefix.startsWith("mode:"))
+                return partial(List.of("mode:stereo", "mode:mono"), prefix);
+            if (lowerPrefix.startsWith("circle:"))
+                return partial(List.of("circle:0", "circle:10", "circle:20", "circle:40", "circle:60", "circle:100"), prefix);
+            if (lowerPrefix.startsWith("fade:"))
+                return partial(List.of("fade:0", "fade:10", "fade:20", "fade:40", "fade:60", "fade:100"), prefix);
+            if (lowerPrefix.startsWith("square:"))
+                return partial(List.of("square:25x25", "square:50x50", "square:100x100"), prefix);
+            if (lowerPrefix.startsWith("center:"))
+                return partial(List.of("center:true", "center:false"), prefix);
+            if (lowerPrefix.startsWith("region:") || lowerPrefix.startsWith("id:")) return List.of();
+
             boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
                     "permissions.admin", "musicolide.admin"))
                     || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
             List<String> options = new ArrayList<>(List.of(
                     "target:@s", "target:@p", "id:", "circle:", "square:",
-                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo",
-                    "loop:true", "loop:false", "--center",
-                    "@s", "@p", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode", "--center"));
+                    "region:", "fade:10", "fade:0", "mode:mono", "mode:stereo",
+                    "loop:true", "loop:false", "center:true", "center:false",
+                    "@s", "@p"));
             if (canTargetAll) {
                 options.add("target:@a");
                 options.add("@a");
             }
-            Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER).forEach(options::add);
+            Bukkit.getOnlinePlayers().stream().map(Player::getName)
+                    .sorted(String.CASE_INSENSITIVE_ORDER).forEach(options::add);
             return partial(options, prefix);
         }
         if (args.length == 2 && List.of("pause", "resume", "stop").contains(args[0].toLowerCase(Locale.ROOT))
@@ -2760,12 +2774,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER)
                     .forEach(targets::add);
-            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade10", "mode:mono", "mode:stereo", "loop:true", "loop:false"));
+            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade:10", "mode:mono", "mode:stereo", "loop:true", "loop:false", "center:true", "center:false"));
             return partial(targets, args[2]);
-        }
-        if (args.length >= 4 && args[0].equalsIgnoreCase("play")
-                && args[args.length - 1].startsWith("--")) {
-            return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"), args[args.length - 1]);
         }
         return List.of();
     }

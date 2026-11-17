@@ -16,6 +16,13 @@ class PlayTargetDefaultsTest {
     }
 
     @Test
+    void namedCenterOptionIsRecognizedAndLegacyFlagRemainsCompatible() {
+        assertTrue(PlayTargetDefaults.isExplicitCenterOption("center:true"));
+        assertTrue(PlayTargetDefaults.isExplicitCenterOption("--center"));
+        assertFalse(PlayTargetDefaults.isExplicitCenterOption("center:false"));
+    }
+
+    @Test
     void consoleMustSpecifyAnExplicitAudience() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> PlayTargetDefaults.defaultSelector(false, true));
