@@ -31,11 +31,18 @@ public final class PlaybackAudiencePolicy {
      * somebody else's queue merely because it currently overlaps them.
      */
     public static boolean sharesQueueAcrossOwners(boolean requestedAllPlayers,
+                                                   Collection<UUID> requestedListeners,
                                                    boolean existingAllPlayers,
+                                                   Collection<UUID> existingListeners,
                                                    MusicZone requestedZone,
                                                    MusicZone existingZone) {
-        return requestedAllPlayers && existingAllPlayers
-                && requestedZone != null && requestedZone.sameAs(existingZone);
+        if (requestedAllPlayers != existingAllPlayers || requestedZone == null
+                || !requestedZone.sameAs(existingZone)) return false;
+        java.util.Set<UUID> requested = new java.util.HashSet<>(
+                requestedListeners == null ? java.util.List.of() : requestedListeners);
+        java.util.Set<UUID> existing = new java.util.HashSet<>(
+                existingListeners == null ? java.util.List.of() : existingListeners);
+        return requested.equals(existing);
     }
 
     /**
