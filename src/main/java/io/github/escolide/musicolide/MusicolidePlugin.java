@@ -179,8 +179,11 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("bstats.enabled", true);
             migratedConfig = true;
         }
-        if (!getConfig().contains("bstats.plugin-id")) {
-            getConfig().set("bstats.plugin-id", 0);
+        if (!getConfig().contains("bstats.plugin-id")
+                || getConfig().getInt("bstats.plugin-id", 0) == 0) {
+            // Replace the previous unconfigured placeholder with Musicolide's
+            // registered bStats ID; owners can still opt out via bstats.enabled.
+            getConfig().set("bstats.plugin-id", 35412);
             migratedConfig = true;
         }
         for (String chart : List.of("playback-mode", "audio-profile", "resource-pack-delivery",
