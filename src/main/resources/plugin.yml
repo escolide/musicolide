@@ -42,7 +42,7 @@ permissions:
     default: true
   musicolide.dj:
     description: Allows starting and controlling music sessions.
-    default: op
+    default: true
     children:
       musicolide.use: true
   musicolide.admin:

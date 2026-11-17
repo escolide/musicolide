@@ -953,7 +953,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void searchYouTube(CommandSender sender, String[] args) {
-        if (!dj(sender)) return;
+        if (!admin(sender)) return;
         if (!(sender instanceof Player)) {
             sender.sendMessage(msg("&cYouTube result selection is player-specific; run this command in game."));
             return;
@@ -995,13 +995,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void showNextSearchPage(CommandSender sender, String[] args) {
-        if (!dj(sender)) return;
         if (!(sender instanceof Player player)) {
             sender.sendMessage(msg("&cSearch pages are player-specific; run this command in game."));
             return;
         }
-        if (args.length != 2) throw new IllegalArgumentException("Usage: /music page <number>");
         PendingSearch search = pendingSearches.get(player.getUniqueId());
+        if (search != null && search.permanentSelection) {
+            if (!admin(sender)) return;
+        } else if (!dj(sender)) {
+            return;
+        }
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music page <number>");
         if (search == null || System.currentTimeMillis() - search.createdAtMillis > SEARCH_RESULT_TTL_MILLIS) {
             pendingSearches.remove(player.getUniqueId());
             throw new IllegalArgumentException("No active search. Run /play <query> or /music search <query> first.");
@@ -1120,10 +1124,14 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void selectYouTubeResult(CommandSender sender, String[] args) throws SQLException {
-        if (!dj(sender)) return;
         if (!(sender instanceof Player player)) throw new IllegalArgumentException("Only a player can select their own search result.");
-        if (args.length != 2) throw new IllegalArgumentException("Usage: /music select <number>");
         PendingSearch search = pendingSearches.get(player.getUniqueId());
+        if (search != null && search.permanentSelection) {
+            if (!admin(sender)) return;
+        } else if (!dj(sender)) {
+            return;
+        }
+        if (args.length != 2) throw new IllegalArgumentException("Usage: /music select <number>");
         if (search == null || System.currentTimeMillis() - search.createdAtMillis > SEARCH_RESULT_TTL_MILLIS) {
             pendingSearches.remove(player.getUniqueId());
             throw new IllegalArgumentException("No current search results. Run /play <query> first.");
@@ -1807,7 +1815,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private void saveTrack(CommandSender sender, String[] args) throws SQLException {
-        if (!libraryManager(sender)) return;
+        if (!admin(sender)) return;
         if (args.length > 2) throw new IllegalArgumentException("Usage: /music save [TrackID]");
         MusicTrack track;
         if (args.length == 2) {
@@ -2455,13 +2463,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length < 2) throw new IllegalArgumentException("Usage: /music playlist <create/add/list/play> ...");
         switch (args[1].toLowerCase(Locale.ROOT)) {
             case "create" -> {
-                if (!dj(sender)) return;
+                if (!admin(sender)) return;
                 if (args.length < 3) throw new IllegalArgumentException("Usage: /music playlist create <name>");
                 repository.createPlaylist(args[2]);
                 sender.sendMessage(msg("&aPlaylist created: " + args[2]));
             }
             case "add" -> {
-                if (!dj(sender)) return;
+                if (!admin(sender)) return;
                 if (args.length < 4) throw new IllegalArgumentException("Usage: /music playlist add <name> <track-id>");
                 MusicTrack track = resolveTrack(args[3]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
                 int maximumTracks = Math.max(1, plugin.getConfig().getInt("limits.max-playlist-tracks", 500));
@@ -2545,14 +2553,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private boolean dj(CommandSender sender) {
         if (sender.hasPermission(plugin.getConfig().getString("permissions.dj", "musicolide.dj"))) return true;
-        sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
-        return false;
-    }
-
-    private boolean libraryManager(CommandSender sender) {
-        String djPermission = plugin.getConfig().getString("permissions.dj", "musicolide.dj");
-        String adminPermission = plugin.getConfig().getString("permissions.admin", "musicolide.admin");
-        if (sender.hasPermission(djPermission) || sender.hasPermission(adminPermission)) return true;
         sender.sendMessage(msg(plugin.getConfig().getString("messages.no-permission", "&cNo permission.")));
         return false;
     }
