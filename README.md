@@ -190,7 +190,7 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 
 - `musicolide.use` and `musicolide.dj` are granted to **everyone by default**. Every player can start and control their own playback sessions, use queues, browse/search through `/play`, and play existing server playlists.
 - `musicolide.admin` remains **OP-only by default**. Admins manage the permanent music library, including imports, permanent saves, permanent YouTube search selections, deletion and aliases.
-- Shared server playlists are visible to everyone; only admins can create, edit, remove entries from, or delete them. Every DJ can create and manage personal playlists under `/music playlist private`; private playlists are keyed to the owner's Minecraft UUID and are not visible to other players. Playlist playback uses the same target and zone rules as `/play`, and defaults to the executor only.
+- Shared server playlists are visible to everyone; only admins can create, edit, remove entries from, or delete them. Every DJ can create and manage personal playlists under `/music playlist private`; private playlists are keyed to the owner's Minecraft UUID and are not visible to other players. Playlist playback uses the same target and zone rules as `/play` (normally `@s` with no zone; spatial defaults follow the same permission/config rules).
 - LuckPerms can still grant or deny these permission nodes explicitly. Admin inherits DJ, and DJ inherits use.
 
 ## Commands
