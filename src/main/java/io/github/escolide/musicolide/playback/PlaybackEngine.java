@@ -1865,18 +1865,24 @@ public final class PlaybackEngine {
         UUID playerId = player.getUniqueId();
         PlayerPlayback state = playerPlayback.get(playerId);
         UUID currentlyAudible = state == null ? null : state.sessionId;
+        UUID manualSelection = selectedSessionByPlayer.get(playerId);
+        List<UUID> eligibleIds = candidates.stream()
+                .map(candidate -> candidate.session.id()).toList();
+        if (manualSelection != null && !eligibleIds.contains(manualSelection)) {
+            // Leaving the selected zone or ending its session clears the override;
+            // re-entering later must not unexpectedly resurrect the old choice.
+            selectedSessionByPlayer.remove(playerId);
+            manualSelection = null;
+        }
         UUID preferred = PlaybackAudiencePolicy.preferredEligibleSession(
-                selectedSessionByPlayer.get(playerId), currentlyAudible,
-                candidates.stream().map(candidate -> candidate.session.id()).toList());
+                manualSelection, currentlyAudible, eligibleIds);
         if (preferred != null) {
             return candidates.stream().filter(candidate -> candidate.session.id().equals(preferred))
                     .findFirst().orElse(null);
         }
 
-        // Once a selected source ends or a selected zone is left, discard the
-        // override. Explicit server-wide promotion remains the sole automatic
-        // pre-emption path; ordinary new zones/public sessions do not cut in.
-        selectedSessionByPlayer.remove(playerId);
+        // Explicit server-wide promotion remains the sole automatic pre-emption
+        // path; ordinary new zones/public sessions do not cut in.
         Candidate promoted = candidates.stream()
                 .filter(candidate -> candidate.session.serverWidePromotion())
                 .min(this::compare).orElse(null);
