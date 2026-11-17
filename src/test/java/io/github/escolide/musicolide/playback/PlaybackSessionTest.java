@@ -491,4 +491,36 @@ class PlaybackSessionTest {
                 "The session clock should resume when the player selects this session again.");
     }
 
+    @Test
+    void concurrentPlaylistImportsKeepSessionAliveUntilEveryProducerFinishes() {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(), 0);
+
+        session.addQueuePending();
+        session.addQueuePending();
+        assertFalse(session.isEmpty());
+
+        session.removeQueuePending();
+        assertTrue(session.queuePending());
+        assertFalse(session.isEmpty(),
+                "Finishing one playlist producer must not clear another producer's pending queue.");
+
+        session.removeQueuePending();
+        assertFalse(session.queuePending());
+        assertTrue(session.isEmpty());
+    }
+
+    @Test
+    void sameExactTargetAndZoneMatchForQueueingButDifferentPlayersDoNot() {
+        UUID listener = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        PlaybackSession personal = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(listener),
+                List.of(sampleTrack("same-target")), 0);
+
+        assertTrue(personal.matchesPlaybackAudienceAndZone(false, List.of(listener), MusicZone.global()));
+        assertFalse(personal.matchesPlaybackAudienceAndZone(false, List.of(other), MusicZone.global()));
+        assertFalse(personal.matchesPlaybackAudienceAndZone(true, List.of(), MusicZone.global()));
+    }
+
 }
