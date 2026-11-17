@@ -1597,7 +1597,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                             || playlistDelivery.trim().equalsIgnoreCase("per-track");
                     session.configureUrlPlaylist(playlistPerTrack);
                     sender.sendMessage(msg("&aStarted playlist with &f" + track.title()
-                            + "&a. The server will prepare upcoming tracks gradually; players receive only the active track when per-track playlist delivery is selected."));
+                            + "&a. The server will prepare up to two upcoming tracks gradually; players receive only the active track when per-track playlist delivery is selected."));
                     PlaylistRunner runner = new PlaylistRunner(sender, request, session, entries, 1);
                     playlistRunners.add(runner);
                     runner.start();
