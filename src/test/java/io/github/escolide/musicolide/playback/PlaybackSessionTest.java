@@ -470,4 +470,25 @@ class PlaybackSessionTest {
         assertTrue(session.advance());
         assertEquals("demo", session.current().id());
     }
+    @Test
+    void overlapSuspensionFreezesTimelineUntilTheSessionWinsAgain() throws Exception {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(UUID.randomUUID()),
+                List.of(sampleTrack("overlap-suspended")), 0);
+        session.startClockIfNeeded();
+        Thread.sleep(80);
+        long suspendedAt = session.elapsedMs();
+
+        session.suspendClockForOverlap();
+        assertFalse(session.clockStarted());
+        Thread.sleep(80);
+        assertEquals(suspendedAt, session.elapsedMs(),
+                "A session hidden by another selected source must not consume its track or queue.");
+
+        session.startClockIfNeeded();
+        Thread.sleep(60);
+        assertTrue(session.elapsedMs() > suspendedAt,
+                "The session clock should resume when the player selects this session again.");
+    }
+
 }
