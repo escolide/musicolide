@@ -228,6 +228,18 @@ public final class PlaybackSession {
         }
     }
 
+    /**
+     * Holds a session whose otherwise-eligible listeners all selected another
+     * overlapping source. Unlike pause(), this is automatic and is resumed by
+     * the playback engine when at least one listener selects this session again.
+     */
+    public synchronized void suspendClockForOverlap() {
+        if (!clockStarted || current == null || paused || resumePreparing) return;
+        elapsedBaseMs = elapsedMs();
+        trackStartedAt = 0;
+        clockStarted = false;
+    }
+
     public synchronized void pause() {
         if (resumePreparing) {
             // A second pause cancels an outstanding resume/seek preparation.
