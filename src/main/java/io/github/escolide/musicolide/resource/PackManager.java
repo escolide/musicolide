@@ -109,7 +109,6 @@ public final class PackManager {
                 || !requested.getOrDefault(playerId, Set.of()).isEmpty()
                 || !ready.getOrDefault(playerId, Set.of()).isEmpty()
                 || !waiting.getOrDefault(playerId, new LinkedHashMap<>()).isEmpty()
-                || pinnedTemporaryPacks.containsKey(playerId)
                 || !pinnedTemporaryPacks.getOrDefault(playerId, Set.of()).isEmpty();
     }
 
