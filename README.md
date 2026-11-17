@@ -190,7 +190,7 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 
 - `musicolide.use` and `musicolide.dj` are granted to **everyone by default**. Every player can start and control their own playback sessions, use queues, browse/search through `/play`, and play existing server playlists.
 - `musicolide.admin` remains **OP-only by default**. Admins manage the permanent music library, including imports, permanent saves, permanent YouTube search selections, deletion and aliases.
-- Server playlists are shared by all players. Only admins can create them or add tracks to them; DJs can list and play them.
+- Shared server playlists are visible to everyone; only admins can create, edit, remove entries from, or delete them. Every DJ can create and manage personal playlists under `/music playlist private`; private playlists are keyed to the owner's Minecraft UUID and are not visible to other players. Playlist playback uses the same target and zone rules as `/play`, and defaults to the executor only.
 - LuckPerms can still grant or deny these permission nodes explicitly. Admin inherits DJ, and DJ inherits use.
 
 ## Commands
@@ -207,11 +207,12 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 - /music delete <TrackID> (admin; removes the database entry and its TrackID-named SavedMusic files; cannot delete a queued/playing or currently downloading track)
 - /music import <filename> [title] [id:custom_id] and /music import all (admin; permanently import files from SavedMusic/)
 - /music import-url <url> [title...] [id:custom_id] (admin; permanently import one URL from an allowlisted host)
-- /music playlist create <name>, add <name> <TrackID> (admin manages shared server playlists); list and play <name> (DJ)
+- /music playlist create <name>, add <name> <TrackID>, remove <name> <entry>, delete <name>, list, show <name>, play <name> [play options] (admin manages shared server playlists; DJs can list/show/play)
+- /music playlist private create <name>, add <name> <TrackID>, remove <name> <entry>, delete <name>, list, show <name>, play <name> [play options] (each DJ manages only their own private playlists)
 - /music diagnostics, /music download, /music reload, /music alias add <url> <TrackID>, /music priority <number>
 - /link and /unlink manage Discord account pairing.
 
-Compact play options also include target:<player>, id:custom_name, circle:<radius>, square:<width>x<length>, region:<WorldGuard-ID>, fade10 or fade:10 (both require mode:mono), mode:mono/mode:stereo, and loop:true/loop:false. A loop can be queued after ordinary tracks, but nothing can be appended after that loop entry; once it starts, use /music stop to end it. URL-playlist import sessions keep their separate managed queue. Legacy --option forms remain accepted for backwards compatibility. Public TrackIDs use the unique a00-f99 format (up to 600 active tracks). A code is freed and may be reused after a track is deleted or expires; existing internal IDs remain accepted as aliases.
+Compact play options also include target:<player>, id:custom_name, circle:<radius>, square:<width>x<length>, region:<WorldGuard-ID>, fade10 or fade:10 (both require mode:mono), mode:mono/mode:stereo, and loop:true/loop:false. Shared and private playlist `play` commands reuse the same target, spatial-zone, mono/stereo, fade and center options as `/play`. For playlist playback, `loop:true|false` repeats or disables repeating of the playlist as a whole; `id:` is not applicable. A loop can be queued after ordinary tracks, but nothing can be appended after that loop entry; once it starts, use /music stop to end it. URL-playlist import sessions keep their separate managed queue. Legacy --option forms remain accepted for backwards compatibility. Public TrackIDs use the unique a00-f99 format (up to 600 active tracks). A code is freed and may be reused after a track is deleted or expires; existing internal IDs remain accepted as aliases.
 
 For /play and /music search, zone/range modifiers are retained when the YouTube result is selected. When a player supplies a spatial option without an explicit target, the default audience is @a, filtered by the zone; without a spatial option, the historical default remains @s. An explicit @s, @p, @a or player-name target always overrides that default. The zone center is the command sender's location and world. Console playback cannot create a player-centered spatial zone and must specify a target for non-spatial playback.
 
