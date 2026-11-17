@@ -787,7 +787,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10 (mode:mono only)] [mode:mono] [loop:true|false] [center:true] [id:music100]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade:10 (mode:mono only)] [mode:mono] [loop:true|false] [center:true] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -939,7 +939,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     || normalized.startsWith("mode:") || normalized.startsWith("loop:")
                     || normalized.startsWith("circle:")
                     || normalized.startsWith("square:") || normalized.startsWith("region:")
-                    // Bare "center" is ordinary search text; use center:true to opt in.
+                    || normalized.startsWith("center:")
                     || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
             if (normalized.startsWith("--") || compact || normalized.equals("mono")
                     || normalized.equals("stereo") || normalized.equals("@a")
@@ -1350,6 +1350,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 audioMode = option.substring(5);
                 if (!audioMode.equals("mono") && !audioMode.equals("stereo"))
                     throw new IllegalArgumentException("Use mode:mono or mode:stereo.");
+                continue;
+            }
+            if (option.startsWith("center:")) {
+                String value = option.substring("center:".length());
+                if (!value.equals("true") && !value.equals("false"))
+                    throw new IllegalArgumentException("Use center:true or center:false.");
+                centeredMono = Boolean.parseBoolean(value);
                 continue;
             }
             if (option.startsWith("center:")) {
@@ -2599,9 +2606,9 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&7Only import audio you own or have explicit rights to redistribute."));
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
-        sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10 (requires mode:mono)"));
+        sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade:10 (requires mode:mono)"));
         sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f loop:true|false &8• &f center:true &8• &f id:custom_name"));
-        sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:mono"));
+        sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade:10 mode:mono"));
         sender.sendMessage(msg("&7Stereo is default. fadeN requires mode:mono; mono circle/square zones use configured fade unless overridden."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
         sender.sendMessage(msg("&7The center:true option is mono-only and opt-in; by default mono follows each listener as they move."));
@@ -2679,7 +2686,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
             List<String> options = new ArrayList<>(List.of(
                     "target:@s", "target:@p", "id:", "circle:", "square:",
-                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo",
+                    "region:", "fade:10", "fade:0", "mode:mono", "mode:stereo",
                     "loop:true", "loop:false", "center:true", "center:false",
                     "@s", "@p"));
             if (canTargetAll) {
@@ -2765,7 +2772,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER)
                     .forEach(targets::add);
-            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade10", "mode:mono", "mode:stereo", "loop:true", "loop:false"));
+            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade:10", "mode:mono", "mode:stereo", "loop:true", "loop:false", "center:true", "center:false"));
             return partial(targets, args[2]);
         }
                 return List.of();
