@@ -48,7 +48,7 @@ audio:
     enabled: true
     executable: "yt-dlp"
     # When enabled, /play <url> can be used by players with the DJ permission.
-    # The separate /music import-url command remains admin-only and requires --rights-confirmed.
+    # The separate /music import-url command remains admin-only.
     # Keep false unless the server operator has confirmed download and redistribution rights.
     auto-import-on-play: true
     # Accept YouTube playlist URLs in /play only when this is explicitly enabled.
@@ -60,7 +60,7 @@ audio:
     js-runtime-executable: "qjs"
     # Add only domains from which the server has permission to download and redistribute audio.
     # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
-    # For a permanent authorized import, use /music import-url <url> rights.
+    # For a permanent single-video import, use /music import-url <url> [title] [id:custom_name].
     allowed-hosts:
       - "youtube.com"
       - "youtu.be"
