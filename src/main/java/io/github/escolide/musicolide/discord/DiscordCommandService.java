@@ -79,7 +79,7 @@ public final class DiscordCommandService extends ListenerAdapter {
                 Commands.slash("info", "Show the current Musicolide track, timestamp and server information"),
                 Commands.slash("help", "Explain Musicolide Discord commands and playback options"),
                 Commands.slash("play", "Search for and play a track from the server's authorized audio sources")
-                        .addOption(OptionType.STRING, "query", "Song, artist or NCS search", true, true)
+                        .addOption(OptionType.STRING, "query", "Song or artist search", true, true)
                         .addOption(OptionType.STRING, "target", "Optional target: @s, @p, @a, or an online player name", false)
                         .addOption(OptionType.STRING, "id", "Optional custom track ID/name for a new import", false)
                         .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
