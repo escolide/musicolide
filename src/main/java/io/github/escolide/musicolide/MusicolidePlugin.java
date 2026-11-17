@@ -534,6 +534,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 getCommand("play").setExecutor(command::onPlayCommand);
                 getCommand("play").setTabCompleter(command::onPlayTabComplete);
             }
+            if (getCommand("queue") != null) {
+                getCommand("queue").setExecutor(command::onQueueCommand);
+                getCommand("queue").setTabCompleter(command::onQueueTabComplete);
+            }
             if (getCommand("link") != null) getCommand("link").setExecutor(command::onLinkCommand);
             if (getCommand("unlink") != null) getCommand("unlink").setExecutor(command::onUnlinkCommand);
             if (getCommand("deafen") != null) getCommand("deafen").setExecutor(command::onDeafenCommand);

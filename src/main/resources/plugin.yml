@@ -16,6 +16,10 @@ commands:
     description: Play a track or import an administrator-allowlisted URL.
     usage: /play <track-title, search query or YouTube URL>
     permission: musicolide.dj
+  queue:
+    description: Add, remove or clear upcoming playback tracks.
+    usage: /queue add|remove <TrackID> or /queue clear
+    permission: musicolide.dj
   link:
     description: Generate a one-time five-minute Discord account-link code.
     usage: /link

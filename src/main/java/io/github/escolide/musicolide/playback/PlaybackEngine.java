@@ -128,7 +128,7 @@ public final class PlaybackEngine {
         return session;
     }
 
-    public enum PlayDisposition { STARTED, QUEUED, QUEUE_FULL, MODE_MISMATCH }
+    public enum PlayDisposition { STARTED, QUEUED, QUEUE_FULL, MODE_MISMATCH, LOOP_TERMINAL }
 
     /**
      * Starts a new playback session, or appends /play to the sender's existing
@@ -152,6 +152,15 @@ public final class PlaybackEngine {
                                                       boolean allPlayers, Collection<UUID> listeners,
                                                       MusicTrack track, int priority, boolean mono,
                                                       PlaybackAudiencePolicy.TargetScope targetScope) {
+        return playOrQueueResult(owner, ownerName, zone, allPlayers, listeners, track, priority,
+                mono, targetScope, false);
+    }
+
+    public synchronized PlayResult playOrQueueResult(UUID owner, String ownerName, MusicZone zone,
+                                                      boolean allPlayers, Collection<UUID> listeners,
+                                                      MusicTrack track, int priority, boolean mono,
+                                                      PlaybackAudiencePolicy.TargetScope targetScope,
+                                                      boolean loop) {
         java.util.function.Predicate<PlaybackSession> sameRequest =
                 session -> session.matchesStandardPlaybackQueue(allPlayers, listeners, zone);
         java.util.function.Predicate<PlaybackSession> sameOwner =
@@ -180,13 +189,21 @@ public final class PlaybackEngine {
 
         if (existing != null && !existing.isEmpty()) {
             if (existing.isMono() != mono) return new PlayResult(PlayDisposition.MODE_MISMATCH, existing);
+            if (existing.hasLoopTerminal()) return new PlayResult(PlayDisposition.LOOP_TERMINAL, existing);
             int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
             if (existing.queueSize() >= maximumQueue) return new PlayResult(PlayDisposition.QUEUE_FULL, existing);
-            existing.enqueue(track);
+            PlaybackSession.QueueAddResult added = existing.addToQueue(track, loop);
+            if (added == PlaybackSession.QueueAddResult.LOOP_TERMINAL) {
+                return new PlayResult(PlayDisposition.LOOP_TERMINAL, existing);
+            }
             return new PlayResult(PlayDisposition.QUEUED, existing);
         }
         PlaybackSession created = startSession(owner, ownerName, zone, allPlayers, listeners,
                 List.of(track), priority, mono, targetScope);
+        if (loop && !created.markCurrentAsLoop()) {
+            sessions.remove(created);
+            throw new IllegalStateException("The loop track could not be attached to its new playback session.");
+        }
         return new PlayResult(PlayDisposition.STARTED, created);
     }
 
@@ -684,14 +701,53 @@ public final class PlaybackEngine {
         }
     }
 
-    public synchronized boolean enqueue(UUID actor, boolean admin, MusicTrack track) {
-        PlaybackSession session = findOwned(actor).orElseGet(() -> admin && !sessions.isEmpty()
+    public enum QueueMutationResult {
+        ADDED, REMOVED, CLEARED, EMPTY, NO_SESSION, QUEUE_FULL,
+        LOOP_TERMINAL, LOOP_ACTIVE, NOT_QUEUED, MANAGED_PLAYLIST
+    }
+
+    private PlaybackSession queueControlSession(UUID actor, boolean admin) {
+        return findOwned(actor).orElseGet(() -> admin && !sessions.isEmpty()
                 ? sessions.get(sessions.size() - 1) : null);
-        if (session == null) return false;
+    }
+
+    public synchronized QueueMutationResult queueAdd(UUID actor, boolean admin, MusicTrack track) {
+        PlaybackSession session = queueControlSession(actor, admin);
+        if (session == null) return QueueMutationResult.NO_SESSION;
+        if (session.isUrlPlaylist()) return QueueMutationResult.MANAGED_PLAYLIST;
+        if (session.hasLoopTerminal()) return QueueMutationResult.LOOP_TERMINAL;
+        int maximum = plugin.getConfig().getInt("limits.max-queue-length", 500);
+        if (session.queueSize() >= maximum) return QueueMutationResult.QUEUE_FULL;
+        PlaybackSession.QueueAddResult result = session.addToQueue(track, false);
+        return result == PlaybackSession.QueueAddResult.ADDED
+                ? QueueMutationResult.ADDED : QueueMutationResult.LOOP_TERMINAL;
+    }
+
+    public synchronized QueueMutationResult queueRemove(UUID actor, boolean admin, String trackId) {
+        PlaybackSession session = queueControlSession(actor, admin);
+        if (session == null) return QueueMutationResult.NO_SESSION;
+        if (session.isUrlPlaylist()) return QueueMutationResult.MANAGED_PLAYLIST;
+        if (session.isLoopActive()) return QueueMutationResult.LOOP_ACTIVE;
+        return session.removeQueuedTrack(trackId)
+                ? QueueMutationResult.REMOVED : QueueMutationResult.NOT_QUEUED;
+    }
+
+    public synchronized QueueMutationResult queueClear(UUID actor, boolean admin) {
+        PlaybackSession session = queueControlSession(actor, admin);
+        if (session == null) return QueueMutationResult.NO_SESSION;
+        if (session.isUrlPlaylist()) return QueueMutationResult.MANAGED_PLAYLIST;
+        if (session.isLoopActive()) return QueueMutationResult.LOOP_ACTIVE;
+        return session.clearQueuedTracks() > 0
+                ? QueueMutationResult.CLEARED : QueueMutationResult.EMPTY;
+    }
+
+    /** Legacy /music queue <TrackID> entry point. */
+    public synchronized boolean enqueue(UUID actor, boolean admin, MusicTrack track) {
+        PlaybackSession session = queueControlSession(actor, admin);
+        if (session == null || session.hasLoopTerminal()) return false;
         int maximum = plugin.getConfig().getInt("limits.max-queue-length", 500);
         if (session.queueSize() >= maximum) return false;
-        session.enqueue(track);
-        return true;
+        return session.addToQueue(track, false) == PlaybackSession.QueueAddResult.ADDED;
     }
 
     public enum VolumeChangeResult { SAVED, MUTED, RESYNCHRONIZING, NEXT_TRACK, RESTARTED }
@@ -917,6 +973,7 @@ public final class PlaybackEngine {
         pending.sessionId = session.id();
         pending.syncSessionId = session.id();
         pending.syncSourceTrackId = sourceTrack.id();
+        pending.syncTimelineGeneration = session.timelineGeneration();
         pending.syncPreparing = true;
         pending.fading = candidate.mode == MusicZone.AudioMode.FADE;
         playerPlayback.put(playerId, pending);
@@ -943,7 +1000,8 @@ public final class PlaybackEngine {
                         stillActive = sessions.contains(session);
                     }
                     if (!stillActive || currentCandidate == null || currentCandidate.session != session
-                            || session.current() == null || !sourceTrack.id().equals(session.current().id())) {
+                            || session.current() == null || !sourceTrack.id().equals(session.current().id())
+                            || session.timelineGeneration() != pending.syncTimelineGeneration) {
                         playerPlayback.remove(playerId, pending);
                         releaseGeneratedTrack(remainder);
                         if (completion != null && player.isOnline()) {
@@ -1602,7 +1660,8 @@ public final class PlaybackEngine {
         PlayerPlayback state = playerPlayback.get(playerId);
         if (state != null && state.syncSessionId != null
                 && (!state.syncSessionId.equals(session.id()) || originalTrack == null
-                || !Objects.equals(state.syncSourceTrackId, originalTrack.id()))) {
+                || !Objects.equals(state.syncSourceTrackId, originalTrack.id())
+                || state.syncTimelineGeneration != session.timelineGeneration())) {
             stopPlayer(player);
             state = null;
         }
@@ -1702,6 +1761,7 @@ public final class PlaybackEngine {
         // the edge of the fade band: that would replay the whole track at 00:00.
         // Segmented tracks pick up the latest fade factor at their next segment.
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
+                || state.timelineGeneration != session.timelineGeneration()
                 || state.segment != segment || state.sound == null;
         if (changed) {
             stopCurrentSound(player, state);
@@ -1717,6 +1777,7 @@ public final class PlaybackEngine {
             state.segment = segment;
             state.fading = fading;
             state.sound = sound;
+            state.timelineGeneration = session.timelineGeneration();
             playerPlayback.put(player.getUniqueId(), state);
         } else {
             state.fading = fading;
@@ -2055,6 +2116,8 @@ public final class PlaybackEngine {
         String sound;
         UUID syncSessionId;
         String syncSourceTrackId;
+        long syncTimelineGeneration = -1L;
+        long timelineGeneration = -1L;
         MusicTrack syncTrack;
         boolean syncPreparing;
         float baseVolume = Float.NaN;

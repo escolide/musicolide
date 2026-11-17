@@ -23,4 +23,18 @@ class PlayAudioOptionPolicyTest {
         assertDoesNotThrow(() -> PlayAudioOptionPolicy.requireMonoForFade(false, "stereo"));
         assertDoesNotThrow(() -> PlayAudioOptionPolicy.requireMonoForFade(false, "mono"));
     }
+
+    @Test
+    void loopOptionParsesTrueAndFalseCaseInsensitively() {
+        assertTrue(PlayAudioOptionPolicy.parseLoop("true"));
+        assertTrue(PlayAudioOptionPolicy.parseLoop("TRUE"));
+        assertFalse(PlayAudioOptionPolicy.parseLoop("false"));
+        assertFalse(PlayAudioOptionPolicy.parseLoop("False"));
+    }
+
+    @Test
+    void loopOptionRejectsValuesOtherThanTrueOrFalse() {
+        assertThrows(IllegalArgumentException.class, () -> PlayAudioOptionPolicy.parseLoop("yes"));
+        assertThrows(IllegalArgumentException.class, () -> PlayAudioOptionPolicy.parseLoop(""));
+    }
 }
