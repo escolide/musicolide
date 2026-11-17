@@ -106,7 +106,9 @@ public final class MusicGui implements Listener {
         boolean canControl = viewer != null && session != null && commands.canControlGui(viewer, session);
         boolean admin = viewer != null && commands.isGuiAdmin(viewer);
 
-        List<String> paperLore = hasTrack
+        // The paper is a live-playing indicator only. Paused sessions deliberately
+        // look idle here; their full state and metadata remain available in the book.
+        List<String> paperLore = playing
                 ? List.of(ChatColor.WHITE + clean(track.title()),
                         gray(time(session.elapsedMs()) + " / " + time(track.durationMs())))
                 : List.of(gray("No songs playing."));
