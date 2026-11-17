@@ -171,8 +171,7 @@ public final class PlaybackEngine {
             existing = sessions.stream()
                     .filter(sameRequest)
                     .filter(session -> PlaybackAudiencePolicy.sharesQueueAcrossOwners(
-                            allPlayers, listeners, session.allPlayers(), session.listenerIds(),
-                            zone, session.zone()))
+                            allPlayers, session.allPlayers(), zone, session.zone()))
                     .max(Comparator.comparingLong(PlaybackSession::startedAt))
                     .orElse(null);
         }
@@ -205,8 +204,7 @@ public final class PlaybackEngine {
         return sessions.stream()
                 .filter(session -> sameOwner.test(session)
                         || (allPlayers && PlaybackAudiencePolicy.sharesQueueAcrossOwners(
-                                allPlayers, listeners, session.allPlayers(), session.listenerIds(),
-                                zone, session.zone())))
+                                allPlayers, session.allPlayers(), zone, session.zone())))
                 .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
                 .max(Comparator.comparingLong(PlaybackSession::startedAt))
                 .map(PlaybackSession::isMono);
