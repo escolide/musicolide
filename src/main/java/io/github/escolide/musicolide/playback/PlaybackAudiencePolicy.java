@@ -26,29 +26,22 @@ public final class PlaybackAudiencePolicy {
     }
 
     /**
-     * Independent owners share a queue only when they request the same all-player
-     * audience in the exact same zone. A personal target must never be merged into
-     * somebody else's queue merely because it currently overlaps them.
+     * Independent owners share the server-wide queue only when both requests are
+     * addressed to all players in the exact same zone. Personal sessions stay owned
+     * by their initiating player and are never merged merely because they overlap.
      */
     public static boolean sharesQueueAcrossOwners(boolean requestedAllPlayers,
-                                                   Collection<UUID> requestedListeners,
                                                    boolean existingAllPlayers,
-                                                   Collection<UUID> existingListeners,
                                                    MusicZone requestedZone,
                                                    MusicZone existingZone) {
-        if (requestedAllPlayers != existingAllPlayers || requestedZone == null
-                || !requestedZone.sameAs(existingZone)) return false;
-        java.util.Set<UUID> requested = new java.util.HashSet<>(
-                requestedListeners == null ? java.util.List.of() : requestedListeners);
-        java.util.Set<UUID> existing = new java.util.HashSet<>(
-                existingListeners == null ? java.util.List.of() : existingListeners);
-        return requested.equals(existing);
+        return requestedAllPlayers && existingAllPlayers && requestedZone != null
+                && requestedZone.sameAs(existingZone);
     }
 
     /**
-     * Manual switch cycle: personal target (@s/@p/player), spatial zone, then
-     * server-wide public (@a). Normal arbitration still preserves the session
-     * already audible to a listener until they explicitly switch.
+     * Manual switch cycle: @s first, then spatial zones and @p/player targets,
+     * then server-wide public @a. Current audible playback remains selected until
+     * the listener explicitly switches.
      */
     public static int switchCycleRank(TargetScope scope) {
         if (scope == null) return 1;
