@@ -284,6 +284,7 @@ limits:
   max-track-library-gb: 10
 
 permissions:
+  # Defaults are declared in plugin.yml: use and dj are granted to everyone; admin is OP-only.
   use: "musicolide.use"
   dj: "musicolide.dj"
   admin: "musicolide.admin"
