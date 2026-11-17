@@ -183,6 +183,17 @@ public final class PlaybackSession {
                 && zone.sameAs(requestedZone);
     }
 
+    /**
+     * Standard single-track requests must not join a URL-playlist importer.
+     * Playlist sessions have their own bounded producer and queue cadence.
+     */
+    public synchronized boolean matchesStandardPlaybackQueue(boolean requestedAllPlayers,
+                                                               Collection<UUID> requestedListeners,
+                                                               MusicZone requestedZone) {
+        return !urlPlaylist
+                && matchesPlaybackAudienceAndZone(requestedAllPlayers, requestedListeners, requestedZone);
+    }
+
     public synchronized boolean matchesPlaybackRequest(boolean requestedAllPlayers,
                                                        Collection<UUID> requestedListeners,
                                                        MusicZone requestedZone,
