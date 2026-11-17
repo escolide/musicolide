@@ -136,10 +136,6 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("playlists.preimport.max-preimported-tracks", 2);
             migratedConfig = true;
         }
-        if (!getConfig().contains("playback.mono.centered-audio-origin-by-default")) {
-            getConfig().set("playback.mono.centered-audio-origin-by-default", false);
-            migratedConfig = true;
-        }
         if (!getConfig().contains("playback.synchronization.action-bar-show-artist")) {
             getConfig().set("playback.synchronization.action-bar-show-artist", false);
             migratedConfig = true;
@@ -621,35 +617,38 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         }
     }
 
-    /** Changes the optional broadcaster at runtime without changing Minecraft playback. */
-    public void setDiscordEnabled(boolean enabled) {
+    /** Changes the optional broadcaster at runtime without needlessly restarting an unchanged state. */
+    public boolean setDiscordEnabled(boolean enabled) {
+        if (getConfig().getBoolean("discord.enabled", false) == enabled) return false;
         getConfig().set("discord.enabled", enabled);
         saveConfig();
         if (enabled) startDiscordServices();
         else stopDiscordServices();
+        return true;
     }
 
     public boolean isPlayerMusicDisabled(java.util.UUID playerId) {
         return packManager != null && packManager.isPlayerDisabled(playerId);
     }
 
-    public void disablePlayerMusic(Player player) {
-        if (player == null || packManager == null) return;
+    public boolean disablePlayerMusic(Player player) {
+        if (player == null || packManager == null || packManager.isPlayerDisabled(player.getUniqueId())) return false;
         if (playback != null) playback.unloadPlayerAudio(player);
-        packManager.disablePlayer(player);
+        return packManager.disablePlayer(player);
     }
 
-    public void enablePlayerMusic(Player player) {
-        if (player == null || packManager == null) return;
-        packManager.enablePlayer(player);
+    public boolean enablePlayerMusic(Player player) {
+        if (player == null || packManager == null) return false;
+        return packManager.enablePlayer(player);
     }
 
-    public void unloadPlayerMusic(Player player) {
-        if (player == null || packManager == null) return;
+    public boolean unloadPlayerMusic(Player player) {
+        if (player == null || packManager == null) return false;
         String currentTrackId = playback == null ? null
                 : playback.currentPlaybackTrackFor(player).map(MusicTrack::id).orElse(null);
+        if (!packManager.unloadPlayer(player, currentTrackId)) return false;
         if (playback != null) playback.unloadPlayerAudio(player);
-        packManager.unloadPlayer(player, currentTrackId);
+        return true;
     }
 
     private void scheduleTemporaryTrackCleanup() {
