@@ -18,6 +18,7 @@ import io.github.escolide.musicolide.resource.SoundPackNamespaceMigration;
 import io.github.escolide.musicolide.runtime.DiscordRuntimeBundle;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
+import io.github.escolide.musicolide.metrics.MusicolideMetrics;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -54,6 +55,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
     private ResourcePackBuilder resourcePackBuilder;
     private BukkitTask temporaryTrackCleanupTask;
     private MusicCommand musicCommand;
+    private MusicolideMetrics bstatsMetrics;
     private long discordGeneration;
 
     @Override
@@ -171,6 +173,24 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
         if (!getConfig().contains("geyser.ignore-bedrock-players")) {
             getConfig().set("geyser.ignore-bedrock-players", false);
             migratedConfig = true;
+        }
+        // Add bStats settings to existing installations without overwriting preferences.
+        if (!getConfig().contains("bstats.enabled")) {
+            getConfig().set("bstats.enabled", true);
+            migratedConfig = true;
+        }
+        if (!getConfig().contains("bstats.plugin-id")) {
+            getConfig().set("bstats.plugin-id", 0);
+            migratedConfig = true;
+        }
+        for (String chart : List.of("playback-mode", "audio-profile", "resource-pack-delivery",
+                "playlist-delivery", "remote-import-enabled", "discord-enabled",
+                "geyser-integration", "worldguard-integration")) {
+            String chartPath = "bstats.charts." + chart;
+            if (!getConfig().contains(chartPath)) {
+                getConfig().set(chartPath, true);
+                migratedConfig = true;
+            }
         }
         // Add optional Discord settings to existing installations without
         // overwriting any token, channel ID, or administrator preference.
@@ -545,6 +565,7 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
 
             if (getConfig().getBoolean("discord.enabled", false)) startDiscordServices();
             Bukkit.getPluginManager().registerEvents(this, this);
+            startBstatsMetrics();
             getLogger().info("Musicolide enabled. Place local audio files in plugins/Musicolide/SavedMusic/. Permanent imports and metadata are stored there.");
         } catch (Exception ex) {
             getLogger().severe("Musicolide could not start: " + ex.getMessage());
@@ -603,6 +624,25 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                     bootstrap.shutdown();
                 }
             });
+        }
+    }
+
+    private void startBstatsMetrics() {
+        if (!getConfig().getBoolean("bstats.enabled", true)) {
+            getLogger().info("bStats metrics are disabled in Musicolide config.");
+            return;
+        }
+        int pluginId = getConfig().getInt("bstats.plugin-id", 0);
+        if (pluginId <= 0) {
+            getLogger().info("bStats is enabled but no plugin ID is configured. Register Musicolide at "
+                    + "https://bstats.org/add-plugin, then set bstats.plugin-id in config.yml.");
+            return;
+        }
+        try {
+            bstatsMetrics = MusicolideMetrics.start(this, pluginId);
+        } catch (RuntimeException | LinkageError error) {
+            getLogger().log(java.util.logging.Level.WARNING,
+                    "Could not initialize optional bStats metrics. Musicolide playback is unaffected.", error);
         }
     }
 
@@ -859,6 +899,10 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        if (bstatsMetrics != null) {
+            bstatsMetrics.shutdown();
+            bstatsMetrics = null;
+        }
         if (temporaryTrackCleanupTask != null) temporaryTrackCleanupTask.cancel();
         closeGeyserPackIntegration();
         synchronized (discordStartupLock) {

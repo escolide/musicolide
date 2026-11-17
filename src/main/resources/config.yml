@@ -385,6 +385,24 @@ discord:
       play: "everyone"
       music: "everyone"
 
+# Anonymous aggregate usage metrics. Register Musicolide at https://bstats.org/add-plugin
+# and enter the numeric ID assigned to your plugin below.
+# No metrics are sent until a valid plugin ID is configured.
+bstats:
+  enabled: true
+  plugin-id: 0
+  # Each chart can be disabled separately. Chart IDs must also be added to your
+  # Musicolide page on bStats (Edit -> Add chart) to display custom charts.
+  charts:
+    playback-mode: true
+    audio-profile: true
+    resource-pack-delivery: true
+    playlist-delivery: true
+    remote-import-enabled: true
+    discord-enabled: true
+    geyser-integration: true
+    worldguard-integration: true
+
 # Text shown by Minecraft commands and playback feedback.
 messages:
   prefix: "&8[&5Musicolide&8] &r"
