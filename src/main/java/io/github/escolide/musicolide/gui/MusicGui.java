@@ -51,7 +51,14 @@ public final class MusicGui implements Listener {
         this.playback = playback;
         this.commands = commands;
         Bukkit.getPluginManager().registerEvents(this, plugin);
-        Bukkit.getScheduler().runTaskTimer(plugin, this::refreshOpenInventories, 20L, 20L);
+        Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            try {
+                refreshOpenInventories();
+            } catch (RuntimeException error) {
+                // Never let one transient server/inventory exception cancel future GUI refreshes.
+                plugin.getLogger().log(Level.WARNING, "Musicolide GUI refresh tick failed; it will retry next tick.", error);
+            }
+        }, 20L, 20L);
     }
 
     /** Opens the same session view for the executor and every online affected listener. */
@@ -143,7 +150,7 @@ public final class MusicGui implements Listener {
             discordLore.add(gray("Next track: ") + ChatColor.WHITE + "Follows server default.");
             discordLore.add(gray("Click to toggle Discord voice broadcast for this track."));
         }
-        holder.inventory.setItem(DISCORD_SLOT, item(Material.DROPPER, "Discord broadcast", discordLore, discordEnabled));
+        setItemIfChanged(holder.inventory, DISCORD_SLOT, item(Material.DROPPER, "Discord broadcast", discordLore, discordEnabled));
 
         List<String> broadcastLore = new ArrayList<>();
         boolean globallyBroadcast = hasTrack && session.isServerWideGlobalSession();
@@ -156,7 +163,7 @@ public final class MusicGui implements Listener {
             broadcastLore.add(gray("The original audience returns on the next track."));
             broadcastLore.add(gray("Loaded packs are reused; no forced pack reload."));
         }
-        holder.inventory.setItem(BROADCAST_SLOT,
+        setItemIfChanged(holder.inventory, BROADCAST_SLOT,
                 item(Material.BEACON, "Broadcast to entire server", broadcastLore, globallyBroadcast));
     }
 
@@ -167,7 +174,7 @@ public final class MusicGui implements Listener {
         lore.add(status.startsWith("Permission:") ? red(status) : gray(status));
         if (available && permitted) lore.add(green("Click to apply."));
         else if (available) lore.add(red("You cannot control this session."));
-        inventory.setItem(slot, item(material, name, lore, false));
+        setItemIfChanged(inventory, slot, item(material, name, lore, false));
     }
 
     private void renderInfo(GuiHolder holder) {
@@ -255,7 +262,7 @@ public final class MusicGui implements Listener {
 
     private void detailCard(Inventory inventory, int slot, String label, String value) {
         String safeValue = value == null || value.isBlank() ? "Not available" : value;
-        inventory.setItem(slot, item(Material.PAPER, label,
+        setItemIfChanged(inventory, slot, item(Material.PAPER, label,
                 List.of(safeValue), false));
     }
 
@@ -342,7 +349,7 @@ public final class MusicGui implements Listener {
         ItemStack filler = item(Material.GRAY_STAINED_GLASS_PANE, " ", List.of(), false);
         ItemStack border = item(Material.PURPLE_STAINED_GLASS_PANE, " ", List.of(), false);
         for (int slot = 0; slot < SIZE; slot++) {
-            inventory.setItem(slot, slot < 9 || slot >= 45 ? border : filler);
+            setItemIfChanged(inventory, slot, slot < 9 || slot >= 45 ? border : filler);
         }
     }
 
