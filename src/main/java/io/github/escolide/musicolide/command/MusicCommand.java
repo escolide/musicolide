@@ -785,7 +785,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String[] requestArgs = withPlayModifiers(args[0], input, args, modifierStart);
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
-                input, parsed.customId, parsed.audioMode);
+                parsed.targetScope, input, parsed.customId, parsed.audioMode);
 
         if (YtDlpDownloader.isYouTubePlaylistUrl(rawInput)) {
             if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
@@ -957,7 +957,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String[] requestArgs = withPlayModifiers("play", query, args, modifierStart);
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
-                query, parsed.customId, parsed.audioMode);
+                parsed.targetScope, query, parsed.customId, parsed.audioMode);
         beginYouTubeSearch(sender, query, request, true);
     }
 
@@ -1524,8 +1524,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
         }
 
+        PlaybackAudiencePolicy.TargetScope targetScope =
+                PlaybackAudiencePolicy.resolveTargetScope(selector, spatialOption);
         return new PlayRequest(zone, all, all ? List.of()
-                : List.of(targets.get(0).getUniqueId()), 0, null, customId, audioMode);
+                : List.of(targets.get(0).getUniqueId()), 0, targetScope, null, customId, audioMode);
     }
 
     private void start(CommandSender sender, MusicTrack track, PlayRequest request) {
@@ -1728,33 +1730,36 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void startPrepared(CommandSender sender, MusicTrack track, PlayRequest request, boolean mono) {
         UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
-        PlaybackEngine.PlayDisposition disposition = playback.playOrQueue(owner, sender.getName(),
-                request.zone, request.all, request.listeners, track, request.priority, mono);
+        PlaybackEngine.PlayResult result = playback.playOrQueueResult(owner, sender.getName(),
+                request.zone, request.all, request.listeners, track, request.priority, mono,
+                request.targetScope);
         String mode = mono ? " &7(mono)" : "";
-        switch (disposition) {
+        switch (result.disposition()) {
             case STARTED -> {
-                PlaybackSession waiting = null;
+                PlaybackSession waiting = result.session();
                 PlaybackSession current = null;
                 if (sender instanceof Player player
                         && (request.all || request.listeners.contains(player.getUniqueId()))) {
-                    waiting = playback.findOwnedMatching(player.getUniqueId(), request.all,
-                            request.listeners, request.zone).orElse(null);
                     current = playback.sessionAffectingPlayer(player)
                             .filter(session -> !session.paused() && !session.resumePreparing())
                             .orElse(null);
                 }
                 if (waiting != null && current != null && !waiting.id().equals(current.id())) {
-                    if (request.all) {
+                    if (request.targetScope == PlaybackAudiencePolicy.TargetScope.PUBLIC) {
                         sender.sendMessage(msg("&aStarted &f" + track.title() + mode
                                 + "&a. Your current session remains selected; use &f/music switch"
-                                + " &ato hear the overlapping session."));
-                    } else {
+                                + " &ato hear the public session."));
+                    } else if (request.targetScope == PlaybackAudiencePolicy.TargetScope.SELF) {
                         String activeScope = current.isServerWideGlobalSession() ? "public"
                                 : current.zone().shape() == io.github.escolide.musicolide.model.MusicZone.Shape.GLOBAL
                                 ? "personal" : "zone";
-                        sender.sendMessage(msg("&eYour " + activeScope + " session is already active. &f"
-                                + track.title() + " &ewill wait until it has an open slot. Use &f/music force"
-                                + " &eto play your personal session now, or &f/music switch &eto cycle sessions."));
+                        sender.sendMessage(msg("&eYour " + activeScope + " session is already selected. &f"
+                                + track.title() + " &eis waiting in your personal session. Use &f/music force"
+                                + " &eto select it now, or &f/music switch &eto cycle sessions."));
+                    } else {
+                        sender.sendMessage(msg("&aStarted &f" + track.title() + mode
+                                + "&a. Another session is currently selected for you; use &f/music switch"
+                                + " &ato hear this one."));
                     }
                 } else {
                     sender.sendMessage(msg("&aStarted &f" + track.title() + mode + "."));
@@ -2659,6 +2664,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     }
 
     private record PlayRequest(MusicZone zone, boolean all, Collection<UUID> listeners, int priority,
+                               PlaybackAudiencePolicy.TargetScope targetScope,
                                String inputUrl, String customId, String audioMode) {}
     private record PendingPlay(MusicTrack track, PlayRequest request) {}
     private static final int SEARCH_PAGE_SIZE = 6;
