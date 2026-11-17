@@ -505,6 +505,22 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void urlPlaylistImporterDoesNotAcceptStandardPlayQueueEntries() {
+        UUID listener = UUID.randomUUID();
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(listener),
+                List.of(sampleTrack("playlist-isolated")), 0);
+
+        assertTrue(session.matchesStandardPlaybackQueue(false, List.of(listener), MusicZone.global()));
+        session.configureUrlPlaylist(true);
+
+        assertTrue(session.matchesPlaybackAudienceAndZone(false, List.of(listener), MusicZone.global()),
+                "Audience identity remains the same; playlist isolation is a queue policy.");
+        assertFalse(session.matchesStandardPlaybackQueue(false, List.of(listener), MusicZone.global()),
+                "A standard /play request must not join the playlist importer's managed queue.");
+    }
+
+    @Test
     void overlapSuspensionMarkerIsConsumedOnceAndClearedOnAdvance() {
         PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
                 MusicZone.global(), false, List.of(UUID.randomUUID()),

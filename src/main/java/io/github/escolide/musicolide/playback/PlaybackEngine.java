@@ -153,7 +153,7 @@ public final class PlaybackEngine {
                                                       MusicTrack track, int priority, boolean mono,
                                                       PlaybackAudiencePolicy.TargetScope targetScope) {
         java.util.function.Predicate<PlaybackSession> sameRequest =
-                session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone);
+                session -> session.matchesStandardPlaybackQueue(allPlayers, listeners, zone);
         java.util.function.Predicate<PlaybackSession> sameOwner =
                 session -> owner == null
                         ? session.owner() == null && session.ownerName().equals(ownerName)
