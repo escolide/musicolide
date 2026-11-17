@@ -84,7 +84,7 @@ public final class DiscordCommandService extends ListenerAdapter {
                         .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
                         .addOption(OptionType.STRING, "mode", "Audio mode: stereo (default) or mono", false)
                         .addOption(OptionType.BOOLEAN, "center", "Optional: anchor mono audio at the zone centre (default is listener-relative)", false)
-                        .addOption(OptionType.NUMBER, "fade", "Optional spatial fade distance", false),
+                        .addOption(OptionType.NUMBER, "fade", "Spatial fade distance (requires mode:mono)", false),
                 Commands.slash("music", "Run an existing Musicolide game command as your linked Minecraft account")
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
         );
@@ -576,6 +576,9 @@ public final class DiscordCommandService extends ListenerAdapter {
         String mode = option(event, "mode");
         Double fade = event.getOption("fade") == null ? null : event.getOption("fade").getAsDouble();
         boolean centered = event.getOption("center") != null && event.getOption("center").getAsBoolean();
+        if (fade != null && (mode == null || !mode.trim().equalsIgnoreCase("mono"))) {
+            throw new IllegalArgumentException("The fade option requires mode:mono. Set the mode option to mono.");
+        }
         if (centered && (mode == null || !mode.trim().equalsIgnoreCase("mono"))) {
             throw new IllegalArgumentException("The center option is available only with mode:mono.");
         }
