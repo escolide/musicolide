@@ -42,4 +42,22 @@ public final class PlaybackAudiencePolicy {
         return !allPlayers && playerId != null && explicitListeners != null
                 && explicitListeners.size() == 1 && explicitListeners.contains(playerId);
     }
+
+    /**
+     * Returns the explicit manual choice when it is still eligible; otherwise
+     * preserve the session the player is already hearing before falling back to
+     * normal arbitration. Invalid/stale IDs are ignored.
+     */
+    public static UUID preferredEligibleSession(UUID manualSelection,
+                                                UUID currentlyAudible,
+                                                Collection<UUID> eligibleSessionIds) {
+        if (eligibleSessionIds == null || eligibleSessionIds.isEmpty()) return null;
+        if (manualSelection != null && eligibleSessionIds.contains(manualSelection)) {
+            return manualSelection;
+        }
+        if (currentlyAudible != null && eligibleSessionIds.contains(currentlyAudible)) {
+            return currentlyAudible;
+        }
+        return null;
+    }
 }
