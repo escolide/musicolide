@@ -1292,10 +1292,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    static boolean isExplicitCenterOption(String option) {
-        return option != null && option.equalsIgnoreCase("--center");
-    }
-
     private PlayRequest parseRequest(CommandSender sender, String[] args) {
         String selector = null;
         double radius = plugin.getConfig().getDouble("playback.range.circle.radius", 60);
@@ -1330,7 +1326,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     throw new IllegalArgumentException("Use mode:mono or mode:stereo.");
                 continue;
             }
-            if (isExplicitCenterOption(option)) {
+            if (PlayTargetDefaults.isExplicitCenterOption(option)) {
                 centeredMono = true;
                 continue;
             }
