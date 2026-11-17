@@ -74,6 +74,7 @@ jobs:
   native-runtime-smoke:
     name: Real Linux x86_64 native-tool smoke test
     needs: build
+    if: always() && needs.build.result == 'success' && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
