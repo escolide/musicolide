@@ -45,4 +45,19 @@ class PlaybackAudiencePolicyTest {
         assertFalse(PlaybackAudiencePolicy.isPersonalTarget(false, List.of(player, other), player));
         assertFalse(PlaybackAudiencePolicy.isPersonalTarget(false, List.of(other), player));
     }
+    @Test
+    void manualChoiceWinsAndOtherwiseCurrentPlaybackStaysSelected() {
+        UUID personal = UUID.randomUUID();
+        UUID zone = UUID.randomUUID();
+        UUID publicSession = UUID.randomUUID();
+        List<UUID> eligible = List.of(personal, zone, publicSession);
+
+        assertEquals(zone, PlaybackAudiencePolicy.preferredEligibleSession(
+                zone, personal, eligible), "An explicit switch overrides the previous audible session.");
+        assertEquals(personal, PlaybackAudiencePolicy.preferredEligibleSession(
+                null, personal, eligible), "Newly overlapping sources must not replace current audio.");
+        assertNull(PlaybackAudiencePolicy.preferredEligibleSession(
+                null, UUID.randomUUID(), eligible), "A session that is no longer eligible cannot stay selected.");
+    }
+
 }
