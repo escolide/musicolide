@@ -36,8 +36,10 @@ public final class PlaybackEngine {
     private final Map<UUID, PlayerPlayback> playerPlayback = new HashMap<>();
     private final Map<UUID, Long> warningTimes = new HashMap<>();
     private final Map<UUID, String> declinedWarnings = new HashMap<>();
-    // Explicit per-listener choice; never changes another player's winning session.
+    // Explicit per-listener choice and the last automatically selected source.
+    // Both maps are player-local; neither changes a shared session's audience.
     private final Map<UUID, UUID> selectedSessionByPlayer = new HashMap<>();
+    private final Map<UUID, UUID> activeSessionByPlayer = new HashMap<>();
     private final Map<UUID, String> overlapNoticeState = new HashMap<>();
     private final Map<UUID, Long> manualSelectionTimes = new HashMap<>();
     private final WorldGuardBridge worldGuard;
@@ -256,6 +258,7 @@ public final class PlaybackEngine {
         UUID manualId = selectedSessionByPlayer.get(playerId);
         List<UUID> eligibleIds = eligible.stream().map(PlaybackSession::id).toList();
         if (manualId != null && eligibleIds.contains(manualId)) {
+            activeSessionByPlayer.put(playerId, manualId);
             return eligible.stream().filter(session -> session.id().equals(manualId)).findFirst();
         }
         if (manualId != null) selectedSessionByPlayer.remove(playerId);
@@ -263,13 +266,24 @@ public final class PlaybackEngine {
         Optional<PlaybackSession> promoted = eligible.stream()
                 .filter(PlaybackSession::serverWidePromotion)
                 .min((first, second) -> Long.compare(first.startedAt(), second.startedAt()));
-        if (promoted.isPresent()) return promoted;
+        if (promoted.isPresent()) {
+            activeSessionByPlayer.put(playerId, promoted.get().id());
+            return promoted;
+        }
+
+        UUID previousId = activeSessionByPlayer.get(playerId);
+        UUID preferredPrevious = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, previousId, eligibleIds);
+        if (preferredPrevious != null) {
+            return eligible.stream().filter(session -> session.id().equals(preferredPrevious)).findFirst();
+        }
 
         UUID audibleId = Optional.ofNullable(playerPlayback.get(playerId))
                 .map(state -> state.sessionId).orElse(null);
         UUID preferredId = PlaybackAudiencePolicy.preferredEligibleSession(
                 null, audibleId, eligibleIds);
         if (preferredId != null) {
+            activeSessionByPlayer.put(playerId, preferredId);
             return eligible.stream().filter(session -> session.id().equals(preferredId)).findFirst();
         }
         Comparator<PlaybackSession> order = (first, second) -> {
@@ -287,7 +301,9 @@ public final class PlaybackEngine {
             }
             return Long.compare(first.startedAt(), second.startedAt());
         };
-        return eligible.stream().min(order);
+        Optional<PlaybackSession> selected = eligible.stream().min(order);
+        selected.ifPresent(session -> activeSessionByPlayer.put(playerId, session.id()));
+        return selected;
     }
 
     private boolean isInsideSession(PlaybackSession session, Player player) {
@@ -1019,7 +1035,10 @@ public final class PlaybackEngine {
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
             List<Candidate> candidates = eligibleCandidates(player, active, false);
-            if (candidates.isEmpty()) continue;
+            if (candidates.isEmpty()) {
+                clearSelectionsOutsideAudience(player, active);
+                continue;
+            }
             Candidate winner = chooseCandidate(player, candidates);
             if (winner == null) continue;
             winners.put(player.getUniqueId(), winner);
@@ -1137,6 +1156,28 @@ public final class PlaybackEngine {
         // Refresh the Discord view on the server thread after zone arbitration,
         // pack readiness, catch-up state and the shared start barrier are updated.
         updateDiscordBroadcastSnapshot(online, winners, active);
+    }
+
+    private void clearSelectionsOutsideAudience(Player player, Collection<PlaybackSession> active) {
+        if (player == null || !player.isOnline()) return;
+        UUID playerId = player.getUniqueId();
+        UUID manualId = selectedSessionByPlayer.get(playerId);
+        if (manualId != null) {
+            PlaybackSession selected = active.stream()
+                    .filter(session -> session.id().equals(manualId)).findFirst().orElse(null);
+            if (selected == null || !selected.targets(playerId) || !isInsideSession(selected, player)) {
+                selectedSessionByPlayer.remove(playerId);
+            }
+        }
+
+        UUID activeId = activeSessionByPlayer.get(playerId);
+        if (activeId != null) {
+            PlaybackSession selected = active.stream()
+                    .filter(session -> session.id().equals(activeId)).findFirst().orElse(null);
+            if (selected == null || !selected.targets(playerId) || !isInsideSession(selected, player)) {
+                activeSessionByPlayer.remove(playerId);
+            }
+        }
     }
 
     private void suspendSessionsWithoutWinningListeners(Map<UUID, Candidate> winners,
@@ -1747,6 +1788,7 @@ public final class PlaybackEngine {
         declinedWarnings.remove(player.getUniqueId());
         bedrockWarnings.remove(player.getUniqueId());
         selectedSessionByPlayer.remove(player.getUniqueId());
+        activeSessionByPlayer.remove(player.getUniqueId());
         overlapNoticeState.remove(player.getUniqueId());
         manualSelectionTimes.remove(player.getUniqueId());
         syncGenerations.remove(player.getUniqueId());
@@ -1773,6 +1815,7 @@ public final class PlaybackEngine {
         automaticSyncAttempts.clear();
         sessionStartCohorts.clear();
         selectedSessionByPlayer.clear();
+        activeSessionByPlayer.clear();
         overlapNoticeState.clear();
         manualSelectionTimes.clear();
         discordSnapshot = Optional.empty();
@@ -1934,6 +1977,7 @@ public final class PlaybackEngine {
         List<UUID> eligibleIds = candidates.stream()
                 .map(candidate -> candidate.session.id()).toList();
         if (manualSelection != null && eligibleIds.contains(manualSelection)) {
+            activeSessionByPlayer.put(playerId, manualSelection);
             return candidates.stream().filter(candidate -> candidate.session.id().equals(manualSelection))
                     .findFirst().orElse(null);
         }
@@ -1947,15 +1991,25 @@ public final class PlaybackEngine {
         Candidate promoted = candidates.stream()
                 .filter(candidate -> candidate.session.serverWidePromotion())
                 .min(this::compare).orElse(null);
-        if (promoted != null) return promoted;
+        if (promoted != null) {
+            activeSessionByPlayer.put(playerId, promoted.session.id());
+            return promoted;
+        }
 
-        UUID preferred = PlaybackAudiencePolicy.preferredEligibleSession(
-                null, currentlyAudible, eligibleIds);
-        if (preferred != null) {
-            return candidates.stream().filter(candidate -> candidate.session.id().equals(preferred))
+        UUID preferredPrevious = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, activeSessionByPlayer.get(playerId), eligibleIds);
+        if (preferredPrevious != null) {
+            return candidates.stream().filter(candidate -> candidate.session.id().equals(preferredPrevious))
                     .findFirst().orElse(null);
         }
-        return candidates.stream().min(this::compare).orElse(null);
+        UUID preferredAudible = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, currentlyAudible, eligibleIds);
+        Candidate selected = preferredAudible == null
+                ? candidates.stream().min(this::compare).orElse(null)
+                : candidates.stream().filter(candidate -> candidate.session.id().equals(preferredAudible))
+                        .findFirst().orElse(null);
+        if (selected != null) activeSessionByPlayer.put(playerId, selected.session.id());
+        return selected;
     }
 
     private Candidate findCandidate(Player player) {
