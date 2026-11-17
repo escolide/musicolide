@@ -1247,6 +1247,17 @@ public final class PlaybackEngine {
             if (track == null) continue;
 
             String trackKey = barrierTrackKey(session, track);
+            // A session whose only listeners were all hearing another source may
+            // have been held with a non-zero timeline. Segmented audio can resume
+            // at its segment index; streamed OGG must use the timestamp-aligned
+            // private-tail path rather than restarting the entire track at 00:00.
+            if (session.consumeOverlapSuspended() && track.isStreamed()) {
+                for (Map.Entry<UUID, Candidate> entry : winners.entrySet()) {
+                    if (entry.getValue().session == session) {
+                        barrierExcludedTracks.put(entry.getKey(), trackKey);
+                    }
+                }
+            }
             Set<UUID> cohort = sessionStartCohorts.computeIfAbsent(trackKey, ignored -> {
                 Set<UUID> readyAtStart = new HashSet<>();
                 for (Player player : online) {
