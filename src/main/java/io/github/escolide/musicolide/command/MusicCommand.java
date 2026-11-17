@@ -53,6 +53,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final Set<PlaylistRunner> playlistRunners = ConcurrentHashMap.newKeySet();
     private final Map<String, CachedDiscordAutocomplete> discordAutocompleteCache = new ConcurrentHashMap<>();
     private final Set<String> discordAutocompleteInFlight = ConcurrentHashMap.newKeySet();
+    private final Map<String, PendingDiscordAutocomplete> discordAutocompletePending = new ConcurrentHashMap<>();
     private final Map<String, String> discordAutocompleteLatestQuery = new ConcurrentHashMap<>();
 
 
@@ -293,15 +294,21 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         long now = System.currentTimeMillis();
         CachedDiscordAutocomplete cached = discordAutocompleteCache.get(requesterKey);
-        boolean reusableCache = cached != null && !cached.results().isEmpty()
-                && now - cached.createdAtMillis() <= 30_000L
+        boolean cacheValid = cached != null && !cached.results().isEmpty()
+                && now - cached.createdAtMillis() <= 30_000L;
+        boolean cachedQueryCoversCurrent = cacheValid
                 && (cleaned.equals(cached.query()) || cached.query().startsWith(cleaned));
-        List<DiscordPlaySuggestion> cachedRemote = reusableCache ? cached.results() : List.of();
+        List<DiscordPlaySuggestion> cachedRemote = cacheValid
+                && (cachedQueryCoversCurrent || cleaned.startsWith(cached.query()))
+                ? cached.results() : List.of();
         List<DiscordPlaySuggestion> immediate = mergeDiscordSuggestions(local, cachedRemote);
 
-        // Short edits remain local-only. Rapid keystrokes collapse into one
-        // debounced lookup instead of filling the single-thread metadata queue.
-        if (!allowRemoteLookup || cleaned.length() < 3 || local.size() >= 25 || reusableCache) {
+        // An exact result or a more-specific cached query is already useful.
+        // When the user refines a broader cached query, show it provisionally
+        // while refreshing YouTube results for the new, narrower query.
+        boolean exactCache = cacheValid && cleaned.equals(cached.query());
+        if (!allowRemoteLookup || cleaned.length() < 3 || local.size() >= 25
+                || exactCache || cachedQueryCoversCurrent) {
             return CompletableFuture.completedFuture(immediate);
         }
 
@@ -313,75 +320,129 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 response.complete(immediate);
                 return;
             }
-            if (!discordAutocompleteInFlight.add(requesterKey)) {
-                response.complete(immediate);
-                return;
-            }
-
-            try {
-                processor.searchYouTube(cleaned, Math.min(6, remoteLimit))
-                        .handle((results, error) -> {
-                            if (error != null) {
-                                plugin.getLogger().log(Level.WARNING,
-                                        "YouTube autocomplete search failed for query '" + cleaned + "'.", error);
-                                return immediate;
-                            }
-                            if (results == null || results.isEmpty()) return immediate;
-
-                            List<DiscordPlaySuggestion> remote = new ArrayList<>();
-                            Set<String> existing = new HashSet<>();
-                            for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
-                            for (YtDlpDownloader.SearchResult result : results) {
-                                if (remote.size() + local.size() >= 25) break;
-                                String url = result.url();
-                                if (url == null || url.isBlank()) {
-                                    url = "https://www.youtube.com/watch?v=" + result.videoId();
-                                }
-                                if (url.length() > 100 || !existing.add(url)) continue;
-                                String title = result.title() == null || result.title().isBlank()
-                                        ? "Untitled" : result.title();
-                                String uploader = result.uploader() == null ? "" : result.uploader();
-                                String label = title + (uploader.isBlank() ? "" : " — " + uploader);
-                                if (result.durationSeconds() > 0) {
-                                    long seconds = result.durationSeconds();
-                                    label += " • " + String.format(Locale.ROOT, "%d:%02d",
-                                            seconds / 60, seconds % 60);
-                                }
-                                remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
-                            }
-                            if (!remote.isEmpty()) {
-                                discordAutocompleteCache.put(requesterKey,
-                                        new CachedDiscordAutocomplete(cleaned, List.copyOf(remote),
-                                                System.currentTimeMillis()));
-                                if (discordAutocompleteCache.size() > 2_000) {
-                                    long completedAt = System.currentTimeMillis();
-                                    discordAutocompleteCache.entrySet().removeIf(entry ->
-                                            completedAt - entry.getValue().createdAtMillis() > 60_000L);
-                                    discordAutocompleteLatestQuery.keySet().removeIf(key ->
-                                            !discordAutocompleteInFlight.contains(key)
-                                                    && !discordAutocompleteCache.containsKey(key));
-                                }
-                            }
-                            return mergeDiscordSuggestions(local, remote);
-                        })
-                        .whenComplete((suggestions, error) -> {
-                            discordAutocompleteInFlight.remove(requesterKey);
-                            discordAutocompleteLatestQuery.remove(requesterKey, cleaned);
-                            response.complete(error == null && suggestions != null ? suggestions : immediate);
-                        });
-            } catch (RuntimeException error) {
-                discordAutocompleteInFlight.remove(requesterKey);
-                discordAutocompleteLatestQuery.remove(requesterKey, cleaned);
-                plugin.getLogger().log(Level.WARNING,
-                        "Could not start background YouTube autocomplete lookup.", error);
-                response.complete(immediate);
-            }
+            startDiscordAutocompleteLookup(requesterKey, cleaned, local, immediate, remoteLimit, response);
         });
 
-        // Time out only this interaction's response. The original lookup may
-        // still populate the cache when yt-dlp finishes shortly after the deadline.
+        // Keep Discord's response bounded. If an older query is already being
+        // searched, the newest query is coalesced and cached as soon as that
+        // lookup finishes, so a later keystroke can use the correct suggestions.
         return response.copy().completeOnTimeout(immediate, 2_100L,
                 java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private void startDiscordAutocompleteLookup(
+            String requesterKey, String query, List<DiscordPlaySuggestion> local,
+            List<DiscordPlaySuggestion> immediate, int remoteLimit,
+            CompletableFuture<List<DiscordPlaySuggestion>> response) {
+        synchronized (discordAutocompleteInFlight) {
+            if (!discordAutocompleteInFlight.add(requesterKey)) {
+                PendingDiscordAutocomplete replaced = discordAutocompletePending.put(requesterKey,
+                        new PendingDiscordAutocomplete(query, local, immediate, remoteLimit, response));
+                if (replaced != null) replaced.response().complete(replaced.immediate());
+                return;
+            }
+        }
+        runDiscordAutocompleteLookup(requesterKey, query, local, immediate, remoteLimit, response);
+    }
+
+    /** Runs while this requester owns the single in-flight search slot. */
+    private void runDiscordAutocompleteLookup(
+            String requesterKey, String query, List<DiscordPlaySuggestion> local,
+            List<DiscordPlaySuggestion> immediate, int remoteLimit,
+            CompletableFuture<List<DiscordPlaySuggestion>> response) {
+        try {
+            processor.searchYouTube(query, Math.min(6, remoteLimit))
+                    .handle((results, error) -> {
+                        if (error != null) {
+                            plugin.getLogger().log(Level.WARNING,
+                                    "YouTube autocomplete search failed for query '" + query + "'.", error);
+                            return immediate;
+                        }
+                        if (results == null || results.isEmpty()) return immediate;
+
+                        List<DiscordPlaySuggestion> remote = new ArrayList<>();
+                        Set<String> existing = new HashSet<>();
+                        for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
+                        for (YtDlpDownloader.SearchResult result : results) {
+                            if (remote.size() + local.size() >= 25) break;
+                            String url = result.url();
+                            if (url == null || url.isBlank()) {
+                                url = "https://www.youtube.com/watch?v=" + result.videoId();
+                            }
+                            if (url.length() > 100 || !existing.add(url)) continue;
+                            String title = result.title() == null || result.title().isBlank()
+                                    ? "Untitled" : result.title();
+                            String uploader = result.uploader() == null ? "" : result.uploader();
+                            String label = title + (uploader.isBlank() ? "" : " — " + uploader);
+                            if (result.durationSeconds() > 0) {
+                                long seconds = result.durationSeconds();
+                                label += " • " + String.format(Locale.ROOT, "%d:%02d",
+                                        seconds / 60, seconds % 60);
+                            }
+                            remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+                        }
+                        if (!remote.isEmpty()) {
+                            discordAutocompleteCache.put(requesterKey,
+                                    new CachedDiscordAutocomplete(query, List.copyOf(remote),
+                                            System.currentTimeMillis()));
+                            if (discordAutocompleteCache.size() > 2_000) {
+                                long completedAt = System.currentTimeMillis();
+                                discordAutocompleteCache.entrySet().removeIf(entry ->
+                                        completedAt - entry.getValue().createdAtMillis() > 60_000L);
+                                discordAutocompleteLatestQuery.keySet().removeIf(key ->
+                                        !discordAutocompleteInFlight.contains(key)
+                                                && !discordAutocompleteCache.containsKey(key));
+                            }
+                        }
+                        return mergeDiscordSuggestions(local, remote);
+                    })
+                    .whenComplete((suggestions, error) -> {
+                        response.complete(error == null && suggestions != null ? suggestions : immediate);
+
+                        PendingDiscordAutocomplete pending;
+                        synchronized (discordAutocompleteInFlight) {
+                            pending = discordAutocompletePending.remove(requesterKey);
+                            if (pending == null || !pending.query().equals(
+                                    discordAutocompleteLatestQuery.get(requesterKey))) {
+                                discordAutocompleteInFlight.remove(requesterKey);
+                            }
+                        }
+
+                        if (pending == null) {
+                            discordAutocompleteLatestQuery.remove(requesterKey, query);
+                        } else if (!pending.query().equals(discordAutocompleteLatestQuery.get(requesterKey))) {
+                            pending.response().complete(pending.immediate());
+                            discordAutocompleteLatestQuery.remove(requesterKey, query);
+                        } else {
+                            // Keep ownership of the per-user slot while the latest
+                            // query runs; newer keystrokes replace its pending entry.
+                            runDiscordAutocompleteLookup(requesterKey, pending.query(), pending.local(),
+                                    pending.immediate(), pending.remoteLimit(), pending.response());
+                        }
+                    });
+        } catch (RuntimeException error) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not start background YouTube autocomplete lookup.", error);
+            response.complete(immediate);
+
+            PendingDiscordAutocomplete pending;
+            synchronized (discordAutocompleteInFlight) {
+                pending = discordAutocompletePending.remove(requesterKey);
+                if (pending == null || !pending.query().equals(
+                        discordAutocompleteLatestQuery.get(requesterKey))) {
+                    discordAutocompleteInFlight.remove(requesterKey);
+                }
+            }
+            if (pending != null && pending.query().equals(discordAutocompleteLatestQuery.get(requesterKey))) {
+                runDiscordAutocompleteLookup(requesterKey, pending.query(), pending.local(),
+                        pending.immediate(), pending.remoteLimit(), pending.response());
+            } else if (pending != null) {
+                pending.response().complete(pending.immediate());
+                discordAutocompleteLatestQuery.remove(requesterKey, query);
+            } else {
+                discordAutocompleteLatestQuery.remove(requesterKey, query);
+            }
+        }
     }
 
     private List<DiscordPlaySuggestion> mergeDiscordSuggestions(
@@ -399,6 +460,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private record CachedDiscordAutocomplete(String query,
                                               List<DiscordPlaySuggestion> results,
                                               long createdAtMillis) {}
+
+    private record PendingDiscordAutocomplete(String query,
+                                                List<DiscordPlaySuggestion> local,
+                                                List<DiscordPlaySuggestion> immediate,
+                                                int remoteLimit,
+                                                CompletableFuture<List<DiscordPlaySuggestion>> response) {}
 
     public record DiscordPlaySuggestion(String label, String value) {}
 
