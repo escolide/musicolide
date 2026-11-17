@@ -266,6 +266,10 @@ public final class PlaybackEngine {
             if (first.serverWidePromotion() != second.serverWidePromotion()) {
                 return first.serverWidePromotion() ? -1 : 1;
             }
+            int scope = Integer.compare(
+                    PlaybackAudiencePolicy.switchCycleRank(first.targetScope()),
+                    PlaybackAudiencePolicy.switchCycleRank(second.targetScope()));
+            if (scope != 0) return scope;
             boolean manualPriority = plugin.getConfig().getBoolean(
                     "playback.overlap.manual-priority-enabled", true);
             if (manualPriority && first.priority() != second.priority()) {
@@ -1490,6 +1494,10 @@ public final class PlaybackEngine {
     private int compare(Candidate a, Candidate b) {
         if (a.session.serverWidePromotion() != b.session.serverWidePromotion())
             return a.session.serverWidePromotion() ? -1 : 1;
+        int scope = Integer.compare(
+                PlaybackAudiencePolicy.switchCycleRank(a.session.targetScope()),
+                PlaybackAudiencePolicy.switchCycleRank(b.session.targetScope()));
+        if (scope != 0) return scope;
         boolean manual = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
         if (manual && a.session.priority() != b.session.priority()) {
             return Integer.compare(b.session.priority(), a.session.priority());
