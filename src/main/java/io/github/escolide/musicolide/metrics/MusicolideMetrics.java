@@ -5,7 +5,6 @@ import org.bstats.charts.SimplePie;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -29,16 +28,16 @@ public final class MusicolideMetrics {
         Metrics metrics = new Metrics(plugin, pluginId);
 
         addChart(metrics, config, "playback-mode", "playback_mode",
-                category(config.getString("audio.playback-mode"),
+                MetricValue.category(config.getString("audio.playback-mode"),
                         "segmented", "continuous", "resumable"));
         addChart(metrics, config, "audio-profile", "audio_profile",
-                category(config.getString("audio.profiles.active"),
+                MetricValue.category(config.getString("audio.profiles.active"),
                         "balanced", "compact", "high", "custom"));
         addChart(metrics, config, "resource-pack-delivery", "resource_pack_delivery",
-                category(config.getString("resource-packs.universal-playback-system"),
+                MetricValue.category(config.getString("resource-packs.universal-playback-system"),
                         "library", "pre-track", "per-track"));
         addChart(metrics, config, "playlist-delivery", "playlist_delivery",
-                category(config.getString("resource-packs.playlist-playback-system"),
+                MetricValue.category(config.getString("resource-packs.playlist-playback-system"),
                         "per-track", "library"));
         addChart(metrics, config, "remote-import-enabled", "remote_import_enabled",
                 enabled(config.getBoolean("audio.yt-dlp.enabled", false)));
@@ -65,15 +64,6 @@ public final class MusicolideMetrics {
                                  String configKey, String chartId, String value) {
         if (!config.getBoolean("bstats.charts." + configKey, true)) return;
         metrics.addCustomChart(new SimplePie(chartId, () -> value));
-    }
-
-    static String category(String raw, String... allowedValues) {
-        if (raw == null) return "other";
-        String normalized = raw.trim().toLowerCase(Locale.ROOT);
-        for (String allowed : allowedValues) {
-            if (allowed.equals(normalized)) return normalized;
-        }
-        return "other";
     }
 
     private static String enabled(boolean value) {

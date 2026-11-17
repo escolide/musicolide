@@ -7,14 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class MusicolideMetricsTest {
     @Test
     void acceptsOnlyKnownConfigurationCategories() {
-        assertEquals("resumable", MusicolideMetrics.category(" RESUMABLE ", "segmented", "continuous", "resumable"));
-        assertEquals("compact", MusicolideMetrics.category("compact", "balanced", "compact", "high", "custom"));
+        assertEquals("resumable", MetricValue.category(" RESUMABLE ", "segmented", "continuous", "resumable"));
+        assertEquals("compact", MetricValue.category("compact", "balanced", "compact", "high", "custom"));
     }
 
     @Test
     void unknownOrEmptyValuesDoNotTransmitArbitraryConfigurationText() {
-        assertEquals("other", MusicolideMetrics.category(null, "segmented", "continuous", "resumable"));
-        assertEquals("other", MusicolideMetrics.category("", "segmented", "continuous", "resumable"));
-        assertEquals("other", MusicolideMetrics.category("private-server-label", "segmented", "continuous", "resumable"));
+        assertEquals("other", MetricValue.category(null, "segmented", "continuous", "resumable"));
+        assertEquals("other", MetricValue.category("", "segmented", "continuous", "resumable"));
+        assertEquals("other", MetricValue.category("private-server-label", "segmented", "continuous", "resumable"));
     }
 }
