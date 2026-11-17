@@ -2250,6 +2250,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!Double.isFinite(seconds) || seconds < 0 || seconds > 120) {
             throw new IllegalArgumentException("Synchronization offset must be between 0 and 120 seconds.");
         }
+        double currentOffset = plugin.getConfig().getDouble(
+                "playback.synchronization.late-join.delay-seconds", 4.0);
+        if (Double.compare(currentOffset, seconds) == 0) {
+            sender.sendMessage(msg("&eThe shared synchronization offset is already "
+                    + String.format(Locale.ROOT, "%.2f", seconds) + " seconds. No config write was needed."));
+            return;
+        }
         plugin.getConfig().set("playback.synchronization.late-join.delay-seconds", seconds);
         plugin.saveConfig();
         sender.sendMessage(msg("&aShared synchronization offset set to &f"
@@ -2264,10 +2271,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!Double.isFinite(seconds) || seconds < 0 || seconds > Long.MAX_VALUE / 1000.0)
             throw new IllegalArgumentException("Seek position must be finite and non-negative.");
         long targetMs = (long) (seconds * 1000.0);
+        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
+        PlaybackSession currentSession = playback.findControllableSession(player.getUniqueId(), admin).orElse(null);
+        if (currentSession != null && currentSession.paused() && !currentSession.resumePreparing()
+                && currentSession.elapsedMs() == targetMs) {
+            sender.sendMessage(msg("&ePlayback is already paused at " + format(targetMs)
+                    + ". No audio processing was requested."));
+            return;
+        }
         if (!admitHeavyRequest(sender, "transform",
                 "audio.processing.transform-cooldown-seconds", 3,
                 "audio.processing.global-transform-cooldown-seconds", 1, "another audio preparation")) return;
-        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
         PlaybackEngine.SeekStart result = playback.seek(player.getUniqueId(), admin, targetMs, notification -> {
             if (player.isOnline()) sender.sendMessage(msg(notification));
         });
@@ -2363,6 +2377,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         int value = Integer.parseInt(args[1]);
         if (value < -1000 || value > 1000) throw new IllegalArgumentException("Priority must be between -1000 and 1000.");
         PlaybackSession session = playback.findOwned(player.getUniqueId()).orElseThrow(() -> new IllegalArgumentException("No session found."));
+        if (session.priority() == value) {
+            sender.sendMessage(msg("&eSession priority is already " + value + ". No change was made."));
+            return;
+        }
         session.priority(value);
         sender.sendMessage(msg("&aSession priority set to " + value + "."));
     }
