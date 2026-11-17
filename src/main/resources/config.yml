@@ -50,10 +50,10 @@ audio:
     # When enabled, /play <url> can be used by players with the DJ permission.
     # The separate /music import-url command remains admin-only and requires --rights-confirmed.
     # Keep false unless the server operator has confirmed download and redistribution rights.
-    auto-import-on-play: false
+    auto-import-on-play: true
     # Accept YouTube playlist URLs in /play only when this is explicitly enabled.
     # Each video is still downloaded individually with --no-playlist and processed sequentially.
-    allow-playlists: false
+    allow-playlists: true
     # Hard-capped by the plugin at 20; also cannot exceed limits.max-playlist-tracks.
     max-playlist-items: 10
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
@@ -86,7 +86,7 @@ audio:
   # high: larger packs and downloads, with higher audio quality.
   # Use custom to read the individual audio.stereo-quality and audio.mono-quality values below.
   profiles:
-    active: "custom"
+    active: "compact"
     presets:
       balanced:
         stereo-quality: 5
@@ -152,7 +152,7 @@ resource-packs:
   # library: one aggregate pack; newly imported tracks are included in the next immutable revision.
   # per-track: independent packs, requested only for the active track when used by a URL playlist.
   # Geyser/Bedrock continues to use its aggregate Bedrock pack in either mode.
-  universal-playback-system: "library"
+  universal-playback-system: "pre-track"
   # URL playlist override, independent of the universal mode above.
   # per-track (default): server imports ahead, but players receive only the currently active track pack.
   # library: the aggregate pack is updated as imports finish and applied at track boundaries,
@@ -237,11 +237,11 @@ playback:
     # recipient is ready. Late clients automatically receive a timeline-aligned
     # temporary audio tail when their original library pack finishes loading.
     # If nobody is ready yet, the session clock waits rather than consuming the track.
-    start-barrier-timeout-seconds: 7
+    start-barrier-timeout-seconds: 10
     late-join:
       # Lead time used by /music sync and precise Java volume changes.
       # The default next-track volume mode does not generate a replacement audio file.
-      delay-seconds: 4.0
+      delay-seconds: 6.0
 
 # Playlist behavior and rules for matching imported tracks to existing catalogue entries.
 
@@ -270,7 +270,7 @@ geyser:
   # continue normally. Geyser must be installed on this Paper server for detection.
   # Enable before Bedrock players connect. Players already sent a pack must reconnect
   # after changing this option so Geyser starts a new session without offering it.
-  ignore-bedrock-players: false
+  ignore-bedrock-players: true
 
 worldguard:
   enabled: true
@@ -290,7 +290,7 @@ permissions:
   dj: "musicolide.dj"
   admin: "musicolide.admin"
   # Allow non-admin players to use circle/square zones only when targeting themselves.
-  allow-player-self-zones: true
+  allow-player-self-zones: false
   # Allow non-admin players to use target:@a. Disabled by default.
   allow-player-all-target: false
 
@@ -376,10 +376,10 @@ discord:
     # Slash command response visibility: requester (ephemeral/private) or everyone (public).
     # Existing installations default to requester so current privacy is preserved.
     visibility:
-      info: "requester"
-      help: "requester"
-      play: "requester"
-      music: "requester"
+      info: "everyone"
+      help: "everyone"
+      play: "everyone"
+      music: "everyone"
 
 # Text shown by Minecraft commands and playback feedback.
 messages:
