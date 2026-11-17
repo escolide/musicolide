@@ -3,7 +3,6 @@ package io.github.escolide.musicolide.playback;
 import io.github.escolide.musicolide.audio.AudioProcessor;
 import io.github.escolide.musicolide.geyser.GeyserBridge;
 import io.github.escolide.musicolide.model.MusicTrack;
-import io.github.escolide.musicolide.playback.PlaybackAudiencePolicy;
 import io.github.escolide.musicolide.util.TextUtil;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.region.WorldGuardBridge;
@@ -221,20 +220,30 @@ public final class PlaybackEngine {
     /** Selects a session affecting a player even when it is paused and therefore inaudible this tick. */
     public Optional<PlaybackSession> sessionAffectingPlayer(Player player) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return Optional.empty();
-        UUID selectedId = selectedSessionByPlayer.get(player.getUniqueId());
-        boolean manualPriority = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
-        return sessions().stream().filter(session -> session.current() != null
+        List<PlaybackSession> eligible = sessions().stream()
+                .filter(session -> session.current() != null
                         && session.targets(player.getUniqueId()) && isInsideSession(session, player))
-                .sorted((first, second) -> {
-                    if (selectedId != null) {
-                        boolean firstSelected = first.id().equals(selectedId);
-                        boolean secondSelected = second.id().equals(selectedId);
-                        if (firstSelected != secondSelected) return firstSelected ? -1 : 1;
-                    }
-                    if (manualPriority && first.priority() != second.priority())
-                        return Integer.compare(second.priority(), first.priority());
-                    return Long.compare(first.startedAt(), second.startedAt());
-                }).findFirst();
+                .toList();
+        UUID audibleId = Optional.ofNullable(playerPlayback.get(player.getUniqueId()))
+                .map(state -> state.sessionId).orElse(null);
+        UUID selectedId = PlaybackAudiencePolicy.preferredEligibleSession(
+                selectedSessionByPlayer.get(player.getUniqueId()), audibleId,
+                eligible.stream().map(PlaybackSession::id).toList());
+        if (selectedId != null) {
+            return eligible.stream().filter(session -> session.id().equals(selectedId)).findFirst();
+        }
+        Comparator<PlaybackSession> order = (first, second) -> {
+            if (first.serverWidePromotion() != second.serverWidePromotion()) {
+                return first.serverWidePromotion() ? -1 : 1;
+            }
+            boolean manualPriority = plugin.getConfig().getBoolean(
+                    "playback.overlap.manual-priority-enabled", true);
+            if (manualPriority && first.priority() != second.priority()) {
+                return Integer.compare(second.priority(), first.priority());
+            }
+            return Long.compare(first.startedAt(), second.startedAt());
+        };
+        return eligible.stream().min(order);
     }
 
     private boolean isInsideSession(PlaybackSession session, Player player) {
@@ -1852,16 +1861,26 @@ public final class PlaybackEngine {
     }
 
     private Candidate chooseCandidate(Player player, List<Candidate> candidates) {
+        if (candidates.isEmpty()) return null;
         UUID playerId = player.getUniqueId();
-        UUID selectedId = selectedSessionByPlayer.get(playerId);
-        if (selectedId != null) {
-            for (Candidate candidate : candidates) {
-                if (candidate.session.id().equals(selectedId)) return candidate;
-            }
-            // A selected zone was left, or its session ended. Resume automatic arbitration.
-            selectedSessionByPlayer.remove(playerId);
+        PlayerPlayback state = playerPlayback.get(playerId);
+        UUID currentlyAudible = state == null ? null : state.sessionId;
+        UUID preferred = PlaybackAudiencePolicy.preferredEligibleSession(
+                selectedSessionByPlayer.get(playerId), currentlyAudible,
+                candidates.stream().map(candidate -> candidate.session.id()).toList());
+        if (preferred != null) {
+            return candidates.stream().filter(candidate -> candidate.session.id().equals(preferred))
+                    .findFirst().orElse(null);
         }
-        return candidates.stream().min(this::compare).orElse(null);
+
+        // Once a selected source ends or a selected zone is left, discard the
+        // override. Explicit server-wide promotion remains the sole automatic
+        // pre-emption path; ordinary new zones/public sessions do not cut in.
+        selectedSessionByPlayer.remove(playerId);
+        Candidate promoted = candidates.stream()
+                .filter(candidate -> candidate.session.serverWidePromotion())
+                .min(this::compare).orElse(null);
+        return promoted != null ? promoted : candidates.stream().min(this::compare).orElse(null);
     }
 
     private Candidate findCandidate(Player player) {
