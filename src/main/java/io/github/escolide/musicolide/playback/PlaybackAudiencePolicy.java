@@ -11,7 +11,19 @@ import java.util.UUID;
  * to decide which requests share a queue and the order of manual switching.
  */
 public final class PlaybackAudiencePolicy {
+    public enum TargetScope { SELF, TARGETED, ZONE, PUBLIC }
+
     private PlaybackAudiencePolicy() {}
+
+    public static TargetScope resolveTargetScope(String selector, boolean spatialZone) {
+        if (spatialZone) return TargetScope.ZONE;
+        if (selector == null) return TargetScope.TARGETED;
+        return switch (selector.toLowerCase(java.util.Locale.ROOT)) {
+            case "@s" -> TargetScope.SELF;
+            case "@a" -> TargetScope.PUBLIC;
+            default -> TargetScope.TARGETED;
+        };
+    }
 
     /**
      * Independent owners share a queue only when they request the same all-player
@@ -31,16 +43,20 @@ public final class PlaybackAudiencePolicy {
      * server-wide public (@a). Normal arbitration still preserves the session
      * already audible to a listener until they explicitly switch.
      */
-    public static int switchCycleRank(boolean allPlayers, MusicZone zone) {
-        if (zone != null && zone.shape() != MusicZone.Shape.GLOBAL) return 1;
-        return allPlayers ? 2 : 0;
+    public static int switchCycleRank(TargetScope scope) {
+        if (scope == null) return 1;
+        return switch (scope) {
+            case SELF -> 0;
+            case ZONE, TARGETED -> 1;
+            case PUBLIC -> 2;
+        };
     }
 
-    public static boolean isPersonalTarget(boolean allPlayers,
-                                           Collection<UUID> explicitListeners,
-                                           UUID playerId) {
-        return !allPlayers && playerId != null && explicitListeners != null
-                && explicitListeners.size() == 1 && explicitListeners.contains(playerId);
+    public static boolean isPersonalTarget(TargetScope scope, boolean allPlayers,
+                                           Collection<UUID> explicitListeners, UUID playerId) {
+        return scope == TargetScope.SELF && !allPlayers && playerId != null
+                && explicitListeners != null && explicitListeners.size() == 1
+                && explicitListeners.contains(playerId);
     }
 
     /**
