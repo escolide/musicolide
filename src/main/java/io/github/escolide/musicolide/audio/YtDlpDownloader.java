@@ -341,6 +341,13 @@ public final class YtDlpDownloader {
     }
 
     public List<SearchResult> searchYouTube(String query, int maximumResults) throws IOException, InterruptedException {
+        boolean prioritizeSongs = plugin.getConfig().getBoolean(
+                "audio.yt-dlp.search.prioritize-songs", true);
+        return searchYouTube(query, maximumResults, prioritizeSongs);
+    }
+
+    public List<SearchResult> searchYouTube(String query, int maximumResults, boolean prioritizeSongs)
+            throws IOException, InterruptedException {
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
             throw new IOException("YouTube search is disabled. Enable audio.yt-dlp first.");
         }
@@ -366,9 +373,7 @@ public final class YtDlpDownloader {
         }
 
         int resultCount = bounded(maximumResults, 1, 160);
-        boolean prioritizeSongs = plugin.getConfig().getBoolean(
-                "audio.yt-dlp.search.prioritize-songs", true);
-        int fetchCount = prioritizeSongs ? Math.min(160, Math.max(resultCount, resultCount * 3)) : resultCount;
+        int fetchCount = searchFetchCount(resultCount, prioritizeSongs);
 
         Path temporaryDirectory = plugin.getDataFolder().toPath().resolve("temp");
         Path cacheDirectory = plugin.getDataFolder().toPath().resolve("cache").resolve("yt-dlp");
@@ -418,6 +423,11 @@ public final class YtDlpDownloader {
             if (output != null) Files.deleteIfExists(output);
             if (errorLog != null) Files.deleteIfExists(errorLog);
         }
+    }
+
+    static int searchFetchCount(int resultCount, boolean prioritizeSongs) {
+        int boundedCount = bounded(resultCount, 1, 160);
+        return prioritizeSongs ? Math.min(160, boundedCount * 3) : boundedCount;
     }
 
     static List<String> buildSearchCommand(String executable, String jsRuntimeExecutable,

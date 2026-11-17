@@ -55,6 +55,14 @@ class YtDlpDownloaderTest {
     }
 
     @Test
+    void autocompleteSearchFetchesOnlyTheRequestedNumberOfResults() {
+        assertEquals(6, YtDlpDownloader.searchFetchCount(6, false));
+        assertEquals(18, YtDlpDownloader.searchFetchCount(6, true));
+        assertEquals(160, YtDlpDownloader.searchFetchCount(100, true));
+        assertEquals(1, YtDlpDownloader.searchFetchCount(0, false));
+    }
+
+    @Test
     void searchCommandSupportsLaterPagesBeyondTheOldThirtyResultCap() {
         List<String> command = YtDlpDownloader.buildSearchCommand(
                 "yt-dlp", "qjs", Path.of("cache/yt-dlp"), 48, "artist album");
