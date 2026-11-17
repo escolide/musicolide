@@ -31,6 +31,7 @@ public final class PlaybackSession {
     private boolean clockStarted;
     private boolean repeat;
     private boolean queuePending;
+    private boolean overlapSuspended;
     private boolean urlPlaylist;
     private boolean playlistPerTrackDelivery;
     private int priority;
@@ -207,6 +208,7 @@ public final class PlaybackSession {
     }
 
     public synchronized boolean advance() {
+        overlapSuspended = false;
         if (serverWidePromotion) {
             zone = preBroadcastZone == null ? zone : preBroadcastZone;
             allPlayers = preBroadcastAllPlayers;
@@ -255,9 +257,18 @@ public final class PlaybackSession {
         elapsedBaseMs = elapsedMs();
         trackStartedAt = 0;
         clockStarted = false;
+        overlapSuspended = true;
+    }
+
+    /** Consumed once when this session is selected again after an overlap hold. */
+    public synchronized boolean consumeOverlapSuspended() {
+        boolean suspended = overlapSuspended;
+        overlapSuspended = false;
+        return suspended;
     }
 
     public synchronized void pause() {
+        overlapSuspended = false;
         if (resumePreparing) {
             // A second pause cancels an outstanding resume/seek preparation.
             resumeGeneration++;
@@ -278,6 +289,7 @@ public final class PlaybackSession {
     /** Existing behaviour for legacy segmented and continuous modes. */
     public synchronized void resume() {
         if (!paused || current == null) return;
+        overlapSuspended = false;
         timelineGeneration++;
         resumeGeneration++;
         resumePreparing = false;
