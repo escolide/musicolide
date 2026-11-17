@@ -764,7 +764,7 @@ public final class PlaybackEngine {
                     state.sound = track.soundKey(segment, candidate.session.isMono());
                     float adjusted = playbackVolume(state.baseVolume, candidate.session, state.fading, player);
                     if (adjusted > 0) {
-                        player.playSound(soundOrigin(player, candidate.session), state.sound, SOUND_CATEGORY,
+                        playSessionSound(player, candidate.session, state.sound,
                                 adjusted, (float) candidate.session.speed());
                         return VolumeChangeResult.RESTARTED;
                     }
@@ -1482,14 +1482,22 @@ public final class PlaybackEngine {
             if (session == null || session.paused() || !session.targets(playerId)
                     || state.syncPreparing || state.syncTrack != null) continue;
             MusicTrack track = session.playbackTrack();
-            if (track == null || !track.id().equals(state.trackId)) continue;
+            if (track == null || !track.id().equals(state.trackId) || track.isStreamed()) continue;
 
             int segment = session.segmentIndex();
             if (segment < 0 || segment >= track.segmentCount() || segment == state.segment) continue;
 
+            MusicZone zone = session.zone();
+            MusicZone.AudioMode zoneMode = zone.audioMode(player.getWorld().getUID(),
+                    player.getX(), player.getY(), player.getZ());
+            if (zoneMode == MusicZone.AudioMode.NONE) {
+                stopPlayer(player);
+                continue;
+            }
+            boolean fading = zoneMode == MusicZone.AudioMode.FADE;
             float baseVolume = Float.isFinite(state.baseVolume)
                     ? state.baseVolume : (state.baseVolume = playbackBaseVolume(player));
-            float volume = playbackVolume(baseVolume, session, state.fading, player);
+            float volume = playbackVolume(baseVolume, session, fading, player);
             if (volume <= 0) {
                 stopPlayer(player);
                 continue;
@@ -1497,10 +1505,26 @@ public final class PlaybackEngine {
 
             String sound = track.soundKey(segment, session.isMono());
             if (state.sound != null) player.stopSound(state.sound, SOUND_CATEGORY);
-            player.playSound(soundOrigin(player, session), sound, SOUND_CATEGORY, volume, (float) session.speed());
+            playSessionSound(player, session, sound, volume, (float) session.speed());
             state.segment = segment;
+            state.fading = fading;
             state.sound = sound;
         }
+    }
+
+    /**
+     * Mono playback follows the listener entity by default. This avoids pinning
+     * a streamed sound to the listener's coordinates from the instant it began.
+     * The explicit --center option intentionally keeps a fixed zone-centre source.
+     */
+    private void playSessionSound(Player player, PlaybackSession session, String sound,
+                                  float volume, float pitch) {
+        MusicZone zone = session.zone();
+        if (PlaybackSoundPolicy.followsListener(session.isMono(), zone.centeredAudioOrigin())) {
+            player.playSound(player, sound, SOUND_CATEGORY, volume, pitch);
+            return;
+        }
+        player.playSound(soundOrigin(player, session), sound, SOUND_CATEGORY, volume, pitch);
     }
 
     private Location soundOrigin(Player player, PlaybackSession session) {
@@ -1667,15 +1691,18 @@ public final class PlaybackEngine {
             sendActionBar(player, message("messages.playback-synchronizing"));
             return;
         }
-        int segment = synchronizedTail ? 0 : session.segmentIndex();
+        int segment = track.isStreamed() ? 0 : (synchronizedTail ? 0 : session.segmentIndex());
         if (segment < 0 || segment >= track.segmentCount()) {
             stopPlayer(player);
             return;
         }
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment, session.isMono());
+        // A streamed OGG cannot be restarted just because a listener crossed
+        // the edge of the fade band: that would replay the whole track at 00:00.
+        // Segmented tracks pick up the latest fade factor at their next segment.
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
-                || state.segment != segment || state.fading != fading || state.sound == null;
+                || state.segment != segment || state.sound == null;
         if (changed) {
             stopCurrentSound(player, state);
             state.baseVolume = playbackBaseVolume(player);
@@ -1684,13 +1711,15 @@ public final class PlaybackEngine {
                 stopPlayer(player);
                 return;
             }
-            player.playSound(soundOrigin(player, session), sound, SOUND_CATEGORY, volume, (float) session.speed());
+            playSessionSound(player, session, sound, volume, (float) session.speed());
             state.sessionId = session.id();
             state.trackId = track.id();
             state.segment = segment;
             state.fading = fading;
             state.sound = sound;
             playerPlayback.put(player.getUniqueId(), state);
+        } else {
+            state.fading = fading;
         }
         if (plugin.getConfig().getBoolean("playback.synchronization.action-bar-now-playing", true)) {
             MusicTrack displayTrack = originalTrack == null ? track : originalTrack;
