@@ -578,27 +578,22 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void importUrl(CommandSender sender, String[] args) throws SQLException {
         if (!admin(sender)) return;
-        if (args.length < 3 || !(args[2].equalsIgnoreCase("rights")
-                || args[2].equalsIgnoreCase("rights-confirmed")
-                || args[2].equalsIgnoreCase("--rights-confirmed"))) {
-            sender.sendMessage(msg("&eUsage: /music import-url <http(s)-url> rights [title] [id:music100]"));
-            sender.sendMessage(msg("&7Only import audio you own or are authorized to redistribute. YouTube must be allowlisted; Spotify and SoundCloud remain blocked."));
-            return;
-        }
-        if (YtDlpDownloader.isYouTubePlaylistUrl(args[1])) {
+        UrlImportArguments request = UrlImportArguments.parse(args);
+        String sourceUrl = request.sourceUrl();
+        if (YtDlpDownloader.isYouTubePlaylistUrl(sourceUrl)) {
             throw new IllegalArgumentException("The admin single-track importer does not accept playlist URLs. Use /play with audio.yt-dlp.allow-playlists enabled.");
         }
-        String customId = optionValue(args, 3, "--id");
-        String title = joinWithoutOption(args, 3, "--id");
         // Reusing a previously imported URL is a catalogue lookup, not a new download.
-        Optional<String> sourceKey = LinkNormalizer.normalize(args[1]);
-        boolean alreadyImported = sourceKey.isPresent()
-                && repository.resolveAlias(sourceKey.get()).isPresent();
+        Optional<String> sourceKey = LinkNormalizer.normalize(sourceUrl);
+        if (sourceKey.isEmpty()) {
+            throw new IllegalArgumentException("Enter a valid HTTP(S) URL from a configured allowed source.");
+        }
+        boolean alreadyImported = repository.resolveAlias(sourceKey.get()).isPresent();
         if (!alreadyImported && !admitHeavyRequest(sender, "import",
                 "audio.processing.import-cooldown-seconds", 10,
                 "audio.processing.global-import-cooldown-seconds", 2, "another import")) return;
-        sender.sendMessage(msg("&eImporting authorized audio into the permanent SavedMusic library..."));
-        processor.importUrlPermanent(args[1], title.isBlank() ? null : title, customId).whenComplete((track, error) ->
+        sender.sendMessage(msg("&eImporting audio into the permanent SavedMusic library..."));
+        processor.importUrlPermanent(sourceUrl, request.title(), request.customId()).whenComplete((track, error) ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (error != null) sender.sendMessage(msg("&cURL import failed: " + rootMessage(error)));
                     else sender.sendMessage(msg("&aSaved &f" + track.title() + " &7[TrackID: &f" + displayTrackId(track) + "&7]"));
@@ -678,7 +673,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 + " &8| &7/play auto-import: " + (autoImport ? "&aenabled" : "&cdisabled")));
         sender.sendMessage(msg("&7Allowlisted source hosts: &f"
                 + (allowedHosts.isEmpty() ? "(none)" : String.join(", ", allowedHosts))));
-        sender.sendMessage(msg("&7URL imports are admin-only and require redistribution rights."));
+        sender.sendMessage(msg("&7URL imports are admin-only and restricted to configured allowed-hosts; blocked hosts are rejected."));
         sender.sendMessage(msg("&7Geyser detection is optional; Bedrock playback requires its separate pack adapter."));
     }
 
@@ -908,7 +903,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false)) {
             sender.sendMessage(msg("&cNo saved local match was found and URL auto-import is disabled."));
             sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.auto-import-on-play for configured, rights-cleared hosts."));
-            sender.sendMessage(msg("&7To permanently add an authorized URL, use /music import-url <url> rights."));
+            sender.sendMessage(msg("&7An administrator can permanently add a single URL with /music import-url <url> [title] [id:custom_name]."));
             return;
         }
         if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
@@ -2595,8 +2590,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&dIMPORTS &8| &7Server library files"));
         sender.sendMessage(msg("&f/music import <file> [title] [id:name] &8- &7import from SavedMusic/"));
         sender.sendMessage(msg("&f/music import all &8- &7import supported files in SavedMusic/"));
-        sender.sendMessage(msg("&f/music import-url <URL> rights [title] [id:name] &8- &7permanently import an authorized URL"));
-        sender.sendMessage(msg("&7Only import audio you own or have explicit rights to redistribute."));
+        sender.sendMessage(msg("&f/music import-url <URL> [title...] [id:name] &8- &7permanently import one URL (admin)"));
+        sender.sendMessage(msg("&7Examples: /music import-url <URL>"));
+        sender.sendMessage(msg("&7          /music import-url <URL> Summer Night id:summer_night"));
+        sender.sendMessage(msg("&7Use only sources your server is allowed to download and redistribute; configured host restrictions still apply."));
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
         sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade:10 (requires mode:mono)"));
@@ -2753,6 +2750,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return partial(List.of("enable", "disable"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("volume"))
             return partial(List.of("0", "25", "50", "75", "100"), args[1]);
+        if (args.length >= 3 && args[0].equalsIgnoreCase("import-url")
+                && sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"))) {
+            String prefix = args[args.length - 1];
+            if (prefix.isBlank()) return List.of("id:");
+            if (prefix.equalsIgnoreCase("id") || prefix.equalsIgnoreCase("id:")) return List.of("id:");
+        }
         if (args.length == 2 && args[0].equalsIgnoreCase("import"))
             return partial(List.of("all"), args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("playlist"))
