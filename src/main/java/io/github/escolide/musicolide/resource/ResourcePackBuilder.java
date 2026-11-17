@@ -281,11 +281,11 @@ public final class ResourcePackBuilder {
         }
 
         List<String> definitions = new ArrayList<>();
-        definitions.add("\\"music\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
-                + ":music\\",\\"stream\\":true}]}");
+        definitions.add("\"music\": {\"sounds\":[{\"name\":\"" + namespace
+                + ":music\",\"stream\":true}]}");
         if (monoAudioFile != null) {
-            definitions.add("\\"mono\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
-                    + ":mono\\",\\"stream\\":true,\\"attenuation_distance\\":"
+            definitions.add("\"mono\": {\"sounds\":[{\"name\":\"" + namespace
+                    + ":mono\",\"stream\":true,\"attenuation_distance\":"
                     + MONO_ATTENUATION_DISTANCE + "}]}");
             for (int i = 0; i < monoSegmentCount; i++) {
                 String id = String.format(Locale.ROOT, "%05d", i);
@@ -294,7 +294,7 @@ public final class ResourcePackBuilder {
                 definitions.add(monoSegmentDefinition(namespace, id));
             }
         }
-        String soundsJson = "{\\n  " + String.join(",\\n  ", definitions) + "\\n}\\n";
+        String soundsJson = "{\n  " + String.join(",\n  ", definitions) + "\n}\n";
 
         Path output = packsDirectory.resolve(namespace + ".zip");
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
@@ -316,8 +316,8 @@ public final class ResourcePackBuilder {
     }
 
     private String monoSegmentDefinition(String namespace, String id) {
-        return "\\"m_" + id + "\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace + ":"
-                + namespace + "/mono/" + id + "\\",\\"stream\\":false,\\"attenuation_distance\\":"
+        return "\"m_" + id + "\": {\"sounds\":[{\"name\":\"" + namespace + ":"
+                + namespace + "/mono/" + id + "\",\"stream\":false,\"attenuation_distance\":"
                 + MONO_ATTENUATION_DISTANCE + "}]}";
     }
 
@@ -350,30 +350,30 @@ public final class ResourcePackBuilder {
                 List<String> definitions = new ArrayList<>();
                 if (streamed) {
                     requireAudioFile(monoDirectory.resolve("mono.ogg"), "The generated mono OGG is missing.");
-                    definitions.add("  \\"mono\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
-                            + ":mono\\",\\"stream\\":true,\\"attenuation_distance\\":"
+                    definitions.add("  \"mono\": {\"sounds\":[{\"name\":\"" + namespace
+                            + ":mono\",\"stream\":true,\"attenuation_distance\":"
                             + MONO_ATTENUATION_DISTANCE + "}]}");
                 }
                 for (int i = 0; i < segmentCount; i++) {
                     String id = String.format(Locale.ROOT, "%05d", i);
                     requireAudioFile(monoDirectory.resolve(id + ".ogg"),
                             "A generated mono segment is missing: " + id);
-                    definitions.add("  \\"m_" + id + "\\": {\\"sounds\\":[{\\"name\\":\\""
+                    definitions.add("  \"m_" + id + "\": {\"sounds\":[{\"name\":\""
                             + namespace + ":" + namespace + "/mono/" + id
-                            + "\\",\\"stream\\":false,\\"attenuation_distance\\":"
+                            + "\",\"stream\":false,\"attenuation_distance\":"
                             + MONO_ATTENUATION_DISTANCE + "}]}");
                 }
 
-                // Replace old m_ entries rather than accumulating duplicate JSON keys
-                // when a partially upgraded archive is retried.
+                // Replace existing mono events and chunks rather than accumulating
+                // duplicate JSON keys when a partial migration is retried.
                 String cleanedSounds = oldSounds.replaceAll(
-                        "(?m)^\\\\s*\\\"m_[0-9]{5}\\\"\\\\s*:\\\\s*\\\\{[^\\\\r\\\\n]*\\\\},?\\\\r?\\\\n", "");
+                        "(?m)^\\s*\"(?:mono|m_[0-9]{5})\"\\s*:\\s*\\{[^\\r\\n]*\\},?\\r?\\n", "");
                 int finalBrace = cleanedSounds.lastIndexOf('}');
                 if (finalBrace < 0) throw new IOException("The source sounds.json is invalid.");
                 String prefix = cleanedSounds.substring(0, finalBrace).stripTrailing();
                 while (prefix.endsWith(",")) prefix = prefix.substring(0, prefix.length() - 1).stripTrailing();
-                String updatedSounds = prefix + (prefix.endsWith("{") ? "\\n" : ",\\n")
-                        + String.join(",\\n", definitions) + "\\n}\\n";
+                String updatedSounds = prefix + (prefix.endsWith("{") ? "\n" : ",\n")
+                        + String.join(",\n", definitions) + "\n}\n";
 
                 try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(temporary))) {
                     Set<String> written = new HashSet<>();
