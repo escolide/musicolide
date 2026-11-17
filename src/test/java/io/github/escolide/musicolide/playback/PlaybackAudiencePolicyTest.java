@@ -10,17 +10,26 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaybackAudiencePolicyTest {
     @Test
-    void onlyIdenticalAllPlayerAudiencesShareQueuesAcrossOwners() {
+    void onlyIdenticalTargetAudiencesAndZonesShareQueuesAcrossOwners() {
         UUID world = UUID.randomUUID();
+        UUID listener = UUID.randomUUID();
+        UUID otherListener = UUID.randomUUID();
         MusicZone global = MusicZone.global();
         MusicZone zone = MusicZone.circle(world, 0, 64, 0, 30, false, 0, false, 0);
         MusicZone otherZone = MusicZone.circle(world, 10, 64, 0, 30, false, 0, false, 0);
 
-        assertTrue(PlaybackAudiencePolicy.sharesQueueAcrossOwners(true, true, global, global));
-        assertTrue(PlaybackAudiencePolicy.sharesQueueAcrossOwners(true, true, zone, zone));
-        assertFalse(PlaybackAudiencePolicy.sharesQueueAcrossOwners(false, false, global, global));
-        assertFalse(PlaybackAudiencePolicy.sharesQueueAcrossOwners(true, true, zone, otherZone));
-        assertFalse(PlaybackAudiencePolicy.sharesQueueAcrossOwners(true, false, global, global));
+        assertTrue(PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                true, List.of(), true, List.of(), global, global));
+        assertTrue(PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                false, List.of(listener), false, List.of(listener), global, global));
+        assertTrue(PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                true, List.of(), true, List.of(), zone, zone));
+        assertFalse(PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                false, List.of(listener), false, List.of(otherListener), global, global));
+        assertFalse(PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                true, List.of(), true, List.of(), zone, otherZone));
+        assertFalse(PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                true, List.of(), false, List.of(listener), global, global));
     }
 
     @Test
