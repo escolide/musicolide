@@ -42,7 +42,7 @@ audio:
   # resumable: one streamed OGG; resume creates a timestamped OGG tail with FFmpeg and a temporary pack.
   # Timestamp-based resume is for Java clients. Mixed sessions with supported (non-excluded)
   # Bedrock players use the compatible restart-from-beginning fallback because Geyser's aggregate
-  # pack is fixed at join time. Set geyser.ignore-bedrock-players: true to exclude Bedrock entirely.
+  # pack is fixed at join time. Set geyser.ignore-bedrock-players: true to exclude Bedrock entirely (recommended).
   playback-mode: "resumable"
   yt-dlp:
     enabled: true
@@ -59,8 +59,8 @@ audio:
     # QuickJS is installed as qjs beside yt-dlp and FFmpeg.
     js-runtime-executable: "qjs"
     # Add only domains from which the server has permission to download and redistribute audio.
-    # YouTube domains are prelisted, but auto-import remains off until an admin opts in.
     # For a permanent single-video import, use /music import-url <url> [title] [id:custom_name].
+    #spotify and soundcloud donwload are still not implemented
     allowed-hosts:
       - "youtube.com"
       - "youtu.be"
@@ -141,7 +141,7 @@ storage:
     # Maximum combined size of files retained in plugins/Musicolide/SavedMusic/.
     # This is separate from limits.max-track-library-gb, which applies to generated packs.
     # Set to 0 to disable this source-library limit.
-    max-library-gb: 10
+    max-library-gb: 1
   temporary:
     # Lifetime of temporary URL-imported tracks before they become eligible for cleanup.
     # A track is kept while it is playing, queued, repeating, or still being downloaded.
@@ -156,7 +156,6 @@ resource-packs:
   # Java delivery modes. Playlist playback can override the universal setting below.
   # library: one aggregate pack; newly imported tracks are included in the next immutable revision.
   # per-track: independent packs, requested only for the active track when used by a URL playlist.
-  # Geyser/Bedrock continues to use its aggregate Bedrock pack in either mode.
   universal-playback-system: "pre-track"
   # URL playlist override, independent of the universal mode above.
   # per-track (default): server imports ahead, but players receive only the currently active track pack.
@@ -268,11 +267,8 @@ matching:
 # Optional integrations for Bedrock players, protected regions and Discord.
 geyser:
   # Completely exclude Geyser-identified Bedrock players from Musicolide:
-  # no Bedrock music pack, no Java or temporary packs, no playback, and no plugin messages.
-  # They are also excluded from playback audience/barrier decisions, so Java players
-  # continue normally. Geyser must be installed on this Paper server for detection.
-  # Enable before Bedrock players connect. Players already sent a pack must reconnect
-  # after changing this option so Geyser starts a new session without offering it.
+  # Bedrock feature is still is in development and not yet completed, it's for the best interest to ignore bedrock players.
+  # setting this as "false" could break the plugin and cause issuue
   ignore-bedrock-players: true
 
 worldguard:
@@ -286,7 +282,7 @@ limits:
   max-playlist-tracks: 500
   # Maximum size of the generated/processed audio resource-pack library in packs/.
   # SavedMusic/ source files have a separate limit under storage.saved-music.
-  max-track-library-gb: 10
+  max-track-library-gb: 1
 
 permissions:
   # Defaults are declared in plugin.yml: use and dj are granted to everyone; admin is OP-only.
@@ -294,7 +290,7 @@ permissions:
   dj: "musicolide.dj"
   admin: "musicolide.admin"
   # Allow non-admin players to use circle/square zones only when targeting themselves.
-  allow-player-self-zones: false
+  allow-player-self-zones: true
   # Allow non-admin players to use target:@a. Disabled by default.
   allow-player-all-target: false
 
@@ -385,24 +381,6 @@ discord:
       play: "everyone"
       music: "everyone"
 
-# Anonymous aggregate usage metrics. Register Musicolide at https://bstats.org/add-plugin
-# and enter the numeric ID assigned to your plugin below.
-# No metrics are sent until a valid plugin ID is configured.
-bstats:
-  enabled: true
-  plugin-id: 35412
-  # Each chart can be disabled separately. Chart IDs must also be added to your
-  # Musicolide page on bStats (Edit -> Add chart) to display custom charts.
-  charts:
-    playback-mode: true
-    audio-profile: true
-    resource-pack-delivery: true
-    playlist-delivery: true
-    remote-import-enabled: true
-    discord-enabled: true
-    geyser-integration: true
-    worldguard-integration: true
-
 # Text shown by Minecraft commands and playback feedback.
 messages:
   prefix: "&8[&5Musicolide&8] &r"
@@ -428,3 +406,16 @@ messages:
   playback-stopped: "&cPlayback stopped."
   queue-empty: "&eThe queue is empty."
   reload-complete: "&aConfiguration reloaded."
+
+bstats:
+  enabled: true
+  plugin-id: 35412
+  charts:
+    playback-mode: true
+    audio-profile: true
+    resource-pack-delivery: true
+    playlist-delivery: true
+    remote-import-enabled: true
+    discord-enabled: true
+    geyser-integration: true
+    worldguard-integration: true
