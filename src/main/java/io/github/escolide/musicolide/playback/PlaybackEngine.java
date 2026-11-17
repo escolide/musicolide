@@ -812,7 +812,7 @@ public final class PlaybackEngine {
             MusicTrack track = candidate.session.playbackTrack();
             if (!track.isStreamed(candidate.session.isMono()) && state != null && state.sound != null) {
                 int segment = candidate.session.segmentIndex();
-                if (segment >= 0 && segment < track.segmentCount()) {
+                if (segment >= 0 && segment < track.segmentCount(candidate.session.isMono())) {
                     stopCurrentSound(player, state);
                     state.baseVolume = playbackBaseVolume(player);
                     state.segment = segment;

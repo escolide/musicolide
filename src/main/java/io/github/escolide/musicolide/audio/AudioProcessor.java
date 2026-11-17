@@ -881,7 +881,13 @@ public final class AudioProcessor implements AutoCloseable {
             throw new IOException("The original track resource pack is missing; mono audio cannot be prepared.");
         }
         boolean streamed = track.isStreamed();
-        MonoFadeLayout monoLayout = streamed ? monoFadeLayout(track.durationMs())
+        // Preserve the segment timing already stored with upgraded tracks. The
+        // configured duration is used only when creating mono chunks for the
+        // first time, not to reinterpret older chunk boundaries.
+        MonoFadeLayout monoLayout = streamed
+                ? (track.hasMonoSegments()
+                    ? new MonoFadeLayout(track.segmentMs(), track.segmentCount())
+                    : monoFadeLayout(track.durationMs()))
                 : new MonoFadeLayout(Math.max(1, track.segmentMs()), Math.max(1, track.segmentCount()));
         int targetSegmentMs = monoLayout.segmentMs();
         int targetSegmentCount = monoLayout.segmentCount();
