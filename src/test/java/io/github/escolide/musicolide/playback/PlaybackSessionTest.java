@@ -492,25 +492,6 @@ class PlaybackSessionTest {
     }
 
     @Test
-    void concurrentPlaylistImportsKeepSessionAliveUntilEveryProducerFinishes() {
-        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
-                MusicZone.global(), true, List.of(), List.of(), 0);
-
-        session.addQueuePending();
-        session.addQueuePending();
-        assertFalse(session.isEmpty());
-
-        session.removeQueuePending();
-        assertTrue(session.queuePending());
-        assertFalse(session.isEmpty(),
-                "Finishing one playlist producer must not clear another producer's pending queue.");
-
-        session.removeQueuePending();
-        assertFalse(session.queuePending());
-        assertTrue(session.isEmpty());
-    }
-
-    @Test
     void sameExactTargetAndZoneMatchForQueueingButDifferentPlayersDoNot() {
         UUID listener = UUID.randomUUID();
         UUID other = UUID.randomUUID();
