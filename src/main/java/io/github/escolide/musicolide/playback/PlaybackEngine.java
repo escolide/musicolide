@@ -252,13 +252,25 @@ public final class PlaybackEngine {
                 .filter(session -> session.current() != null
                         && session.targets(player.getUniqueId()) && isInsideSession(session, player))
                 .toList();
-        UUID audibleId = Optional.ofNullable(playerPlayback.get(player.getUniqueId()))
+        UUID playerId = player.getUniqueId();
+        UUID manualId = selectedSessionByPlayer.get(playerId);
+        List<UUID> eligibleIds = eligible.stream().map(PlaybackSession::id).toList();
+        if (manualId != null && eligibleIds.contains(manualId)) {
+            return eligible.stream().filter(session -> session.id().equals(manualId)).findFirst();
+        }
+        if (manualId != null) selectedSessionByPlayer.remove(playerId);
+
+        Optional<PlaybackSession> promoted = eligible.stream()
+                .filter(PlaybackSession::serverWidePromotion)
+                .min((first, second) -> Long.compare(first.startedAt(), second.startedAt()));
+        if (promoted.isPresent()) return promoted;
+
+        UUID audibleId = Optional.ofNullable(playerPlayback.get(playerId))
                 .map(state -> state.sessionId).orElse(null);
-        UUID selectedId = PlaybackAudiencePolicy.preferredEligibleSession(
-                selectedSessionByPlayer.get(player.getUniqueId()), audibleId,
-                eligible.stream().map(PlaybackSession::id).toList());
-        if (selectedId != null) {
-            return eligible.stream().filter(session -> session.id().equals(selectedId)).findFirst();
+        UUID preferredId = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, audibleId, eligibleIds);
+        if (preferredId != null) {
+            return eligible.stream().filter(session -> session.id().equals(preferredId)).findFirst();
         }
         Comparator<PlaybackSession> order = (first, second) -> {
             if (first.serverWidePromotion() != second.serverWidePromotion()) {
@@ -1910,25 +1922,29 @@ public final class PlaybackEngine {
         UUID manualSelection = selectedSessionByPlayer.get(playerId);
         List<UUID> eligibleIds = candidates.stream()
                 .map(candidate -> candidate.session.id()).toList();
-        if (manualSelection != null && !eligibleIds.contains(manualSelection)) {
+        if (manualSelection != null && eligibleIds.contains(manualSelection)) {
+            return candidates.stream().filter(candidate -> candidate.session.id().equals(manualSelection))
+                    .findFirst().orElse(null);
+        }
+        if (manualSelection != null) {
             // Leaving the selected zone or ending its session clears the override;
             // re-entering later must not unexpectedly resurrect the old choice.
             selectedSessionByPlayer.remove(playerId);
-            manualSelection = null;
         }
+
+        // Explicit server-wide promotion is the only automatic pre-emption path.
+        Candidate promoted = candidates.stream()
+                .filter(candidate -> candidate.session.serverWidePromotion())
+                .min(this::compare).orElse(null);
+        if (promoted != null) return promoted;
+
         UUID preferred = PlaybackAudiencePolicy.preferredEligibleSession(
-                manualSelection, currentlyAudible, eligibleIds);
+                null, currentlyAudible, eligibleIds);
         if (preferred != null) {
             return candidates.stream().filter(candidate -> candidate.session.id().equals(preferred))
                     .findFirst().orElse(null);
         }
-
-        // Explicit server-wide promotion remains the sole automatic pre-emption
-        // path; ordinary new zones/public sessions do not cut in.
-        Candidate promoted = candidates.stream()
-                .filter(candidate -> candidate.session.serverWidePromotion())
-                .min(this::compare).orElse(null);
-        return promoted != null ? promoted : candidates.stream().min(this::compare).orElse(null);
+        return candidates.stream().min(this::compare).orElse(null);
     }
 
     private Candidate findCandidate(Player player) {
