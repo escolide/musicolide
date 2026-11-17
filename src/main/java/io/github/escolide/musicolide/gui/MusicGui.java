@@ -135,7 +135,7 @@ public final class MusicGui implements Listener {
         List<String> infoLore = new ArrayList<>();
         infoLore.add(gray(hasTrack ? "View metadata, TrackID and pack details." : "No active track information."));
         infoLore.add(gray("Available to all viewers."));
-        holder.setItemIfChanged(inventory, INFO_SLOT, item(Material.WRITABLE_BOOK, "Song information", infoLore, false));
+        setItemIfChanged(holder.inventory, INFO_SLOT, item(Material.WRITABLE_BOOK, "Song information", infoLore, false));
 
         boolean discordConfigured = plugin.getConfig().getBoolean("discord.enabled", false);
         boolean discordEnabled = hasTrack && playback.effectiveDiscordBroadcast(session);
