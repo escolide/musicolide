@@ -1359,13 +1359,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 centeredMono = Boolean.parseBoolean(value);
                 continue;
             }
-            if (option.startsWith("center:")) {
-                String value = option.substring("center:".length());
-                if (!value.equals("true") && !value.equals("false"))
-                    throw new IllegalArgumentException("Use center:true or center:false.");
-                centeredMono = Boolean.parseBoolean(value);
-                continue;
-            }
             if (PlayTargetDefaults.isExplicitCenterOption(option)) {
                 centeredMono = true;
                 continue;
@@ -2609,7 +2602,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade:10 (requires mode:mono)"));
         sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f loop:true|false &8• &f center:true &8• &f id:custom_name"));
         sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade:10 mode:mono"));
-        sender.sendMessage(msg("&7Stereo is default. fadeN requires mode:mono; mono circle/square zones use configured fade unless overridden."));
+        sender.sendMessage(msg("&7Stereo is default. fade:<distance> requires mode:mono; mono circle/square zones use configured fade unless overridden."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
         sender.sendMessage(msg("&7The center:true option is mono-only and opt-in; by default mono follows each listener as they move."));
         sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
@@ -2775,7 +2768,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade:10", "mode:mono", "mode:stereo", "loop:true", "loop:false", "center:true", "center:false"));
             return partial(targets, args[2]);
         }
-                return List.of();
+        return List.of();
     }
 
     private List<String> partial(List<String> options, String prefix) {
