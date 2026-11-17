@@ -93,7 +93,7 @@ For a normal server where the public hostname and port lead directly to the Mine
 ```yaml
 server:
   auto-detect-public-address: true
-  public-base-url: "https://your-public-host.example"
+  public-base-url: "http://your-public-host.example"
   auto-detect-port: true
   public-port: -1
 ```
@@ -192,7 +192,7 @@ Permanent local imports are stored in Musicolide's library and receive TrackIDs.
 
 ### YouTube search and URL imports
 
-YouTube search is metadata-only: it does not download audio by itself. The server uses yt-dlp and QuickJS for remote search. Selecting a remote result from `/play` creates a temporary import; selecting a result through the administrator-only `/music search` workflow saves it permanently.
+YouTube search is metadata-only: it does not download audio by itself. The server uses yt-dlp and QuickJS for remote search. Search results are shown six at a time; `/music page <number>` opens later pages in sequence. The default maximum is four pages and can be raised to eight with `audio.yt-dlp.search.max-pages`. `audio.yt-dlp.search.prioritize-songs` can heuristically boost official audio, music videos, lyrics and Topic-channel uploads. Selecting a remote result from `/play` creates a temporary import; selecting a result through the administrator-only `/music search` workflow saves it permanently.
 
 Direct URL importing is controlled by the `audio.yt-dlp` settings:
 
@@ -261,6 +261,7 @@ The `/play` command and shared/private playlist `play` commands accept compact `
 | Option | Example | Meaning |
 |---|---|---|
 | Target | `target:@a` | Send playback to `@s`, `@p`, `@a` or a player name |
+| Custom ID | `id:ambient_mix` | Assign a custom internal track/sound ID when importing or playing a new remote source |
 | Circle | `circle:60` | Create a circular zone with a 60-block radius |
 | Square | `square:50x30` | Create a square/rectangular zone |
 | WorldGuard | `region:spawn` | Use a WorldGuard region |
