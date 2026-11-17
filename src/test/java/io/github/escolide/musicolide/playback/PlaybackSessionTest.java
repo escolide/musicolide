@@ -470,4 +470,56 @@ class PlaybackSessionTest {
         assertTrue(session.advance());
         assertEquals("demo", session.current().id());
     }
+    @Test
+    void overlapSuspensionFreezesTimelineUntilTheSessionWinsAgain() throws Exception {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(UUID.randomUUID()),
+                List.of(sampleTrack("overlap-suspended")), 0);
+        session.startClockIfNeeded();
+        Thread.sleep(80);
+        long suspendedAt = session.elapsedMs();
+
+        session.suspendClockForOverlap();
+        assertFalse(session.clockStarted());
+        Thread.sleep(80);
+        assertEquals(suspendedAt, session.elapsedMs(),
+                "A session hidden by another selected source must not consume its track or queue.");
+
+        session.startClockIfNeeded();
+        Thread.sleep(60);
+        assertTrue(session.elapsedMs() > suspendedAt,
+                "The session clock should resume when the player selects this session again.");
+    }
+
+    @Test
+    void sameExactTargetAndZoneMatchForQueueingButDifferentPlayersDoNot() {
+        UUID listener = UUID.randomUUID();
+        UUID other = UUID.randomUUID();
+        PlaybackSession personal = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(listener),
+                List.of(sampleTrack("same-target")), 0);
+
+        assertTrue(personal.matchesPlaybackAudienceAndZone(false, List.of(listener), MusicZone.global()));
+        assertFalse(personal.matchesPlaybackAudienceAndZone(false, List.of(other), MusicZone.global()));
+        assertFalse(personal.matchesPlaybackAudienceAndZone(true, List.of(), MusicZone.global()));
+    }
+
+    @Test
+    void overlapSuspensionMarkerIsConsumedOnceAndClearedOnAdvance() {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(UUID.randomUUID()),
+                List.of(sampleTrack("overlap-marker-first"), sampleTrack("overlap-marker-second")), 0);
+        session.startClockIfNeeded();
+        session.suspendClockForOverlap();
+
+        assertTrue(session.consumeOverlapSuspended());
+        assertFalse(session.consumeOverlapSuspended(),
+                "The resumed session must not repeatedly force timeline catch-up.");
+
+        session.startClockIfNeeded();
+        session.advance();
+        assertFalse(session.consumeOverlapSuspended(),
+                "Advancing to the next track clears any previous overlap marker.");
+    }
+
 }

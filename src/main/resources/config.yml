@@ -387,6 +387,7 @@ messages:
   pack-not-ready: "&eThe resource pack is still loading. Playback will begin when it is ready."
   pack-declined: "&cYou declined the Musicolide resource pack; music cannot be played."
   overlap-warning: "&eYour music zone overlaps an earlier session. Your track is suppressed in the shared area."
+  competing-session: "&eAnother music session is available here. Use &f/music switch &eto switch between overlapping sessions."
   approximate-match: "&eThis may be a different recording. Confirm before playback."
   import-started: "&aPreparing audio."
   import-complete: "&aImported &f{title}&a (&f{id}&a)."

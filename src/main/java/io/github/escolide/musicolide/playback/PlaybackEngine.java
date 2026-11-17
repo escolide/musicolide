@@ -36,6 +36,12 @@ public final class PlaybackEngine {
     private final Map<UUID, PlayerPlayback> playerPlayback = new HashMap<>();
     private final Map<UUID, Long> warningTimes = new HashMap<>();
     private final Map<UUID, String> declinedWarnings = new HashMap<>();
+    // Explicit per-listener choice and the last automatically selected source.
+    // Both maps are player-local; neither changes a shared session's audience.
+    private final Map<UUID, UUID> selectedSessionByPlayer = new HashMap<>();
+    private final Map<UUID, UUID> activeSessionByPlayer = new HashMap<>();
+    private final Map<UUID, String> overlapNoticeState = new HashMap<>();
+    private final Map<UUID, Long> manualSelectionTimes = new HashMap<>();
     private final WorldGuardBridge worldGuard;
     private final GeyserBridge geyser;
     private final Map<UUID, Long> bedrockWarnings = new HashMap<>();
@@ -97,9 +103,22 @@ public final class PlaybackEngine {
                                                        boolean allPlayers, Collection<UUID> listeners,
                                                        Collection<MusicTrack> tracks, int priority,
                                                        boolean mono) {
+        PlaybackAudiencePolicy.TargetScope scope = zone != null
+                && zone.shape() != MusicZone.Shape.GLOBAL
+                ? PlaybackAudiencePolicy.TargetScope.ZONE
+                : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                : PlaybackAudiencePolicy.TargetScope.TARGETED;
+        return startSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, mono, scope);
+    }
+
+    public synchronized PlaybackSession startSession(UUID owner, String ownerName, MusicZone zone,
+                                                       boolean allPlayers, Collection<UUID> listeners,
+                                                       Collection<MusicTrack> tracks, int priority,
+                                                       boolean mono, PlaybackAudiencePolicy.TargetScope targetScope) {
         int maximum = plugin.getConfig().getInt("limits.max-sessions", 20);
         if (sessions.size() >= maximum) throw new IllegalStateException("Maximum number of music sessions reached.");
-        PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, mono);
+        PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners,
+                tracks, priority, mono, targetScope);
         if (owner != null) {
             Double defaultSpeed = speedDefaults.get(owner);
             if (defaultSpeed != null) session.setSpeed(defaultSpeed);
@@ -122,42 +141,86 @@ public final class PlaybackEngine {
         return playOrQueue(owner, ownerName, zone, allPlayers, listeners, track, priority, false);
     }
 
+    public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
+                                                      boolean allPlayers, Collection<UUID> listeners,
+                                                      MusicTrack track, int priority, boolean mono) {
+        return playOrQueueResult(owner, ownerName, zone, allPlayers, listeners, track, priority, mono,
+                defaultTargetScope(allPlayers, zone)).disposition();
+    }
+
+    public synchronized PlayResult playOrQueueResult(UUID owner, String ownerName, MusicZone zone,
+                                                      boolean allPlayers, Collection<UUID> listeners,
+                                                      MusicTrack track, int priority, boolean mono,
+                                                      PlaybackAudiencePolicy.TargetScope targetScope) {
+        java.util.function.Predicate<PlaybackSession> sameRequest =
+                session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone);
+        java.util.function.Predicate<PlaybackSession> sameOwner =
+                session -> owner == null
+                        ? session.owner() == null && session.ownerName().equals(ownerName)
+                        : session.isOwner(owner);
+
+        // A sender's matching session always takes precedence. Paused sessions
+        // remain queueable so the next request cannot create a duplicate session.
+        PlaybackSession existing = sessions.stream()
+                .filter(sameOwner)
+                .filter(sameRequest)
+                .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                .orElse(null);
+
+        // @a is one shared server-wide timeline. Another DJ's matching request
+        // joins this queue instead of creating another competing public session.
+        if (existing == null && allPlayers) {
+            existing = sessions.stream()
+                    .filter(sameRequest)
+                    .filter(session -> PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                            allPlayers, session.allPlayers(), zone, session.zone()))
+                    .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                    .orElse(null);
+        }
+
+        if (existing != null && !existing.isEmpty()) {
+            if (existing.isMono() != mono) return new PlayResult(PlayDisposition.MODE_MISMATCH, existing);
+            int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
+            if (existing.queueSize() >= maximumQueue) return new PlayResult(PlayDisposition.QUEUE_FULL, existing);
+            existing.enqueue(track);
+            return new PlayResult(PlayDisposition.QUEUED, existing);
+        }
+        PlaybackSession created = startSession(owner, ownerName, zone, allPlayers, listeners,
+                List.of(track), priority, mono, targetScope);
+        return new PlayResult(PlayDisposition.STARTED, created);
+    }
+
+    private PlaybackAudiencePolicy.TargetScope defaultTargetScope(boolean allPlayers, MusicZone zone) {
+        if (zone != null && zone.shape() != MusicZone.Shape.GLOBAL) return PlaybackAudiencePolicy.TargetScope.ZONE;
+        return allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC : PlaybackAudiencePolicy.TargetScope.TARGETED;
+    }
+
+    public record PlayResult(PlayDisposition disposition, PlaybackSession session) {}
+
     public synchronized Optional<Boolean> activeSessionMono(UUID owner, String ownerName, MusicZone zone,
                                                             boolean allPlayers, Collection<UUID> listeners) {
-        return sessions.stream()
-                .filter(session -> owner == null
+        java.util.function.Predicate<PlaybackSession> sameOwner =
+                session -> owner == null
                         ? session.owner() == null && session.ownerName().equals(ownerName)
-                        : session.isOwner(owner))
-                .filter(session -> !session.paused() && !session.resumePreparing())
+                        : session.isOwner(owner);
+        return sessions.stream()
+                .filter(session -> sameOwner.test(session)
+                        || (allPlayers && PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                                allPlayers, session.allPlayers(), zone, session.zone())))
                 .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
                 .max(Comparator.comparingLong(PlaybackSession::startedAt))
                 .map(PlaybackSession::isMono);
     }
 
-    public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
-                                                      boolean allPlayers, Collection<UUID> listeners,
-                                                      MusicTrack track, int priority, boolean mono) {
-        PlaybackSession existing = sessions.stream()
-                .filter(session -> owner == null
-                        ? session.owner() == null && session.ownerName().equals(ownerName)
-                        : session.isOwner(owner))
-                .filter(session -> !session.paused() && !session.resumePreparing())
-                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
-                .max(Comparator.comparingLong(PlaybackSession::startedAt))
-                .orElse(null);
-        if (existing != null && !existing.isEmpty()) {
-            if (existing.isMono() != mono) return PlayDisposition.MODE_MISMATCH;
-            int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
-            if (existing.queueSize() >= maximumQueue) return PlayDisposition.QUEUE_FULL;
-            existing.enqueue(track);
-            return PlayDisposition.QUEUED;
-        }
-        startSession(owner, ownerName, zone, allPlayers, listeners, List.of(track), priority, mono);
-        return PlayDisposition.STARTED;
-    }
-
     public synchronized Optional<PlaybackSession> findOwned(UUID owner) {
         return sessions.stream().filter(s -> s.isOwner(owner)).max(Comparator.comparingLong(PlaybackSession::startedAt));
+    }
+
+    public synchronized Optional<PlaybackSession> findOwnedMatching(UUID owner, boolean allPlayers,
+                                                                    Collection<UUID> listeners, MusicZone zone) {
+        return sessions.stream().filter(session -> session.isOwner(owner))
+                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
+                .max(Comparator.comparingLong(PlaybackSession::startedAt));
     }
 
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
@@ -187,14 +250,60 @@ public final class PlaybackEngine {
     /** Selects a session affecting a player even when it is paused and therefore inaudible this tick. */
     public Optional<PlaybackSession> sessionAffectingPlayer(Player player) {
         if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return Optional.empty();
-        boolean manualPriority = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
-        return sessions().stream().filter(session -> session.current() != null
+        List<PlaybackSession> eligible = sessions().stream()
+                .filter(session -> session.current() != null
                         && session.targets(player.getUniqueId()) && isInsideSession(session, player))
-                .sorted((first, second) -> {
-                    if (manualPriority && first.priority() != second.priority())
-                        return Integer.compare(second.priority(), first.priority());
-                    return Long.compare(first.startedAt(), second.startedAt());
-                }).findFirst();
+                .toList();
+        UUID playerId = player.getUniqueId();
+        UUID manualId = selectedSessionByPlayer.get(playerId);
+        List<UUID> eligibleIds = eligible.stream().map(PlaybackSession::id).toList();
+        if (manualId != null && eligibleIds.contains(manualId)) {
+            activeSessionByPlayer.put(playerId, manualId);
+            return eligible.stream().filter(session -> session.id().equals(manualId)).findFirst();
+        }
+        if (manualId != null) selectedSessionByPlayer.remove(playerId);
+
+        Optional<PlaybackSession> promoted = eligible.stream()
+                .filter(PlaybackSession::serverWidePromotion)
+                .min((first, second) -> Long.compare(first.startedAt(), second.startedAt()));
+        if (promoted.isPresent()) {
+            activeSessionByPlayer.put(playerId, promoted.get().id());
+            return promoted;
+        }
+
+        UUID previousId = activeSessionByPlayer.get(playerId);
+        UUID preferredPrevious = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, previousId, eligibleIds);
+        if (preferredPrevious != null) {
+            return eligible.stream().filter(session -> session.id().equals(preferredPrevious)).findFirst();
+        }
+
+        UUID audibleId = Optional.ofNullable(playerPlayback.get(playerId))
+                .map(state -> state.sessionId).orElse(null);
+        UUID preferredId = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, audibleId, eligibleIds);
+        if (preferredId != null) {
+            activeSessionByPlayer.put(playerId, preferredId);
+            return eligible.stream().filter(session -> session.id().equals(preferredId)).findFirst();
+        }
+        Comparator<PlaybackSession> order = (first, second) -> {
+            if (first.serverWidePromotion() != second.serverWidePromotion()) {
+                return first.serverWidePromotion() ? -1 : 1;
+            }
+            int scope = Integer.compare(
+                    PlaybackAudiencePolicy.switchCycleRank(first.targetScope()),
+                    PlaybackAudiencePolicy.switchCycleRank(second.targetScope()));
+            if (scope != 0) return scope;
+            boolean manualPriority = plugin.getConfig().getBoolean(
+                    "playback.overlap.manual-priority-enabled", true);
+            if (manualPriority && first.priority() != second.priority()) {
+                return Integer.compare(second.priority(), first.priority());
+            }
+            return Long.compare(first.startedAt(), second.startedAt());
+        };
+        Optional<PlaybackSession> selected = eligible.stream().min(order);
+        selected.ifPresent(session -> activeSessionByPlayer.put(playerId, session.id()));
+        return selected;
     }
 
     private boolean isInsideSession(PlaybackSession session, Player player) {
@@ -925,47 +1034,22 @@ public final class PlaybackEngine {
         Map<UUID, Candidate> winners = new HashMap<>();
         Map<PlaybackSession, Set<UUID>> suppressed = new HashMap<>();
         for (Player player : online) {
-            if (isIgnoredBedrockPlayer(player) || packs.isPlayerDisabled(player.getUniqueId())) continue;
-            Candidate winner = null;
-            for (PlaybackSession session : active) {
-                if (!session.targets(player.getUniqueId()) || session.current() == null
-                        || session.paused() || session.resumePreparing() || isPlayerMuted(player)) continue;
-
-                // A recipient that cannot use this pack must not reserve the
-                // player and make a different, playable session look like an overlap.
-                if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-                    if (!geyser.isBedrockPackAvailable()
-                            || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
-                } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
-                        || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
-                    warnPackDeclined(player, session.current(), session.playbackTrack());
-                    continue;
-                }
-
-                MusicZone zone = session.zone();
-                if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
-                MusicZone.AudioMode mode;
-                if (zone.shape() == MusicZone.Shape.REGION) {
-                    boolean inside = worldGuard != null && worldGuard.isInside(player.getLocation(), zone.regionId());
-                    mode = inside ? MusicZone.AudioMode.STEREO : MusicZone.AudioMode.NONE;
-                } else {
-                    mode = zone.audioMode(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ());
-                }
-                if (mode == MusicZone.AudioMode.NONE) continue;
-                // A listener at the zero-volume edge of a fade band, or with
-                // their personal volume set to zero, must not reserve this
-                // session and suppress another session they could actually hear.
-                if (playbackVolume(player, session, mode == MusicZone.AudioMode.FADE) <= 0) continue;
-                Candidate candidate = new Candidate(session, mode);
-                if (winner == null || compare(candidate, winner) < 0) {
-                    if (winner != null) suppressed.computeIfAbsent(winner.session, ignored -> new HashSet<>()).add(player.getUniqueId());
-                    winner = candidate;
-                } else {
-                    suppressed.computeIfAbsent(session, ignored -> new HashSet<>()).add(player.getUniqueId());
-                }
+            List<Candidate> candidates = eligibleCandidates(player, active, false);
+            if (candidates.isEmpty()) {
+                clearSelectionsOutsideAudience(player, active);
+                continue;
             }
-            if (winner != null) winners.put(player.getUniqueId(), winner);
+            Candidate winner = chooseCandidate(player, candidates);
+            if (winner == null) continue;
+            winners.put(player.getUniqueId(), winner);
+            for (Candidate candidate : candidates) {
+                if (candidate.session == winner.session) continue;
+                suppressed.computeIfAbsent(candidate.session, ignored -> new HashSet<>())
+                        .add(player.getUniqueId());
+            }
         }
+
+        suspendSessionsWithoutWinningListeners(winners, suppressed);
 
         // A previous catch-up attempt is valid only while this player remains a
         // winner for that same timeline. Clear it on zone exit or when overlap
@@ -1007,14 +1091,18 @@ public final class PlaybackEngine {
                         candidate.session.isUrlPlaylist() && !perTrack);
             }
         }
-        startReadySessionClocks(online, winners);
+        startReadySessionClocks(online, winners, suppressed.keySet());
         recordSessionStartCohorts(online, winners, active);
 
+        Set<UUID> zoneOwnersWarned = new HashSet<>();
         if (plugin.getConfig().getBoolean("playback.overlap.warn-session-owner", true)) {
             long cooldown = plugin.getConfig().getLong("playback.overlap.warning-cooldown-seconds", 60) * 1000L;
             for (Map.Entry<PlaybackSession, Set<UUID>> entry : suppressed.entrySet()) {
                 PlaybackSession session = entry.getKey();
-                if (session.owner() == null || entry.getValue().isEmpty()) continue;
+                // This owner-facing warning is specifically for spatial-zone overlap;
+                // global @a/@s conflicts are explained to the affected listener instead.
+                if (session.zone().shape() == MusicZone.Shape.GLOBAL
+                        || session.owner() == null || entry.getValue().isEmpty()) continue;
                 boolean blockedByAudibleSession = entry.getValue().stream()
                         .map(winners::get)
                         .filter(Objects::nonNull)
@@ -1026,11 +1114,13 @@ public final class PlaybackEngine {
                     Player owner = Bukkit.getPlayer(session.owner());
                     if (owner != null && !isIgnoredBedrockPlayer(owner)) {
                         owner.sendMessage(message("messages.overlap-warning"));
+                        zoneOwnersWarned.add(owner.getUniqueId());
                     }
                     warningTimes.put(session.id(), System.currentTimeMillis());
                 }
             }
         }
+        notifyOverlappingPlayers(online, winners, suppressed, zoneOwnersWarned);
 
         for (Player player : online) {
             if (packs.isPlayerDisabled(player.getUniqueId())) {
@@ -1066,6 +1156,76 @@ public final class PlaybackEngine {
         // Refresh the Discord view on the server thread after zone arbitration,
         // pack readiness, catch-up state and the shared start barrier are updated.
         updateDiscordBroadcastSnapshot(online, winners, active);
+    }
+
+    private void clearSelectionsOutsideAudience(Player player, Collection<PlaybackSession> active) {
+        if (player == null || !player.isOnline()) return;
+        UUID playerId = player.getUniqueId();
+        UUID manualId = selectedSessionByPlayer.get(playerId);
+        if (manualId != null) {
+            PlaybackSession selected = active.stream()
+                    .filter(session -> session.id().equals(manualId)).findFirst().orElse(null);
+            if (selected == null || !selected.targets(playerId) || !isInsideSession(selected, player)) {
+                selectedSessionByPlayer.remove(playerId);
+            }
+        }
+
+        UUID activeId = activeSessionByPlayer.get(playerId);
+        if (activeId != null) {
+            PlaybackSession selected = active.stream()
+                    .filter(session -> session.id().equals(activeId)).findFirst().orElse(null);
+            if (selected == null || !selected.targets(playerId) || !isInsideSession(selected, player)) {
+                activeSessionByPlayer.remove(playerId);
+            }
+        }
+    }
+
+    private void suspendSessionsWithoutWinningListeners(Map<UUID, Candidate> winners,
+                                                         Map<PlaybackSession, Set<UUID>> suppressed) {
+        Set<PlaybackSession> audibleSessions = new HashSet<>();
+        winners.values().forEach(candidate -> audibleSessions.add(candidate.session));
+        for (PlaybackSession session : suppressed.keySet()) {
+            if (!audibleSessions.contains(session)) session.suspendClockForOverlap();
+        }
+    }
+
+    private void notifyOverlappingPlayers(List<Player> online,
+                                          Map<UUID, Candidate> winners,
+                                          Map<PlaybackSession, Set<UUID>> suppressed,
+                                          Set<UUID> zoneOwnersWarned) {
+        Map<UUID, Set<UUID>> competingSessions = new HashMap<>();
+        for (Map.Entry<PlaybackSession, Set<UUID>> entry : suppressed.entrySet()) {
+            UUID suppressedId = entry.getKey().id();
+            for (UUID playerId : entry.getValue()) {
+                if (winners.containsKey(playerId)) {
+                    competingSessions.computeIfAbsent(playerId, ignored -> new HashSet<>()).add(suppressedId);
+                }
+            }
+        }
+
+        Set<UUID> onlineIds = new HashSet<>();
+        long now = System.currentTimeMillis();
+        for (Player player : online) {
+            UUID playerId = player.getUniqueId();
+            onlineIds.add(playerId);
+            Set<UUID> competing = competingSessions.get(playerId);
+            if (competing == null || competing.isEmpty()) {
+                overlapNoticeState.remove(playerId);
+                continue;
+            }
+
+            Candidate winner = winners.get(playerId);
+            if (winner == null) continue;
+            List<String> otherIds = competing.stream().map(UUID::toString).sorted().toList();
+            String signature = winner.session.id() + "|" + String.join(",", otherIds);
+            String previous = overlapNoticeState.put(playerId, signature);
+            if (!zoneOwnersWarned.contains(playerId) && !signature.equals(previous)
+                    && now - manualSelectionTimes.getOrDefault(playerId, 0L) >= 2000L) {
+                player.sendMessage(message("messages.competing-session"));
+            }
+        }
+        overlapNoticeState.keySet().removeIf(playerId -> !onlineIds.contains(playerId));
+        manualSelectionTimes.keySet().removeIf(playerId -> !onlineIds.contains(playerId));
     }
 
     /**
@@ -1128,6 +1288,17 @@ public final class PlaybackEngine {
             if (track == null) continue;
 
             String trackKey = barrierTrackKey(session, track);
+            // A session whose only listeners were all hearing another source may
+            // have been held with a non-zero timeline. Segmented audio can resume
+            // at its segment index; streamed OGG must use the timestamp-aligned
+            // private-tail path rather than restarting the entire track at 00:00.
+            if (session.consumeOverlapSuspended() && track.isStreamed()) {
+                for (Map.Entry<UUID, Candidate> entry : winners.entrySet()) {
+                    if (entry.getValue().session == session) {
+                        barrierExcludedTracks.put(entry.getKey(), trackKey);
+                    }
+                }
+            }
             Set<UUID> cohort = sessionStartCohorts.computeIfAbsent(trackKey, ignored -> {
                 Set<UUID> readyAtStart = new HashSet<>();
                 for (Player player : online) {
@@ -1173,13 +1344,17 @@ public final class PlaybackEngine {
      * so a slow solo player does not lose the track before their pack arrives.
      * A declined Java pack is already settled and never holds the barrier.
      */
-    private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners) {
+    private void startReadySessionClocks(List<Player> online, Map<UUID, Candidate> winners,
+                                         Collection<PlaybackSession> suppressedSessions) {
         boolean serverEmpty = online.isEmpty();
         boolean continueWithoutListeners = plugin.getConfig().getBoolean(
                 serverEmpty ? "playback.continue-when-server-empty" : "playback.continue-without-listeners", true);
         if (continueWithoutListeners) {
             Set<PlaybackSession> sessionsWithRecipients = new HashSet<>();
             winners.values().forEach(candidate -> sessionsWithRecipients.add(candidate.session));
+            // A session with a real, ready listener that selected another source is
+            // waiting in that listener's overlap set, not an empty-audience session.
+            sessionsWithRecipients.addAll(suppressedSessions);
             for (PlaybackSession session : sessions()) {
                 if (!sessionsWithRecipients.contains(session) && !session.clockStarted()
                         && !session.paused() && !session.resumePreparing() && session.current() != null) {
@@ -1384,6 +1559,10 @@ public final class PlaybackEngine {
     private int compare(Candidate a, Candidate b) {
         if (a.session.serverWidePromotion() != b.session.serverWidePromotion())
             return a.session.serverWidePromotion() ? -1 : 1;
+        int scope = Integer.compare(
+                PlaybackAudiencePolicy.switchCycleRank(a.session.targetScope()),
+                PlaybackAudiencePolicy.switchCycleRank(b.session.targetScope()));
+        if (scope != 0) return scope;
         boolean manual = plugin.getConfig().getBoolean("playback.overlap.manual-priority-enabled", true);
         if (manual && a.session.priority() != b.session.priority()) {
             return Integer.compare(b.session.priority(), a.session.priority());
@@ -1608,6 +1787,10 @@ public final class PlaybackEngine {
         preferences.remove(player.getUniqueId());
         declinedWarnings.remove(player.getUniqueId());
         bedrockWarnings.remove(player.getUniqueId());
+        selectedSessionByPlayer.remove(player.getUniqueId());
+        activeSessionByPlayer.remove(player.getUniqueId());
+        overlapNoticeState.remove(player.getUniqueId());
+        manualSelectionTimes.remove(player.getUniqueId());
         syncGenerations.remove(player.getUniqueId());
         automaticSyncAttempts.remove(player.getUniqueId());
         for (Set<UUID> cohort : sessionStartCohorts.values()) cohort.remove(player.getUniqueId());
@@ -1631,6 +1814,10 @@ public final class PlaybackEngine {
         syncGenerations.clear();
         automaticSyncAttempts.clear();
         sessionStartCohorts.clear();
+        selectedSessionByPlayer.clear();
+        activeSessionByPlayer.clear();
+        overlapNoticeState.clear();
+        manualSelectionTimes.clear();
         discordSnapshot = Optional.empty();
     }
 
@@ -1678,20 +1865,84 @@ public final class PlaybackEngine {
         }
     }
 
-    private Candidate findCandidate(Player player) {
-        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
-                || packs.isPlayerDisabled(player.getUniqueId())) return null;
-        Candidate winner = null;
-        for (PlaybackSession session : sessions()) {
-            if (!session.targets(player.getUniqueId()) || session.current() == null
-                    || session.paused() || session.resumePreparing() || isPlayerMuted(player)) continue;
-            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-                if (!geyser.isBedrockPackAvailable()
-                        || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
-            } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
-                    || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
-                continue;
+    /**
+     * Cycles only through sessions that can currently reach this player. The
+     * cycle is personal target -> spatial zone -> public server-wide music.
+     * The selected session is stored per player, not on the shared session.
+     */
+    public synchronized Optional<PlaybackSession> switchPlayerSession(Player player) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return Optional.empty();
+        UUID playerId = player.getUniqueId();
+        List<Candidate> candidates = eligibleCandidates(player, sessions(), false);
+        if (candidates.size() < 2) return Optional.empty();
+
+        candidates.sort((first, second) -> {
+            int rank = Integer.compare(
+                    PlaybackAudiencePolicy.switchCycleRank(first.session.targetScope()),
+                    PlaybackAudiencePolicy.switchCycleRank(second.session.targetScope()));
+            return rank != 0 ? rank : compare(first, second);
+        });
+
+        UUID currentId = selectedSessionByPlayer.get(playerId);
+        if (currentId == null) {
+            PlayerPlayback state = playerPlayback.get(playerId);
+            if (state != null) currentId = state.sessionId;
+        }
+        if (currentId == null) {
+            Candidate current = chooseCandidate(player, candidates);
+            if (current != null) currentId = current.session.id();
+        }
+
+        int currentIndex = -1;
+        for (int i = 0; i < candidates.size(); i++) {
+            if (candidates.get(i).session.id().equals(currentId)) {
+                currentIndex = i;
+                break;
             }
+        }
+        int nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % candidates.size();
+        PlaybackSession next = candidates.get(nextIndex).session;
+        selectedSessionByPlayer.put(playerId, next.id());
+        manualSelectionTimes.put(playerId, System.currentTimeMillis());
+
+        PlayerPlayback state = playerPlayback.get(playerId);
+        if (state == null || !next.id().equals(state.sessionId)) stopPlayer(player);
+        return Optional.of(next);
+    }
+
+    /**
+     * Forces only the caller's own one-player session ahead of overlapping
+     * public/zone audio. It does not promote the session for other listeners.
+     */
+    public synchronized Optional<PlaybackSession> forcePlayerSession(Player player) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)) return Optional.empty();
+        UUID playerId = player.getUniqueId();
+        PlaybackSession personal = eligibleCandidates(player, sessions(), false).stream()
+                .map(Candidate::session)
+                .filter(session -> session.isOwner(playerId) && session.isPersonalTarget(playerId))
+                .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                .orElse(null);
+        if (personal == null) return Optional.empty();
+
+        selectedSessionByPlayer.put(playerId, personal.id());
+        manualSelectionTimes.put(playerId, System.currentTimeMillis());
+        PlayerPlayback state = playerPlayback.get(playerId);
+        if (state == null || !personal.id().equals(state.sessionId)) stopPlayer(player);
+        return Optional.of(personal);
+    }
+
+    private List<Candidate> eligibleCandidates(Player player, Collection<PlaybackSession> source,
+                                                boolean includePaused) {
+        if (player == null || !player.isOnline() || isIgnoredBedrockPlayer(player)
+                || packs.isPlayerDisabled(player.getUniqueId()) || isPlayerMuted(player)) return List.of();
+        List<Candidate> candidates = new ArrayList<>();
+        for (PlaybackSession session : source) {
+            if (!session.targets(player.getUniqueId()) || session.current() == null
+                    || (!includePaused && (session.paused() || session.resumePreparing()))) continue;
+
+            // Resolve actual zone membership before checking pack state. A player
+            // targeted by an @a zone but standing outside it is not an affected
+            // listener and should not receive zone-specific pack warnings.
             MusicZone zone = session.zone();
             if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
             MusicZone.AudioMode mode;
@@ -1701,11 +1952,68 @@ public final class PlaybackEngine {
             } else {
                 mode = zone.audioMode(player.getWorld().getUID(), player.getX(), player.getY(), player.getZ());
             }
-            if (mode == MusicZone.AudioMode.NONE) continue;
-            Candidate current = new Candidate(session, mode);
-            if (winner == null || compare(current, winner) < 0) winner = current;
+            if (mode == MusicZone.AudioMode.NONE
+                    || playbackVolume(player, session, mode == MusicZone.AudioMode.FADE) <= 0) continue;
+
+            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                if (!geyser.isBedrockPackAvailable()
+                        || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
+            } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
+                    || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
+                warnPackDeclined(player, session.current(), session.playbackTrack());
+                continue;
+            }
+            candidates.add(new Candidate(session, mode));
         }
-        return winner;
+        return candidates;
+    }
+
+    private Candidate chooseCandidate(Player player, List<Candidate> candidates) {
+        if (candidates.isEmpty()) return null;
+        UUID playerId = player.getUniqueId();
+        PlayerPlayback state = playerPlayback.get(playerId);
+        UUID currentlyAudible = state == null ? null : state.sessionId;
+        UUID manualSelection = selectedSessionByPlayer.get(playerId);
+        List<UUID> eligibleIds = candidates.stream()
+                .map(candidate -> candidate.session.id()).toList();
+        if (manualSelection != null && eligibleIds.contains(manualSelection)) {
+            activeSessionByPlayer.put(playerId, manualSelection);
+            return candidates.stream().filter(candidate -> candidate.session.id().equals(manualSelection))
+                    .findFirst().orElse(null);
+        }
+        if (manualSelection != null) {
+            // Leaving the selected zone or ending its session clears the override;
+            // re-entering later must not unexpectedly resurrect the old choice.
+            selectedSessionByPlayer.remove(playerId);
+        }
+
+        // Explicit server-wide promotion is the only automatic pre-emption path.
+        Candidate promoted = candidates.stream()
+                .filter(candidate -> candidate.session.serverWidePromotion())
+                .min(this::compare).orElse(null);
+        if (promoted != null) {
+            activeSessionByPlayer.put(playerId, promoted.session.id());
+            return promoted;
+        }
+
+        UUID preferredPrevious = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, activeSessionByPlayer.get(playerId), eligibleIds);
+        if (preferredPrevious != null) {
+            return candidates.stream().filter(candidate -> candidate.session.id().equals(preferredPrevious))
+                    .findFirst().orElse(null);
+        }
+        UUID preferredAudible = PlaybackAudiencePolicy.preferredEligibleSession(
+                null, currentlyAudible, eligibleIds);
+        Candidate selected = preferredAudible == null
+                ? candidates.stream().min(this::compare).orElse(null)
+                : candidates.stream().filter(candidate -> candidate.session.id().equals(preferredAudible))
+                        .findFirst().orElse(null);
+        if (selected != null) activeSessionByPlayer.put(playerId, selected.session.id());
+        return selected;
+    }
+
+    private Candidate findCandidate(Player player) {
+        return chooseCandidate(player, eligibleCandidates(player, sessions(), false));
     }
 
     private record BarrierWait(String trackKey, long startedAtMillis) {}

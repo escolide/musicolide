@@ -390,6 +390,11 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
             getConfig().set("playback.mono.fade-distance", 10.0);
             migratedConfig = true;
         }
+        if (!getConfig().contains("messages.competing-session")) {
+            getConfig().set("messages.competing-session",
+                    "&eAnother music session is available here. Use &f/music switch &eto switch between overlapping sessions.");
+            migratedConfig = true;
+        }
         if (migratedConfig) saveConfig();
         try {
             Path data = getDataFolder().toPath();

@@ -14,6 +14,7 @@ public final class PlaybackSession {
     private final Set<UUID> explicitListeners;
     private volatile boolean allPlayers;
     private final boolean monoAudio;
+    private final PlaybackAudiencePolicy.TargetScope targetScope;
     private final Deque<MusicTrack> queue = new ArrayDeque<>();
     private final List<MusicTrack> repeatSource;
     private MusicTrack current;
@@ -30,6 +31,7 @@ public final class PlaybackSession {
     private boolean clockStarted;
     private boolean repeat;
     private boolean queuePending;
+    private boolean overlapSuspended;
     private boolean urlPlaylist;
     private boolean playlistPerTrackDelivery;
     private int priority;
@@ -50,12 +52,26 @@ public final class PlaybackSession {
     public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
                            Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority,
                            boolean monoAudio) {
+        this(owner, ownerName, zone, allPlayers, listeners, tracks, priority, monoAudio,
+                zone != null && zone.shape() != MusicZone.Shape.GLOBAL
+                        ? PlaybackAudiencePolicy.TargetScope.ZONE
+                        : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                        : PlaybackAudiencePolicy.TargetScope.TARGETED);
+    }
+
+    public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
+                           Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority,
+                           boolean monoAudio, PlaybackAudiencePolicy.TargetScope targetScope) {
         this.owner = owner;
         this.ownerName = ownerName;
-        this.zone = zone;
+        this.zone = Objects.requireNonNull(zone, "zone");
         this.allPlayers = allPlayers;
         this.monoAudio = monoAudio;
-        this.explicitListeners = new HashSet<>(listeners);
+        this.targetScope = targetScope == null
+                ? zone.shape() != MusicZone.Shape.GLOBAL ? PlaybackAudiencePolicy.TargetScope.ZONE
+                : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                : PlaybackAudiencePolicy.TargetScope.TARGETED : targetScope;
+        this.explicitListeners = new HashSet<>(listeners == null ? List.of() : listeners);
         this.queue.addAll(tracks);
         this.repeatSource = List.copyOf(tracks);
         this.startedAt = System.currentTimeMillis();
@@ -142,6 +158,13 @@ public final class PlaybackSession {
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
+    public synchronized boolean allPlayers() { return allPlayers; }
+    public synchronized PlaybackAudiencePolicy.TargetScope targetScope() {
+        return serverWidePromotion ? PlaybackAudiencePolicy.TargetScope.PUBLIC : targetScope;
+    }
+    public synchronized boolean isPersonalTarget(UUID player) {
+        return PlaybackAudiencePolicy.isPersonalTarget(targetScope, allPlayers, explicitListeners, player);
+    }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
 
     /** Checks whether a new /play request has the same audience and zone. */
@@ -185,6 +208,7 @@ public final class PlaybackSession {
     }
 
     public synchronized boolean advance() {
+        overlapSuspended = false;
         if (serverWidePromotion) {
             zone = preBroadcastZone == null ? zone : preBroadcastZone;
             allPlayers = preBroadcastAllPlayers;
@@ -223,7 +247,28 @@ public final class PlaybackSession {
         }
     }
 
+    /**
+     * Holds a session whose otherwise-eligible listeners all selected another
+     * overlapping source. Unlike pause(), this is automatic and is resumed by
+     * the playback engine when at least one listener selects this session again.
+     */
+    public synchronized void suspendClockForOverlap() {
+        if (!clockStarted || current == null || paused || resumePreparing) return;
+        elapsedBaseMs = elapsedMs();
+        trackStartedAt = 0;
+        clockStarted = false;
+        overlapSuspended = true;
+    }
+
+    /** Consumed once when this session is selected again after an overlap hold. */
+    public synchronized boolean consumeOverlapSuspended() {
+        boolean suspended = overlapSuspended;
+        overlapSuspended = false;
+        return suspended;
+    }
+
     public synchronized void pause() {
+        overlapSuspended = false;
         if (resumePreparing) {
             // A second pause cancels an outstanding resume/seek preparation.
             resumeGeneration++;
@@ -244,6 +289,7 @@ public final class PlaybackSession {
     /** Existing behaviour for legacy segmented and continuous modes. */
     public synchronized void resume() {
         if (!paused || current == null) return;
+        overlapSuspended = false;
         timelineGeneration++;
         resumeGeneration++;
         resumePreparing = false;
