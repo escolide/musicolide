@@ -10,4 +10,10 @@ public final class PlayAudioOptionPolicy {
                     "The fade option requires mode:mono. Add mode:mono to your /play command.");
         }
     }
+
+    public static boolean parseLoop(String value) {
+        if (value != null && value.trim().equalsIgnoreCase("true")) return true;
+        if (value != null && value.trim().equalsIgnoreCase("false")) return false;
+        throw new IllegalArgumentException("Use loop:true or loop:false.");
+    }
 }

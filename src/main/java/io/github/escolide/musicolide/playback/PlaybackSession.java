@@ -15,8 +15,9 @@ public final class PlaybackSession {
     private volatile boolean allPlayers;
     private final boolean monoAudio;
     private final PlaybackAudiencePolicy.TargetScope targetScope;
-    private final Deque<MusicTrack> queue = new ArrayDeque<>();
+    private final Deque<QueueEntry> queue = new ArrayDeque<>();
     private final List<MusicTrack> repeatSource;
+    private MusicTrack loopTrack;
     private MusicTrack current;
     private MusicTrack playbackTrack;
     private long trackStartedAt;
@@ -72,7 +73,7 @@ public final class PlaybackSession {
                 : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
                 : PlaybackAudiencePolicy.TargetScope.TARGETED : targetScope;
         this.explicitListeners = new HashSet<>(listeners == null ? List.of() : listeners);
-        this.queue.addAll(tracks);
+        for (MusicTrack track : tracks) this.queue.addLast(new QueueEntry(track, false));
         this.repeatSource = List.copyOf(tracks);
         this.startedAt = System.currentTimeMillis();
         this.priority = priority;
@@ -153,10 +154,12 @@ public final class PlaybackSession {
         return true;
     }
 
-    public void repeat(boolean repeat) { this.repeat = repeat; }
+    public synchronized void repeat(boolean repeat) { this.repeat = repeat; }
     public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending; }
-    public int queueSize() { return queue.size(); }
-    public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
+    public synchronized int queueSize() { return queue.size(); }
+    public synchronized List<MusicTrack> upcoming(int count) {
+        return queue.stream().limit(Math.max(0, count)).map(QueueEntry::track).toList();
+    }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public synchronized boolean allPlayers() { return allPlayers; }
     public synchronized PlaybackAudiencePolicy.TargetScope targetScope() {
@@ -206,16 +209,63 @@ public final class PlaybackSession {
         if (trackId == null) return false;
         if (current != null && current.id().equals(trackId)) return true;
         if (playbackTrack != null && playbackTrack.id().equals(trackId)) return true;
-        if (queue.stream().anyMatch(track -> track.id().equals(trackId))) return true;
+        if (loopTrack != null && loopTrack.id().equals(trackId)) return true;
+        if (queue.stream().anyMatch(entry -> entry.track().id().equals(trackId))) return true;
         return repeat && repeatSource.stream().anyMatch(track -> track.id().equals(trackId));
     }
 
-    public synchronized void enqueue(MusicTrack track) {
-        if (track == null) return;
-        queue.addLast(track);
-        // An asynchronous playlist may have reached the end of its current
-        // track while waiting for this import. Start the new item immediately.
+    public enum QueueAddResult { ADDED, LOOP_TERMINAL, INVALID_TRACK }
+
+    /** Adds an item; a loop item is terminal and is repeated after it becomes current. */
+    public synchronized QueueAddResult addToQueue(MusicTrack track, boolean loop) {
+        if (track == null) return QueueAddResult.INVALID_TRACK;
+        if (hasLoopTerminal()) return QueueAddResult.LOOP_TERMINAL;
+        queue.addLast(new QueueEntry(track, loop));
+        // Preserve URL-import producer behavior when a session is awaiting its next item.
         if (current == null && !paused && !resumePreparing) advance();
+        return QueueAddResult.ADDED;
+    }
+
+    /** Existing producer API, retained for the URL-playlist importer. */
+    public synchronized void enqueue(MusicTrack track) {
+        addToQueue(track, false);
+    }
+
+    /** Marks the current track in a newly created one-track session as the loop item. */
+    public synchronized boolean markCurrentAsLoop() {
+        if (current == null || loopTrack != null || !queue.isEmpty()) return false;
+        loopTrack = current;
+        return true;
+    }
+
+    public synchronized boolean hasLoopTerminal() {
+        return loopTrack != null || queue.stream().anyMatch(QueueEntry::loop);
+    }
+
+    public synchronized boolean isLoopActive() {
+        return loopTrack != null;
+    }
+
+    /** Removes the first queued occurrence; the active item is never removable here. */
+    public synchronized boolean removeQueuedTrack(String trackId) {
+        if (trackId == null || trackId.isBlank() || loopTrack != null) return false;
+        Iterator<QueueEntry> iterator = queue.iterator();
+        while (iterator.hasNext()) {
+            QueueEntry entry = iterator.next();
+            if (entry.track().id().equalsIgnoreCase(trackId)) {
+                iterator.remove();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Clears waiting entries. A running loop must be stopped as a session. */
+    public synchronized int clearQueuedTracks() {
+        if (loopTrack != null) return 0;
+        int removed = queue.size();
+        queue.clear();
+        return removed;
     }
 
     public synchronized boolean advance() {
@@ -236,10 +286,22 @@ public final class PlaybackSession {
             speed = pendingSpeed;
             pendingSpeed = null;
         }
-        if (queue.isEmpty() && repeat && !repeatSource.isEmpty()) queue.addAll(repeatSource);
+
+        QueueEntry next;
+        if (loopTrack != null) {
+            // Preserve session identity, audience and priority while resetting the track timeline.
+            next = new QueueEntry(loopTrack, true);
+        } else {
+            if (queue.isEmpty() && repeat && !repeatSource.isEmpty()) {
+                for (MusicTrack track : repeatSource) queue.addLast(new QueueEntry(track, false));
+            }
+            next = queue.pollFirst();
+            if (next != null && next.loop()) loopTrack = next.track();
+        }
+
         resumeGeneration++;
         resumePreparing = false;
-        current = queue.pollFirst();
+        current = next == null ? null : next.track();
         playbackTrack = current;
         paused = false;
         elapsedBaseMs = 0;
@@ -425,4 +487,5 @@ public final class PlaybackSession {
 
     public synchronized void addListener(UUID uuid) { explicitListeners.add(uuid); }
     public synchronized void removeListener(UUID uuid) { explicitListeners.remove(uuid); }
+    private record QueueEntry(MusicTrack track, boolean loop) {}
 }

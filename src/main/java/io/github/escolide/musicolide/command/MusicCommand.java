@@ -90,6 +90,20 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         return onTabComplete(sender, command, "music", delegated);
     }
 
+    public boolean onQueueCommand(CommandSender sender, Command command, String label, String[] args) {
+        String[] delegated = new String[args.length + 1];
+        delegated[0] = "queue";
+        System.arraycopy(args, 0, delegated, 1, args.length);
+        return onCommand(sender, command, "music", delegated);
+    }
+
+    public List<String> onQueueTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        String[] delegated = new String[args.length + 1];
+        delegated[0] = "queue";
+        System.arraycopy(args, 0, delegated, 1, args.length);
+        return onTabComplete(sender, command, "music", delegated);
+    }
+
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         // Excluded Bedrock players receive no Musicolide command feedback and
@@ -773,7 +787,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void play(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
         if (args.length < 2) {
-            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10 (mode:mono only)] [mode:mono] [--center] [id:music100]"));
+            sender.sendMessage(msg("&eUsage: /play <TrackID, title, URL or query> [@a/@p/@s/player] [target:@a] [circle:60/square:50x50/region:spawn] [fade10 (mode:mono only)] [mode:mono] [loop:true|false] [--center] [id:music100]"));
             return;
         }
         int modifierStart = firstPlayModifierIndex(sender, args);
@@ -786,9 +800,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String[] requestArgs = withPlayModifiers(args[0], input, args, modifierStart);
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
-                parsed.targetScope, input, parsed.customId, parsed.audioMode);
+                parsed.targetScope, input, parsed.customId, parsed.audioMode, parsed.loop);
 
         if (YtDlpDownloader.isYouTubePlaylistUrl(rawInput)) {
+            if (request.loop) {
+                throw new IllegalArgumentException("loop:true applies to one track, not a YouTube playlist URL.");
+            }
             if (!plugin.getConfig().getBoolean("audio.yt-dlp.allow-playlists", false)) {
                 sender.sendMessage(msg("&cYouTube playlist URLs are disabled by the server administrator."));
                 sender.sendMessage(msg("&7An administrator can enable audio.yt-dlp.allow-playlists and set audio.yt-dlp.max-playlist-items in config.yml."));
@@ -919,7 +936,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             String value = args[i];
             String normalized = value.toLowerCase(Locale.ROOT);
             boolean compact = normalized.startsWith("target:") || normalized.startsWith("id:")
-                    || normalized.startsWith("mode:") || normalized.startsWith("circle:")
+                    || normalized.startsWith("mode:") || normalized.startsWith("loop:")
+                    || normalized.startsWith("circle:")
                     || normalized.startsWith("square:") || normalized.startsWith("region:")
                     // Bare "center" is ordinary search text; use --center to opt in.
                     || normalized.matches("fade(?::)?[0-9]+(?:\\.[0-9]+)?");
@@ -958,7 +976,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         String[] requestArgs = withPlayModifiers("play", query, args, modifierStart);
         PlayRequest parsed = parseRequest(sender, requestArgs);
         PlayRequest request = new PlayRequest(parsed.zone, parsed.all, parsed.listeners, parsed.priority,
-                parsed.targetScope, query, parsed.customId, parsed.audioMode);
+                parsed.targetScope, query, parsed.customId, parsed.audioMode, parsed.loop);
         beginYouTubeSearch(sender, query, request, true);
     }
 
@@ -1309,6 +1327,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         double fade = 0;
         String customId = null;
         String audioMode = "stereo";
+        boolean loop = false;
 
         for (int i = 2; i < args.length; i++) {
             String option = args[i].toLowerCase(Locale.ROOT);
@@ -1316,6 +1335,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 if (selector != null) throw new IllegalArgumentException("Specify only one target.");
                 selector = option.substring("target:".length());
                 if (selector.isBlank()) throw new IllegalArgumentException("Use target:@a, target:@p, target:@s or target:<player>.");
+                continue;
+            }
+            if (option.startsWith("loop:")) {
+                loop = PlayAudioOptionPolicy.parseLoop(option.substring("loop:".length()));
                 continue;
             }
             if (option.startsWith("id:")) {
@@ -1530,7 +1553,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         PlaybackAudiencePolicy.TargetScope targetScope =
                 PlaybackAudiencePolicy.resolveTargetScope(selector, spatialOption);
         return new PlayRequest(zone, all, all ? List.of()
-                : List.of(targets.get(0).getUniqueId()), 0, targetScope, null, customId, audioMode);
+                : List.of(targets.get(0).getUniqueId()), 0, targetScope, null, customId, audioMode, loop);
     }
 
     private void start(CommandSender sender, MusicTrack track, PlayRequest request) {
@@ -1739,7 +1762,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
         PlaybackEngine.PlayResult result = playback.playOrQueueResult(owner, sender.getName(),
                 request.zone, request.all, request.listeners, track, request.priority, mono,
-                request.targetScope);
+                request.targetScope, request.loop);
         String mode = mono ? " &7(mono)" : "";
         switch (result.disposition()) {
             case STARTED -> {
@@ -1769,13 +1792,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                                 + " &ato hear this one."));
                     }
                 } else {
-                    sender.sendMessage(msg("&aStarted &f" + track.title() + mode + "."));
+                    sender.sendMessage(msg("&aStarted &f" + track.title() + mode
+                            + (request.loop ? " &d(loop)" : "") + "."));
                 }
             }
             case QUEUED -> sender.sendMessage(msg("&aAdded &f" + track.title() + mode
-                    + " &ato the matching playback queue."));
+                    + (request.loop ? " &d(loop)" : "") + " &ato the matching playback queue."));
             case QUEUE_FULL -> sender.sendMessage(msg("&cYour playback queue is full. The new track was not added."));
             case MODE_MISMATCH -> sender.sendMessage(msg("&cAn active session for this target and zone uses another audio mode. Stop it before switching modes."));
+            case LOOP_TERMINAL -> sender.sendMessage(msg("&cThis matching playback queue already has a loop track queued or playing. Stop that session with &f/music stop &cbefore adding another song."));
         }
     }
 
@@ -2125,13 +2150,75 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private void queue(CommandSender sender, String[] args) throws SQLException {
         if (!dj(sender)) return;
-        if (args.length < 2) { sender.sendMessage(msg("&eUsage: /music queue <track-id>")); return; }
         if (!(sender instanceof Player player)) { sender.sendMessage(msg("&cPlayers only.")); return; }
-        MusicTrack track = resolveTrack(args[1]).orElseThrow(() -> new IllegalArgumentException("Track not found."));
+        if (args.length < 2) {
+            sender.sendMessage(msg("&eUsage: /queue add <TrackID>, /queue remove <TrackID>, or /queue clear"));
+            return;
+        }
         boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
-        if (!playback.enqueue(player.getUniqueId(), admin, track)) sender.sendMessage(msg("&cNo session found or queue is full."));
-        else sender.sendMessage(msg("&aQueued: &f" + track.title()
-                + " &7[TrackID: " + displayTrackId(track) + "]"));
+        String action = args[1].toLowerCase(Locale.ROOT);
+
+        if (action.equals("clear")) {
+            if (args.length != 2) throw new IllegalArgumentException("Usage: /queue clear");
+            PlaybackEngine.QueueMutationResult result = playback.queueClear(player.getUniqueId(), admin);
+            switch (result) {
+                case CLEARED -> sender.sendMessage(msg("&aCleared the upcoming playback queue."));
+                case EMPTY -> sender.sendMessage(msg("&eThere are no queued tracks to clear."));
+                case LOOP_ACTIVE -> sender.sendMessage(msg("&cA loop is currently playing. Use &f/music stop &cto end that loop."));
+                case MANAGED_PLAYLIST -> sender.sendMessage(msg("&cThis is a URL-playlist session; its importer manages its queue separately."));
+                case NO_SESSION -> sender.sendMessage(msg("&cNo controllable playback session was found."));
+                default -> sender.sendMessage(msg("&cThe queue could not be cleared."));
+            }
+            return;
+        }
+
+        boolean add = action.equals("add");
+        boolean remove = action.equals("remove");
+        boolean legacyAdd = !add && !remove && args.length == 2;
+        if (!add && !remove && !legacyAdd) {
+            throw new IllegalArgumentException("Usage: /queue add <TrackID>, /queue remove <TrackID>, or /queue clear");
+        }
+        if ((add || remove) && args.length != 3) {
+            throw new IllegalArgumentException("Usage: /queue " + action + " <TrackID>");
+        }
+        String token = legacyAdd ? args[1] : args[2];
+        MusicTrack track = (legacyAdd ? resolveTrack(token) : repository.getTrack(token))
+                .orElseThrow(() -> new IllegalArgumentException("TrackID not found. Use /music list to see TrackIDs."));
+
+        if (remove) {
+            PlaybackEngine.QueueMutationResult result =
+                    playback.queueRemove(player.getUniqueId(), admin, track.id());
+            switch (result) {
+                case REMOVED -> sender.sendMessage(msg("&aRemoved &f" + track.title() + " &afrom the upcoming queue."));
+                case LOOP_ACTIVE -> sender.sendMessage(msg("&cA loop is currently playing. Use &f/music stop &cto end that loop."));
+                case NOT_QUEUED -> sender.sendMessage(msg("&cThat TrackID is not in the upcoming queue."));
+                case MANAGED_PLAYLIST -> sender.sendMessage(msg("&cThis is a URL-playlist session; its importer manages its queue separately."));
+                case NO_SESSION -> sender.sendMessage(msg("&cNo controllable playback session was found."));
+                default -> sender.sendMessage(msg("&cThe track could not be removed from the queue."));
+            }
+            return;
+        }
+
+        if (legacyAdd) {
+            if (!playback.enqueue(player.getUniqueId(), admin, track)) {
+                sender.sendMessage(msg("&cNo session found, the queue is full, or a loop already locks this queue."));
+            } else {
+                sender.sendMessage(msg("&aQueued: &f" + track.title()
+                        + " &7[TrackID: " + displayTrackId(track) + "]"));
+            }
+            return;
+        }
+
+        PlaybackEngine.QueueMutationResult result = playback.queueAdd(player.getUniqueId(), admin, track);
+        switch (result) {
+            case ADDED -> sender.sendMessage(msg("&aQueued: &f" + track.title()
+                    + " &7[TrackID: " + displayTrackId(track) + "]"));
+            case QUEUE_FULL -> sender.sendMessage(msg("&cYour playback queue is full."));
+            case LOOP_TERMINAL -> sender.sendMessage(msg("&cA loop track is already queued or playing. Stop that session before adding more songs."));
+            case MANAGED_PLAYLIST -> sender.sendMessage(msg("&cThis is a URL-playlist session; its importer manages its queue separately."));
+            case NO_SESSION -> sender.sendMessage(msg("&cNo controllable playback session was found."));
+            default -> sender.sendMessage(msg("&cThe track could not be added to the queue."));
+        }
     }
 
     private void nowPlaying(CommandSender sender) {
@@ -2482,7 +2569,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music gui &8- &7open the playback controls for your current/affected track"));
         sender.sendMessage(msg("&f/music pause [TrackID] &8• &fresume [TrackID] &8• &fstop [TrackID]"));
         sender.sendMessage(msg("&7TrackID targeting is admin-only; without an ID, controls affect only your own track."));
-        sender.sendMessage(msg("&f/music skip &8• &fqueue &8- &7manage your current playback"));
+        sender.sendMessage(msg("&f/music skip &8• &f/queue add|remove <TrackID> &8• &f/queue clear"));
+        sender.sendMessage(msg("&7A loop:true track is terminal in its matching queue; stop that session to end it."));
         sender.sendMessage(msg("&f/music nowplaying &8• &fprogress &8• &fvolume <0-100> &8• &fspeed <0.5-2>"));
         sender.sendMessage(msg("&f/music mute &8• &funmute [player] &8• &f/deafen &8• &f/undeafen"));
         sender.sendMessage(msg("&f/music switch &8- &7cycle between overlapping sessions for yourself"));
@@ -2505,7 +2593,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&dPLAY OPTIONS &8| &7Compact, command-specific arguments"));
         sender.sendMessage(msg("&f target:@a &8• &f target:@p &8• &f target:@s &8• &f target:<player>"));
         sender.sendMessage(msg("&f circle:60 &8• &f square:50x50 &8• &f region:<id> &8• &f fade10 (requires mode:mono)"));
-        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f --center &8• &f id:custom_name"));
+        sender.sendMessage(msg("&f mode:mono &8• &f mode:stereo &8• &f loop:true|false &8• &f --center &8• &f id:custom_name"));
         sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:mono"));
         sender.sendMessage(msg("&7Stereo is default. fadeN requires mode:mono; mono circle/square zones use configured fade unless overridden."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
@@ -2586,7 +2674,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
             List<String> options = new ArrayList<>(List.of(
                     "target:@s", "target:@p", "id:", "circle:", "square:",
-                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo", "--center",
+                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo",
+                    "loop:true", "loop:false", "--center",
                     "@s", "@p", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode", "--center"));
             if (canTargetAll) {
                 options.add("target:@a");
@@ -2599,6 +2688,21 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 && sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"))) {
             try {
                 return partial(repository.allTracks(600).stream().map(this::displayTrackId).toList(), args[1]);
+            } catch (SQLException ignored) {
+                return List.of();
+            }
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("queue")) {
+            List<String> options = new ArrayList<>(List.of("add", "remove", "clear"));
+            try {
+                options.addAll(repository.allTracks(600).stream().map(this::displayTrackId).toList());
+            } catch (SQLException ignored) {}
+            return partial(options, args[1]);
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("queue")
+                && (args[1].equalsIgnoreCase("add") || args[1].equalsIgnoreCase("remove"))) {
+            try {
+                return partial(repository.allTracks(600).stream().map(this::displayTrackId).toList(), args[2]);
             } catch (SQLException ignored) {
                 return List.of();
             }
@@ -2656,7 +2760,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
             Bukkit.getOnlinePlayers().stream().map(Player::getName).sorted(String.CASE_INSENSITIVE_ORDER)
                     .forEach(targets::add);
-            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade10", "mode:mono", "mode:stereo"));
+            targets.addAll(List.of("target:@a", "target:@p", "target:@s", "id:", "circle:", "square:", "region:", "fade10", "mode:mono", "mode:stereo", "loop:true", "loop:false"));
             return partial(targets, args[2]);
         }
         if (args.length >= 4 && args[0].equalsIgnoreCase("play")
@@ -2672,7 +2776,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
     private record PlayRequest(MusicZone zone, boolean all, Collection<UUID> listeners, int priority,
                                PlaybackAudiencePolicy.TargetScope targetScope,
-                               String inputUrl, String customId, String audioMode) {}
+                               String inputUrl, String customId, String audioMode, boolean loop) {}
     private record PendingPlay(MusicTrack track, PlayRequest request) {}
     private static final int SEARCH_PAGE_SIZE = 6;
     private static final class PendingSearch {

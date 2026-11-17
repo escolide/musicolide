@@ -84,7 +84,8 @@ public final class DiscordCommandService extends ListenerAdapter {
                         .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
                         .addOption(OptionType.STRING, "mode", "Audio mode: stereo (default) or mono", false)
                         .addOption(OptionType.BOOLEAN, "center", "Optional: anchor mono audio at the zone centre (default is listener-relative)", false)
-                        .addOption(OptionType.NUMBER, "fade", "Spatial fade distance (requires mode:mono)", false),
+                        .addOption(OptionType.NUMBER, "fade", "Spatial fade distance (requires mode:mono)", false)
+                        .addOption(OptionType.BOOLEAN, "loop", "Repeat this track until its session is stopped", false),
                 Commands.slash("music", "Run an existing Musicolide game command as your linked Minecraft account")
                         .addOption(OptionType.STRING, "command", "For example: pause, queue <track-id>, playlist list", true)
         );
@@ -576,6 +577,7 @@ public final class DiscordCommandService extends ListenerAdapter {
         String mode = option(event, "mode");
         Double fade = event.getOption("fade") == null ? null : event.getOption("fade").getAsDouble();
         boolean centered = event.getOption("center") != null && event.getOption("center").getAsBoolean();
+        Boolean loop = event.getOption("loop") == null ? null : event.getOption("loop").getAsBoolean();
         if (fade != null && (mode == null || !mode.trim().equalsIgnoreCase("mono"))) {
             throw new IllegalArgumentException("The fade option requires mode:mono. Set the mode option to mono.");
         }
@@ -597,6 +599,7 @@ public final class DiscordCommandService extends ListenerAdapter {
             if (!Double.isFinite(fade) || fade < 0) throw new IllegalArgumentException("Fade distance must be a finite, non-negative number.");
             command.append(" --fade ").append(fade);
         }
+        if (loop != null) command.append(" loop:").append(loop);
         return command.toString();
     }
 

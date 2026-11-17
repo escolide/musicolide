@@ -188,8 +188,9 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 
 ## Commands
 
-- /play <TrackID/title/query/URL> [target:@a] [circle:60|square:50x50|region:spawn] [fade10 mode:mono] (fade requires mono; DJ; defaults to self without a zone, or @a inside a zone; URL/search imports initiated here are temporary)
+- /play <TrackID/title/query/URL> [target:@a] [circle:60|square:50x50|region:spawn] [fade10 mode:mono] [loop:true|false] (fade requires mono; a loop repeats this single track and locks its matching queue until that session is stopped)
 - /music pause, resume, skip, stop, queue, nowplaying, progress
+- /queue add <TrackID>, /queue remove <TrackID>, /queue clear (manage upcoming tracks in your current session; a queued loop can be removed before it starts)
 - /music volume <0-100>, /music speed <0.5-2.0>, /music mute, /music unmute, /music seek <seconds>, /music sync
 - /music list [search] (shows the public TrackID for each library item)
 - /music search <query> (DJ; local catalogue first, then YouTube metadata only)
@@ -203,7 +204,7 @@ Then run `/music reload` (or restart the server). A player with the `musicolide.
 - /music diagnostics, /music download, /music reload, /music alias add <url> <TrackID>, /music priority <number>
 - /link and /unlink manage Discord account pairing.
 
-Compact play options also include target:<player>, id:custom_name, circle:<radius>, square:<width>x<length>, region:<WorldGuard-ID>, fade10 or fade:10 (both require mode:mono), and mode:mono/mode:stereo. Legacy --option forms remain accepted for backwards compatibility. Public TrackIDs use the unique a00-f99 format (up to 600 active tracks). A code is freed and may be reused after a track is deleted or expires; existing internal IDs remain accepted as aliases.
+Compact play options also include target:<player>, id:custom_name, circle:<radius>, square:<width>x<length>, region:<WorldGuard-ID>, fade10 or fade:10 (both require mode:mono), mode:mono/mode:stereo, and loop:true/loop:false. A loop can be queued after ordinary tracks, but nothing can be appended after that loop entry; once it starts, use /music stop to end it. URL-playlist import sessions keep their separate managed queue. Legacy --option forms remain accepted for backwards compatibility. Public TrackIDs use the unique a00-f99 format (up to 600 active tracks). A code is freed and may be reused after a track is deleted or expires; existing internal IDs remain accepted as aliases.
 
 For /play and /music search, zone/range modifiers are retained when the YouTube result is selected. When a player supplies a spatial option without an explicit target, the default audience is @a, filtered by the zone; without a spatial option, the historical default remains @s. An explicit @s, @p, @a or player-name target always overrides that default. The zone center is the command sender's location and world. Console playback cannot create a player-centered spatial zone and must specify a target for non-spatial playback.
 

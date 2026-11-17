@@ -538,4 +538,83 @@ class PlaybackSessionTest {
                 "Advancing to the next track clears any previous overlap marker.");
     }
 
+
+    @Test
+    void loopQueuedAfterOrdinaryTracksIsTerminalAndRepeatsOnlyThatTrack() {
+        MusicTrack first = sampleTrack("loop-queue-first");
+        MusicTrack second = sampleTrack("loop-queue-second");
+        MusicTrack loop = sampleTrack("loop-queue-terminal");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first), 0);
+
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(second, false));
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(loop, true));
+        assertTrue(session.hasLoopTerminal());
+        assertFalse(session.isLoopActive());
+        assertEquals(2, session.queueSize());
+        assertEquals(PlaybackSession.QueueAddResult.LOOP_TERMINAL,
+                session.addToQueue(sampleTrack("loop-queue-too-late"), false));
+
+        assertTrue(session.advance());
+        assertEquals(second.id(), session.current().id());
+        assertFalse(session.isLoopActive());
+        assertTrue(session.advance());
+        assertEquals(loop.id(), session.current().id());
+        assertTrue(session.isLoopActive());
+        assertEquals(0, session.queueSize());
+
+        long firstLoopTimeline = session.timelineGeneration();
+        assertTrue(session.advance());
+        assertEquals(loop.id(), session.current().id());
+        assertTrue(session.timelineGeneration() > firstLoopTimeline);
+        assertEquals(PlaybackSession.QueueAddResult.LOOP_TERMINAL,
+                session.addToQueue(sampleTrack("loop-queue-still-locked"), false));
+    }
+
+    @Test
+    void queuedLoopCanBeRemovedOrClearedButActiveLoopRequiresStopping() {
+        MusicTrack current = sampleTrack("loop-edit-current");
+        MusicTrack waiting = sampleTrack("loop-edit-waiting");
+        MusicTrack loop = sampleTrack("loop-edit-terminal");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(current), 0);
+
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(waiting, false));
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(loop, true));
+        assertTrue(session.removeQueuedTrack(loop.id()));
+        assertFalse(session.hasLoopTerminal());
+        assertEquals(1, session.queueSize());
+
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(loop, true));
+        assertEquals(2, session.clearQueuedTracks());
+        assertFalse(session.hasLoopTerminal());
+        assertEquals(0, session.queueSize());
+
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(waiting, false));
+        assertEquals(PlaybackSession.QueueAddResult.ADDED, session.addToQueue(loop, true));
+        assertTrue(session.advance());
+        assertEquals(waiting.id(), session.current().id());
+        assertTrue(session.advance());
+        assertEquals(loop.id(), session.current().id());
+        assertTrue(session.isLoopActive());
+        assertFalse(session.removeQueuedTrack(loop.id()));
+        assertEquals(0, session.clearQueuedTracks());
+        assertEquals(PlaybackSession.QueueAddResult.LOOP_TERMINAL,
+                session.addToQueue(sampleTrack("loop-edit-after-active"), false));
+    }
+
+    @Test
+    void aSingleTrackSessionCanLoopItsCurrentTrack() {
+        MusicTrack loop = sampleTrack("loop-single-current");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(loop), 0);
+
+        assertTrue(session.markCurrentAsLoop());
+        assertTrue(session.isLoopActive());
+        long initialTimeline = session.timelineGeneration();
+        assertTrue(session.advance());
+        assertEquals(loop.id(), session.current().id());
+        assertTrue(session.timelineGeneration() > initialTimeline);
+        assertFalse(session.markCurrentAsLoop());
+    }
 }
