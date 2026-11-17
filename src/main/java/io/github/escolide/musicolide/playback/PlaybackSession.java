@@ -160,6 +160,7 @@ public final class PlaybackSession {
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public synchronized boolean allPlayers() { return allPlayers; }
+    public synchronized Set<UUID> listenerIds() { return Set.copyOf(explicitListeners); }
     public synchronized PlaybackAudiencePolicy.TargetScope targetScope() {
         return serverWidePromotion ? PlaybackAudiencePolicy.TargetScope.PUBLIC : targetScope;
     }
