@@ -8,6 +8,7 @@ import io.github.escolide.musicolide.link.DiscordAccountLinkManager;
 import io.github.escolide.musicolide.model.MusicZone;
 import io.github.escolide.musicolide.playback.PlaybackEngine;
 import io.github.escolide.musicolide.playback.PlaybackSession;
+import io.github.escolide.musicolide.playback.PlaybackAudiencePolicy;
 import io.github.escolide.musicolide.storage.TrackRepository;
 import io.github.escolide.musicolide.util.CatalogMatcher;
 import io.github.escolide.musicolide.util.DiscordCommandPolicy;
@@ -1573,36 +1574,29 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     }
                     UUID owner = sender instanceof Player player ? player.getUniqueId() : null;
                     boolean mono = "mono".equalsIgnoreCase(request.audioMode);
-                    PlaybackEngine.PlayResult playResult;
+                    PlaybackSession session;
                     try {
-                        playResult = playback.playOrQueueResult(owner, sender.getName(), request.zone,
-                                request.all, request.listeners, track, request.priority, mono,
-                                request.targetScope);
+                        // URL playlists retain a dedicated session/runner. A runner
+                        // owns its bounded pre-import window, so it must not be merged
+                        // with another active producer without a shared coordinator.
+                        session = playback.startSession(owner, sender.getName(), request.zone,
+                                request.all, request.listeners, List.of(track), request.priority,
+                                mono, request.targetScope);
                     } catch (IllegalStateException limit) {
                         sender.sendMessage(msg("&cCould not start playlist: " + limit.getMessage()));
                         return;
                     }
-                    if (playResult.disposition() != PlaybackEngine.PlayDisposition.STARTED
-                            && playResult.disposition() != PlaybackEngine.PlayDisposition.QUEUED) {
-                        sender.sendMessage(msg(playResult.disposition() == PlaybackEngine.PlayDisposition.MODE_MISMATCH
-                                ? "&cThe matching playback session uses a different audio mode. Stop it before changing modes."
-                                : "&cThe matching playback queue is full; the playlist was not started."));
-                        return;
-                    }
-                    PlaybackSession session = playResult.session();
-                    if (session == null || session.isEmpty()) {
+                    if (session.isEmpty()) {
                         sender.sendMessage(msg("&cThe first playlist track could not be queued."));
                         return;
                     }
-                    session.addQueuePending();
+                    session.queuePending(true);
                     String playlistDelivery = plugin.getConfig().getString(
                             "resource-packs.playlist-playback-system", "per-track");
                     boolean playlistPerTrack = playlistDelivery == null
                             || playlistDelivery.trim().equalsIgnoreCase("per-track");
                     session.configureUrlPlaylist(playlistPerTrack);
-                    sender.sendMessage(msg((playResult.disposition() == PlaybackEngine.PlayDisposition.QUEUED
-                            ? "&aAdded playlist to the matching queue, starting with &f"
-                            : "&aStarted playlist with &f") + track.title()
+                    sender.sendMessage(msg("&aStarted playlist with &f" + track.title()
                             + "&a. The server will prepare upcoming tracks gradually; players receive only the active track when per-track playlist delivery is selected."));
                     PlaylistRunner runner = new PlaylistRunner(sender, request, session, entries, 1);
                     playlistRunners.add(runner);
@@ -1688,7 +1682,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             }
 
             if (!repeat && nextIndex >= entries.size() && inFlight == 0) {
-                close(true);
+                session.queuePending(false);
+                close(false);
                 if (skipped > 0) sender.sendMessage(msg("&eSkipped " + skipped
                         + " playlist track(s) that could not be imported."));
                 sender.sendMessage(msg("&aPlaylist importing finished. Remaining queued tracks will play in order."));
@@ -1734,7 +1729,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             closed = true;
             if (task != null) task.cancel();
             playlistRunners.remove(this);
-            if (clearPending) session.removeQueuePending();
+            if (clearPending) session.queuePending(false);
         }
     }
 
