@@ -67,8 +67,9 @@ public final class PlaybackSession {
         this.allPlayers = allPlayers;
         this.monoAudio = monoAudio;
         this.targetScope = targetScope == null
-                ? (allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
-                : PlaybackAudiencePolicy.TargetScope.TARGETED) : targetScope;
+                ? zone.shape() != MusicZone.Shape.GLOBAL ? PlaybackAudiencePolicy.TargetScope.ZONE
+                : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                : PlaybackAudiencePolicy.TargetScope.TARGETED : targetScope;
         this.explicitListeners = new HashSet<>(listeners == null ? List.of() : listeners);
         this.queue.addAll(tracks);
         this.repeatSource = List.copyOf(tracks);
@@ -157,7 +158,6 @@ public final class PlaybackSession {
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public synchronized boolean allPlayers() { return allPlayers; }
-    public synchronized Set<UUID> listenerIds() { return Set.copyOf(explicitListeners); }
     public synchronized PlaybackAudiencePolicy.TargetScope targetScope() {
         return serverWidePromotion ? PlaybackAudiencePolicy.TargetScope.PUBLIC : targetScope;
     }
