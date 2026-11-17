@@ -99,23 +99,36 @@ public final class PackManager {
         return playerId != null && disabledPlayers.contains(playerId);
     }
 
-    /** Disables Musicolide for one player and immediately unloads their cached packs. */
-    public void disablePlayer(Player player) {
-        if (player == null) return;
-        disabledPlayers.add(player.getUniqueId());
+    /** True when this player still has an applied, requested, or queued Musicolide pack. */
+    public boolean hasPlayerPackState(UUID playerId) {
+        if (playerId == null) return false;
+        return libraryReadyHash.containsKey(playerId)
+                || libraryRequestedHash.containsKey(playerId)
+                || waitingForPublicAddress.contains(playerId)
+                || !active.getOrDefault(playerId, Set.of()).isEmpty()
+                || !requested.getOrDefault(playerId, Set.of()).isEmpty()
+                || !ready.getOrDefault(playerId, Set.of()).isEmpty()
+                || !waiting.getOrDefault(playerId, new LinkedHashMap<>()).isEmpty()
+                || !pinnedTemporaryPacks.getOrDefault(playerId, Set.of()).isEmpty();
+    }
+
+    /** Disables Musicolide once and immediately unloads their cached packs. */
+    public boolean disablePlayer(Player player) {
+        if (player == null || !disabledPlayers.add(player.getUniqueId())) return false;
         persistDisabledPlayers();
         deferredLibraryReload.remove(player.getUniqueId());
         unloadPlayerPacks(player);
+        return true;
     }
 
-    /** Re-enables Musicolide; packs are requested by the next eligible playback event. */
-    public void enablePlayer(Player player) {
-        if (player == null) return;
-        disabledPlayers.remove(player.getUniqueId());
+    /** Re-enables Musicolide once; packs are requested by the next eligible playback event. */
+    public boolean enablePlayer(Player player) {
+        if (player == null || !disabledPlayers.remove(player.getUniqueId())) return false;
         persistDisabledPlayers();
         deferredLibraryReload.remove(player.getUniqueId());
         libraryReadyHash.remove(player.getUniqueId());
         libraryDeclinedHash.remove(player.getUniqueId());
+        return true;
     }
 
     /**
@@ -123,10 +136,11 @@ public final class PackManager {
      * When a current track ID is supplied, no replacement library is requested
      * until playback moves to a different track.
      */
-    public void unloadPlayer(Player player, String currentTrackId) {
-        if (player == null) return;
+    public boolean unloadPlayer(Player player, String currentTrackId) {
+        if (player == null || !hasPlayerPackState(player.getUniqueId())) return false;
         deferredLibraryReload.put(player.getUniqueId(), currentTrackId == null ? "" : currentTrackId);
         unloadPlayerPacks(player);
+        return true;
     }
 
     private void unloadPlayerPacks(Player player) {

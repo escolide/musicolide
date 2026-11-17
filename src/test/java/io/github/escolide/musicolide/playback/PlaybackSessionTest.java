@@ -56,6 +56,22 @@ class PlaybackSessionTest {
     }
 
     @Test
+    void speedComparisonRecognizesCurrentAndQueuedValues() {
+        MusicTrack first = sampleTrack("speed-current");
+        MusicTrack second = sampleTrack("speed-next");
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), true, List.of(), List.of(first, second), 0);
+
+        assertTrue(session.speedIsCurrentOrPending(1.0));
+        assertFalse(session.speedIsCurrentOrPending(1.5));
+
+        session.startClockIfNeeded();
+        assertFalse(session.setSpeed(1.5), "A live speed change is staged for the next track.");
+        assertTrue(session.speedIsCurrentOrPending(1.5));
+        assertFalse(session.speedIsCurrentOrPending(1.0));
+    }
+
+    @Test
     void urlPlaylistStoresItsOwnDeliveryOverrideWithoutChangingOrdinarySessions() {
         PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "playlist",
                 MusicZone.global(), true, List.of(), List.of(sampleTrack("playlist-delivery")), 0);

@@ -49,7 +49,6 @@ public final class DiscordCommandService extends ListenerAdapter {
     private final MusicCommand musicCommand;
     private final DiscordAccountLinkManager accountLinks;
     private final Map<String, AttemptWindow> otpAttempts = new HashMap<>();
-    private final RequestCooldowns autocompleteCooldowns = new RequestCooldowns();
     private final RequestCooldowns playlistPlaybackCooldowns = new RequestCooldowns();
     private final Map<String, Long> slashCommandLastAttempt = new HashMap<>();
     private long slashCommandGlobalLastAttemptNanos;
@@ -79,7 +78,7 @@ public final class DiscordCommandService extends ListenerAdapter {
                 Commands.slash("info", "Show the current Musicolide track, timestamp and server information"),
                 Commands.slash("help", "Explain Musicolide Discord commands and playback options"),
                 Commands.slash("play", "Search for and play a track from the server's authorized audio sources")
-                        .addOption(OptionType.STRING, "query", "Song or artist search", true, true)
+                        .addOption(OptionType.STRING, "query", "Song, artist or NCS search", true, true)
                         .addOption(OptionType.STRING, "target", "Optional target: @s, @p, @a, or an online player name", false)
                         .addOption(OptionType.STRING, "id", "Optional custom track ID/name for a new import", false)
                         .addOption(OptionType.STRING, "zone", "Optional zone: circle 50, square 50x50, or region <id>", false)
@@ -207,14 +206,9 @@ public final class DiscordCommandService extends ListenerAdapter {
         }
 
         String query = event.getFocusedOption().getValue();
-        long autocompleteCooldown = Math.max(0L,
-                plugin.getConfig().getLong("discord.commands.autocomplete-cooldown-seconds", 5L));
-        long autocompleteGlobalCooldown = Math.max(0L,
-                plugin.getConfig().getLong("discord.commands.autocomplete-global-cooldown-seconds", 1L));
-        boolean allowRemoteSearch = autocompleteCooldowns.tryAcquire(
-                "discord-autocomplete", event.getUser().getId(),
-                autocompleteCooldown, autocompleteGlobalCooldown) == 0L;
-        musicCommand.discordPlaySuggestions(query, allowRemoteSearch, guildScopedUser)
+        // The suggestion provider debounces rapid keystrokes per linked user
+        // and reserves enough time for the remote metadata lookup to respond.
+        musicCommand.discordPlaySuggestions(query, true, guildScopedUser)
                 .thenAccept(suggestions -> {
                     List<Command.Choice> choices = new ArrayList<>();
                     Set<String> seenValues = new java.util.HashSet<>();

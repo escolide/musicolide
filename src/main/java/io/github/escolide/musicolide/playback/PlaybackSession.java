@@ -113,6 +113,9 @@ public final class PlaybackSession {
     public synchronized void priority(int priority) { this.priority = priority; }
     public synchronized double speed() { return speed; }
     public synchronized Double pendingSpeed() { return pendingSpeed; }
+    public synchronized boolean speedIsCurrentOrPending(double value) {
+        return Double.compare(pendingSpeed == null ? speed : pendingSpeed, value) == 0;
+    }
 
     /**
      * Changes sound pitch (and therefore playback rate) without modifying audio.

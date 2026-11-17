@@ -53,6 +53,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private final Set<PlaylistRunner> playlistRunners = ConcurrentHashMap.newKeySet();
     private final Map<String, CachedDiscordAutocomplete> discordAutocompleteCache = new ConcurrentHashMap<>();
     private final Set<String> discordAutocompleteInFlight = ConcurrentHashMap.newKeySet();
+    private final Map<String, PendingDiscordAutocomplete> discordAutocompletePending = new ConcurrentHashMap<>();
+    private final Map<String, String> discordAutocompleteLatestQuery = new ConcurrentHashMap<>();
 
 
     public MusicCommand(JavaPlugin plugin, TrackRepository repository, AudioProcessor processor, PlaybackEngine playback,
@@ -275,8 +277,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
 
         final List<DiscordPlaySuggestion> local;
         try {
-            // Keep space for remote choices instead of allowing local results to
-            // crowd every YouTube result out of Discord's 25-choice limit.
             local = repository.searchForPlayback(cleaned, 10, 0).stream()
                     .map(track -> new DiscordPlaySuggestion(
                             TextUtil.truncate("[" + displayTrackId(track) + "] " + track.title()
@@ -288,77 +288,160 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             return CompletableFuture.failedFuture(error);
         }
 
-        boolean youtubeSearchEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
-        if (!youtubeSearchEnabled) return CompletableFuture.completedFuture(local);
+        if (!plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false)) {
+            return CompletableFuture.completedFuture(local);
+        }
 
         long now = System.currentTimeMillis();
         CachedDiscordAutocomplete cached = discordAutocompleteCache.get(requesterKey);
-        List<DiscordPlaySuggestion> cachedRemote = cached != null
-                && now - cached.createdAtMillis() <= 30_000L
-                && (cleaned.startsWith(cached.query()) || cached.query().startsWith(cleaned))
+        boolean cacheValid = cached != null && !cached.results().isEmpty()
+                && now - cached.createdAtMillis() <= 30_000L;
+        boolean cachedQueryCoversCurrent = cacheValid
+                && (cleaned.equals(cached.query()) || cached.query().startsWith(cleaned));
+        List<DiscordPlaySuggestion> cachedRemote = cacheValid
+                && (cachedQueryCoversCurrent || cleaned.startsWith(cached.query()))
                 ? cached.results() : List.of();
-
         List<DiscordPlaySuggestion> immediate = mergeDiscordSuggestions(local, cachedRemote);
-        if (!allowRemoteLookup || local.size() >= 25) {
+
+        // An exact result or a more-specific cached query is already useful.
+        // When the user refines a broader cached query, show it provisionally
+        // while refreshing YouTube results for the new, narrower query.
+        boolean exactCache = cacheValid && cleaned.equals(cached.query());
+        if (!allowRemoteLookup || cleaned.length() < 3 || local.size() >= 25
+                || exactCache || cachedQueryCoversCurrent) {
             return CompletableFuture.completedFuture(immediate);
         }
 
-        // Return remote choices if yt-dlp is fast, but always fall back to the
-        // local/cached list well before Discord's autocomplete response deadline.
-        String lookupKey = requesterKey + ":" + cleaned;
-        if (!discordAutocompleteInFlight.add(lookupKey)) {
-            return CompletableFuture.completedFuture(immediate);
-        }
-
+        discordAutocompleteLatestQuery.put(requesterKey, cleaned);
+        CompletableFuture<List<DiscordPlaySuggestion>> response = new CompletableFuture<>();
         int remoteLimit = Math.max(1, 25 - local.size());
+        CompletableFuture.delayedExecutor(300L, java.util.concurrent.TimeUnit.MILLISECONDS).execute(() -> {
+            if (!cleaned.equals(discordAutocompleteLatestQuery.get(requesterKey))) {
+                response.complete(immediate);
+                return;
+            }
+            startDiscordAutocompleteLookup(requesterKey, cleaned, local, immediate, remoteLimit, response);
+        });
+
+        // Keep Discord's response bounded. If an older query is already being
+        // searched, the newest query is coalesced and cached as soon as that
+        // lookup finishes, so a later keystroke can use the correct suggestions.
+        return response.copy().completeOnTimeout(immediate, 2_100L,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private void startDiscordAutocompleteLookup(
+            String requesterKey, String query, List<DiscordPlaySuggestion> local,
+            List<DiscordPlaySuggestion> immediate, int remoteLimit,
+            CompletableFuture<List<DiscordPlaySuggestion>> response) {
+        synchronized (discordAutocompleteInFlight) {
+            if (!discordAutocompleteInFlight.add(requesterKey)) {
+                PendingDiscordAutocomplete replaced = discordAutocompletePending.put(requesterKey,
+                        new PendingDiscordAutocomplete(query, local, immediate, remoteLimit, response));
+                if (replaced != null) replaced.response().complete(replaced.immediate());
+                return;
+            }
+        }
+        runDiscordAutocompleteLookup(requesterKey, query, local, immediate, remoteLimit, response);
+    }
+
+    /** Runs while this requester owns the single in-flight search slot. */
+    private void runDiscordAutocompleteLookup(
+            String requesterKey, String query, List<DiscordPlaySuggestion> local,
+            List<DiscordPlaySuggestion> immediate, int remoteLimit,
+            CompletableFuture<List<DiscordPlaySuggestion>> response) {
         try {
-            CompletableFuture<List<DiscordPlaySuggestion>> remoteFuture =
-                    processor.searchYouTube(cleaned, Math.min(15, remoteLimit))
-                            .handle((results, error) -> {
-                                try {
-                                    if (error != null || results == null) return immediate;
-                                    List<DiscordPlaySuggestion> remote = new ArrayList<>();
-                                    Set<String> existing = new HashSet<>();
-                                    for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
-                                    for (YtDlpDownloader.SearchResult result : results) {
-                                        if (remote.size() + local.size() >= 25) break;
-                                        String url = result.url();
-                                        if (url == null || url.isBlank()) {
-                                            url = "https://www.youtube.com/watch?v=" + result.videoId();
-                                        }
-                                        if (url.length() > 100 || !existing.add(url)) continue;
-                                        String title = result.title() == null || result.title().isBlank()
-                                                ? "Untitled" : result.title();
-                                        String uploader = result.uploader() == null ? "" : result.uploader();
-                                        String label = title + (uploader.isBlank() ? "" : " — " + uploader);
-                                        if (result.durationSeconds() > 0) {
-                                            long seconds = result.durationSeconds();
-                                            label += " • " + String.format(Locale.ROOT, "%d:%02d",
-                                                    seconds / 60, seconds % 60);
-                                        }
-                                        remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
-                                    }
-                                    discordAutocompleteCache.put(requesterKey,
-                                            new CachedDiscordAutocomplete(cleaned, List.copyOf(remote),
-                                                    System.currentTimeMillis()));
-                                    if (discordAutocompleteCache.size() > 2_000) {
-                                        long completedAt = System.currentTimeMillis();
-                                        discordAutocompleteCache.entrySet().removeIf(entry ->
-                                                completedAt - entry.getValue().createdAtMillis() > 60_000L);
-                                    }
-                                    return mergeDiscordSuggestions(local, remote);
-                                } finally {
-                                    discordAutocompleteInFlight.remove(lookupKey);
-                                }
-                            });
-            return remoteFuture.completeOnTimeout(immediate, 1_200L,
-                    java.util.concurrent.TimeUnit.MILLISECONDS)
-                    .whenComplete((ignored, error) -> discordAutocompleteInFlight.remove(lookupKey));
+            processor.searchYouTube(query, Math.min(6, remoteLimit))
+                    .handle((results, error) -> {
+                        if (error != null) {
+                            plugin.getLogger().log(Level.WARNING,
+                                    "YouTube autocomplete search failed for query '" + query + "'.", error);
+                            return immediate;
+                        }
+                        if (results == null || results.isEmpty()) return immediate;
+
+                        List<DiscordPlaySuggestion> remote = new ArrayList<>();
+                        Set<String> existing = new HashSet<>();
+                        for (DiscordPlaySuggestion suggestion : local) existing.add(suggestion.value());
+                        for (YtDlpDownloader.SearchResult result : results) {
+                            if (remote.size() + local.size() >= 25) break;
+                            String url = result.url();
+                            if (url == null || url.isBlank()) {
+                                url = "https://www.youtube.com/watch?v=" + result.videoId();
+                            }
+                            if (url.length() > 100 || !existing.add(url)) continue;
+                            String title = result.title() == null || result.title().isBlank()
+                                    ? "Untitled" : result.title();
+                            String uploader = result.uploader() == null ? "" : result.uploader();
+                            String label = title + (uploader.isBlank() ? "" : " — " + uploader);
+                            if (result.durationSeconds() > 0) {
+                                long seconds = result.durationSeconds();
+                                label += " • " + String.format(Locale.ROOT, "%d:%02d",
+                                        seconds / 60, seconds % 60);
+                            }
+                            remote.add(new DiscordPlaySuggestion(TextUtil.truncate(label, 100), url));
+                        }
+                        if (!remote.isEmpty()) {
+                            discordAutocompleteCache.put(requesterKey,
+                                    new CachedDiscordAutocomplete(query, List.copyOf(remote),
+                                            System.currentTimeMillis()));
+                            if (discordAutocompleteCache.size() > 2_000) {
+                                long completedAt = System.currentTimeMillis();
+                                discordAutocompleteCache.entrySet().removeIf(entry ->
+                                        completedAt - entry.getValue().createdAtMillis() > 60_000L);
+                                discordAutocompleteLatestQuery.keySet().removeIf(key ->
+                                        !discordAutocompleteInFlight.contains(key)
+                                                && !discordAutocompleteCache.containsKey(key));
+                            }
+                        }
+                        return mergeDiscordSuggestions(local, remote);
+                    })
+                    .whenComplete((suggestions, error) -> {
+                        response.complete(error == null && suggestions != null ? suggestions : immediate);
+
+                        PendingDiscordAutocomplete pending;
+                        synchronized (discordAutocompleteInFlight) {
+                            pending = discordAutocompletePending.remove(requesterKey);
+                            if (pending == null || !pending.query().equals(
+                                    discordAutocompleteLatestQuery.get(requesterKey))) {
+                                discordAutocompleteInFlight.remove(requesterKey);
+                            }
+                        }
+
+                        if (pending == null) {
+                            discordAutocompleteLatestQuery.remove(requesterKey, query);
+                        } else if (!pending.query().equals(discordAutocompleteLatestQuery.get(requesterKey))) {
+                            pending.response().complete(pending.immediate());
+                            discordAutocompleteLatestQuery.remove(requesterKey, query);
+                        } else {
+                            // Keep ownership of the per-user slot while the latest
+                            // query runs; newer keystrokes replace its pending entry.
+                            runDiscordAutocompleteLookup(requesterKey, pending.query(), pending.local(),
+                                    pending.immediate(), pending.remoteLimit(), pending.response());
+                        }
+                    });
         } catch (RuntimeException error) {
-            discordAutocompleteInFlight.remove(lookupKey);
-            plugin.getLogger().log(Level.FINE,
+            plugin.getLogger().log(Level.WARNING,
                     "Could not start background YouTube autocomplete lookup.", error);
-            return CompletableFuture.completedFuture(immediate);
+            response.complete(immediate);
+
+            PendingDiscordAutocomplete pending;
+            synchronized (discordAutocompleteInFlight) {
+                pending = discordAutocompletePending.remove(requesterKey);
+                if (pending == null || !pending.query().equals(
+                        discordAutocompleteLatestQuery.get(requesterKey))) {
+                    discordAutocompleteInFlight.remove(requesterKey);
+                }
+            }
+            if (pending != null && pending.query().equals(discordAutocompleteLatestQuery.get(requesterKey))) {
+                runDiscordAutocompleteLookup(requesterKey, pending.query(), pending.local(),
+                        pending.immediate(), pending.remoteLimit(), pending.response());
+            } else if (pending != null) {
+                pending.response().complete(pending.immediate());
+                discordAutocompleteLatestQuery.remove(requesterKey, query);
+            } else {
+                discordAutocompleteLatestQuery.remove(requesterKey, query);
+            }
         }
     }
 
@@ -377,6 +460,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private record CachedDiscordAutocomplete(String query,
                                               List<DiscordPlaySuggestion> results,
                                               long createdAtMillis) {}
+
+    private record PendingDiscordAutocomplete(String query,
+                                                List<DiscordPlaySuggestion> local,
+                                                List<DiscordPlaySuggestion> immediate,
+                                                int remoteLimit,
+                                                CompletableFuture<List<DiscordPlaySuggestion>> response) {}
 
     public record DiscordPlaySuggestion(String label, String value) {}
 
@@ -1237,7 +1326,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                     throw new IllegalArgumentException("Use mode:mono or mode:stereo.");
                 continue;
             }
-            if (option.equals("center")) {
+            if (PlayTargetDefaults.isExplicitCenterOption(option)) {
                 centeredMono = true;
                 continue;
             }
@@ -1315,11 +1404,6 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 }
             }
         }
-
-        // A centred sound origin is opt-in. The shipped/default setting is false,
-        // so mono listeners hear audio from their own playback-start position.
-        centeredMono = centeredMono || (audioMode.equals("mono")
-                && plugin.getConfig().getBoolean("playback.mono.centered-audio-origin-by-default", false));
 
         if (centeredMono && !audioMode.equals("mono")) {
             throw new IllegalArgumentException("The center option is only available with mode:mono.");
@@ -1695,7 +1779,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
             throw new IllegalStateException("Player-specific disable is unavailable.");
         }
-        musicPlugin.disablePlayerMusic(player);
+        if (!musicPlugin.disablePlayerMusic(player)) {
+            sender.sendMessage(msg("&eMusicolide is already disabled for you. No pack changes were made."));
+            return;
+        }
         sender.sendMessage(msg("&eMusicolide has been disabled for you. Your Musicolide packs were unloaded."));
         sender.sendMessage(msg("&7Use /music enable to turn it back on."));
     }
@@ -1705,7 +1792,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
             throw new IllegalStateException("Player-specific enable is unavailable.");
         }
-        musicPlugin.enablePlayerMusic(player);
+        if (!musicPlugin.enablePlayerMusic(player)) {
+            sender.sendMessage(msg("&aMusicolide is already enabled for you. No resource-pack reload was requested."));
+            return;
+        }
         sender.sendMessage(msg("&aMusicolide is enabled for you again. Your next playback will request the required packs."));
     }
 
@@ -1714,7 +1804,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
             throw new IllegalStateException("Pack unloading is unavailable.");
         }
-        musicPlugin.unloadPlayerMusic(player);
+        if (!musicPlugin.unloadPlayerMusic(player)) {
+            sender.sendMessage(msg("&eYour Musicolide packs are already unloaded. No request was made."));
+            return;
+        }
         sender.sendMessage(msg("&eYour Musicolide library and temporary packs were requested to unload."));
         sender.sendMessage(msg("&7The library will be requested again when a different track starts."));
     }
@@ -1730,7 +1823,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!(plugin instanceof io.github.escolide.musicolide.MusicolidePlugin musicPlugin)) {
             throw new IllegalStateException("Discord runtime controls are unavailable.");
         }
-        musicPlugin.setDiscordEnabled(enabled);
+        if (!musicPlugin.setDiscordEnabled(enabled)) {
+            sender.sendMessage(msg(enabled
+                    ? "&eDiscord broadcasting is already enabled. No reconnect was triggered."
+                    : "&eDiscord broadcasting is already disabled. No action was needed."));
+            return;
+        }
         sender.sendMessage(msg(enabled
                 ? "&aDiscord broadcasting has been enabled. It will start in the background."
                 : "&eDiscord broadcasting has been disabled."));
@@ -1988,6 +2086,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length < 2) { sender.sendMessage(msg("&eYour volume: " + playback.getPlayerVolume(player) + "%")); return; }
         int value = Integer.parseInt(args[1]);
         if (value < 0 || value > 100) throw new IllegalArgumentException("Volume must be between 0 and 100.");
+        if (playback.getPlayerVolume(player) == value) {
+            sender.sendMessage(msg("&eYour music volume is already " + value + "%. No playback changes were made."));
+            return;
+        }
         if ("precise".equalsIgnoreCase(plugin.getConfig().getString(
                 "playback.volume-change-mode", "next-track"))
                 && !admitHeavyRequest(sender, "transform",
@@ -2035,6 +2137,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         PlaybackEngine.SpeedChangeResult result = playback.setPlaybackSpeed(actor, admin, value);
         switch (result) {
             case NO_SESSION -> throw new IllegalArgumentException("A player session is required to set a personal speed default.");
+            case UNCHANGED -> sender.sendMessage(msg("&ePlayback speed is already set to &f"
+                    + String.format(Locale.ROOT, "%.2f", value) + "x&e. No change was made."));
             case DEFAULT_SET -> sender.sendMessage(msg("&aDefault playback speed set to &f"
                     + String.format(Locale.ROOT, "%.2f", value) + "x&a. It will apply to your next session."));
             case APPLIED_NOW -> sender.sendMessage(msg("&aPlayback speed set to &f"
@@ -2058,6 +2162,12 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         }
         boolean selfTarget = sender instanceof Player actorPlayer
                 && actorPlayer.getUniqueId().equals(target.getUniqueId());
+        if (playback.isPlayerMuted(target) == muted) {
+            sender.sendMessage(msg("&e" + target.getName() + (muted
+                    ? " is already muted. No playback change was made."
+                    : " is already unmuted. No playback change was made.")));
+            return;
+        }
         if (!muted && "precise".equalsIgnoreCase(plugin.getConfig().getString(
                 "playback.volume-change-mode", "next-track"))
                 && !admitHeavyRequest(sender, "transform",
@@ -2136,6 +2246,13 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!Double.isFinite(seconds) || seconds < 0 || seconds > 120) {
             throw new IllegalArgumentException("Synchronization offset must be between 0 and 120 seconds.");
         }
+        double currentOffset = plugin.getConfig().getDouble(
+                "playback.synchronization.late-join.delay-seconds", 4.0);
+        if (Double.compare(currentOffset, seconds) == 0) {
+            sender.sendMessage(msg("&eThe shared synchronization offset is already "
+                    + String.format(Locale.ROOT, "%.2f", seconds) + " seconds. No config write was needed."));
+            return;
+        }
         plugin.getConfig().set("playback.synchronization.late-join.delay-seconds", seconds);
         plugin.saveConfig();
         sender.sendMessage(msg("&aShared synchronization offset set to &f"
@@ -2150,10 +2267,17 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (!Double.isFinite(seconds) || seconds < 0 || seconds > Long.MAX_VALUE / 1000.0)
             throw new IllegalArgumentException("Seek position must be finite and non-negative.");
         long targetMs = (long) (seconds * 1000.0);
+        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
+        PlaybackSession currentSession = playback.findControllableSession(player.getUniqueId(), admin).orElse(null);
+        if (currentSession != null && currentSession.paused() && !currentSession.resumePreparing()
+                && currentSession.elapsedMs() == targetMs) {
+            sender.sendMessage(msg("&ePlayback is already paused at " + format(targetMs)
+                    + ". No audio processing was requested."));
+            return;
+        }
         if (!admitHeavyRequest(sender, "transform",
                 "audio.processing.transform-cooldown-seconds", 3,
                 "audio.processing.global-transform-cooldown-seconds", 1, "another audio preparation")) return;
-        boolean admin = sender.hasPermission(plugin.getConfig().getString("permissions.admin", "musicolide.admin"));
         PlaybackEngine.SeekStart result = playback.seek(player.getUniqueId(), admin, targetMs, notification -> {
             if (player.isOnline()) sender.sendMessage(msg(notification));
         });
@@ -2249,6 +2373,10 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         int value = Integer.parseInt(args[1]);
         if (value < -1000 || value > 1000) throw new IllegalArgumentException("Priority must be between -1000 and 1000.");
         PlaybackSession session = playback.findOwned(player.getUniqueId()).orElseThrow(() -> new IllegalArgumentException("No session found."));
+        if (session.priority() == value) {
+            sender.sendMessage(msg("&eSession priority is already " + value + ". No change was made."));
+            return;
+        }
         session.priority(value);
         sender.sendMessage(msg("&aSession priority set to " + value + "."));
     }
@@ -2382,15 +2510,15 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
             if (previous.equals("--square")) return partial(List.of("25x25", "50x50", "100x100"), prefix);
             if (previous.equals("--region")) return List.of();
             if (prefix.startsWith("--")) {
-                return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"), prefix);
+                return partial(List.of("--target", "--id", "--circle", "--square", "--region", "--fade", "--mode", "--center"), prefix);
             }
             boolean canTargetAll = sender.hasPermission(plugin.getConfig().getString(
                     "permissions.admin", "musicolide.admin"))
                     || plugin.getConfig().getBoolean("permissions.allow-player-all-target", false);
             List<String> options = new ArrayList<>(List.of(
                     "target:@s", "target:@p", "id:", "circle:", "square:",
-                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo", "center",
-                    "@s", "@p", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode"));
+                    "region:", "fade10", "fade0", "mode:mono", "mode:stereo", "--center",
+                    "@s", "@p", "--target", "--id", "--circle", "--square", "--region", "--fade", "--mode", "--center"));
             if (canTargetAll) {
                 options.add("target:@a");
                 options.add("@a");

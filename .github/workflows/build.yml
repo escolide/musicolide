@@ -18,8 +18,9 @@ jobs:
           cache: gradle
       - name: Run tests and build size-limited Java 21 development plugin
         run: bash ./gradlew --no-daemon clean test build
-      - name: Upload development build (native payloads may be absent)
+      - name: Upload development build (best effort; tests do not depend on artifact storage)
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: musicolide-development-build
           path: build/libs/musicolide-*.jar

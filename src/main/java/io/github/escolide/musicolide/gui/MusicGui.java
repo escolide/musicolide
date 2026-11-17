@@ -26,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Level;
 
 public final class MusicGui implements Listener {
     private static final int SIZE = 54;
@@ -50,7 +51,14 @@ public final class MusicGui implements Listener {
         this.playback = playback;
         this.commands = commands;
         Bukkit.getPluginManager().registerEvents(this, plugin);
-        Bukkit.getScheduler().runTaskTimer(plugin, this::refreshOpenInventories, 20L, 20L);
+        Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            try {
+                refreshOpenInventories();
+            } catch (RuntimeException error) {
+                // Never let one transient server/inventory exception cancel future GUI refreshes.
+                plugin.getLogger().log(Level.WARNING, "Musicolide GUI refresh tick failed; it will retry next tick.", error);
+            }
+        }, 20L, 20L);
     }
 
     /** Opens the same session view for the executor and every online affected listener. */
@@ -74,10 +82,15 @@ public final class MusicGui implements Listener {
         player.openInventory(holder.inventory);
     }
 
-    private void openInfo(Player player, GuiHolder holder) {
-        holder.details = true;
-        renderInfo(holder);
-        player.openInventory(holder.inventory);
+    private void openInfo(Player player, GuiHolder source) {
+        // Use a separate inventory/holder for the metadata page. Reusing the
+        // live control inventory could leave the previous view visible during
+        // client-side inventory transitions or rapid clicks.
+        GuiHolder details = new GuiHolder(source.sessionId, true);
+        details.viewerId = player.getUniqueId();
+        details.inventory = Bukkit.createInventory(details, SIZE, ChatColor.DARK_PURPLE + "Track information");
+        renderInfo(details);
+        player.openInventory(details.inventory);
     }
 
     private void renderMain(GuiHolder holder) {
@@ -93,20 +106,13 @@ public final class MusicGui implements Listener {
         boolean canControl = viewer != null && session != null && commands.canControlGui(viewer, session);
         boolean admin = viewer != null && commands.isGuiAdmin(viewer);
 
-        List<String> paperLore = new ArrayList<>();
-        if (!hasTrack) {
-            paperLore.add(gray("No songs playing."));
-        } else {
-            paperLore.add(gray("Track: ") + ChatColor.WHITE + clean(track.title()));
-            paperLore.add(gray("Position: ") + ChatColor.WHITE + time(session.elapsedMs())
-                    + " / " + time(track.durationMs()));
-            paperLore.add(gray("State: ") + state(playing ? "Playing" : paused ? "Paused"
-                    : session.resumePreparing() ? "Preparing to resume" : "Waiting for listeners", playing || paused));
-            paperLore.add(gray("TrackID: ") + ChatColor.LIGHT_PURPLE + clean(track.id()));
-            paperLore.add(gray("Executor: ") + ChatColor.WHITE + clean(session.ownerName()));
-            if (viewer != null && !canControl) paperLore.add(red("Controls: owner or admin only"));
-        }
-        holder.inventory.setItem(PAPER_SLOT, item(Material.PAPER, "Now Playing", paperLore, playing));
+        // The paper is a live-playing indicator only. Paused sessions deliberately
+        // look idle here; their full state and metadata remain available in the book.
+        List<String> paperLore = playing
+                ? List.of(ChatColor.WHITE + clean(track.title()),
+                        gray(time(session.elapsedMs()) + " / " + time(track.durationMs())))
+                : List.of(gray("No songs playing."));
+        setItemIfChanged(holder.inventory, PAPER_SLOT, item(Material.PAPER, "Now Playing", paperLore, playing));
 
         setControlItem(holder.inventory, PAUSE_SLOT, Material.RED_BANNER, "Pause playback",
                 hasTrack && !paused && !session.resumePreparing(), canControl,
@@ -131,7 +137,7 @@ public final class MusicGui implements Listener {
         List<String> infoLore = new ArrayList<>();
         infoLore.add(gray(hasTrack ? "View metadata, TrackID and pack details." : "No active track information."));
         infoLore.add(gray("Available to all viewers."));
-        holder.inventory.setItem(INFO_SLOT, item(Material.WRITABLE_BOOK, "Song information", infoLore, false));
+        setItemIfChanged(holder.inventory, INFO_SLOT, item(Material.WRITABLE_BOOK, "Song information", infoLore, false));
 
         boolean discordConfigured = plugin.getConfig().getBoolean("discord.enabled", false);
         boolean discordEnabled = hasTrack && playback.effectiveDiscordBroadcast(session);
@@ -146,7 +152,7 @@ public final class MusicGui implements Listener {
             discordLore.add(gray("Next track: ") + ChatColor.WHITE + "Follows server default.");
             discordLore.add(gray("Click to toggle Discord voice broadcast for this track."));
         }
-        holder.inventory.setItem(DISCORD_SLOT, item(Material.DROPPER, "Discord broadcast", discordLore, discordEnabled));
+        setItemIfChanged(holder.inventory, DISCORD_SLOT, item(Material.DROPPER, "Discord broadcast", discordLore, discordEnabled));
 
         List<String> broadcastLore = new ArrayList<>();
         boolean globallyBroadcast = hasTrack && session.isServerWideGlobalSession();
@@ -159,7 +165,7 @@ public final class MusicGui implements Listener {
             broadcastLore.add(gray("The original audience returns on the next track."));
             broadcastLore.add(gray("Loaded packs are reused; no forced pack reload."));
         }
-        holder.inventory.setItem(BROADCAST_SLOT,
+        setItemIfChanged(holder.inventory, BROADCAST_SLOT,
                 item(Material.BEACON, "Broadcast to entire server", broadcastLore, globallyBroadcast));
     }
 
@@ -170,7 +176,7 @@ public final class MusicGui implements Listener {
         lore.add(status.startsWith("Permission:") ? red(status) : gray(status));
         if (available && permitted) lore.add(green("Click to apply."));
         else if (available) lore.add(red("You cannot control this session."));
-        inventory.setItem(slot, item(material, name, lore, false));
+        setItemIfChanged(inventory, slot, item(material, name, lore, false));
     }
 
     private void renderInfo(GuiHolder holder) {
@@ -178,60 +184,117 @@ public final class MusicGui implements Listener {
         PlaybackSession session = holder.sessionId == null ? null
                 : playback.findSession(holder.sessionId).orElse(null);
         MusicTrack track = session == null ? null : session.current();
+        holder.renderedTrackId = track == null ? null : track.id();
+        holder.metadataRetryRequired = false;
+        holder.metadataRetryAtMillis = 0L;
+
         if (track == null) {
-            holder.inventory.setItem(22, item(Material.WRITABLE_BOOK, "Song information",
-                    List.of(gray("No songs playing.")), false));
+            setItemIfChanged(holder.inventory, 22, item(Material.PAPER, "No song information",
+                    List.of(gray("No songs playing in this session.")), false));
         } else {
-            List<String> lore = new ArrayList<>();
-            add(lore, "Title", track.title());
-            add(lore, "Artist", blankAsUnknown(track.artist()));
-            add(lore, "TrackID", shortTrackId(track));
-            add(lore, "Internal ID", track.id());
-            boolean temporary = false;
+            String shortId = track.id();
+            String storage = "Not available";
+            String youtubeId = "Not available";
             try {
-                temporary = repository.isTemporaryTrack(track.id());
+                shortId = repository.getTrackCode(track.id()).orElse(track.id());
+                boolean temporary = repository.isTemporaryTrack(track.id());
+                storage = temporary ? green("Temporary URL import") : green("Saved library track");
+                youtubeId = repository.getYouTubeVideoId(track.id()).orElse("Not available");
             } catch (SQLException error) {
-                plugin.getLogger().warning("Could not read temporary-track status for GUI: " + error.getMessage());
+                holder.metadataRetryRequired = true;
+                holder.metadataRetryAtMillis = System.currentTimeMillis() + 5_000L;
+                plugin.getLogger().log(Level.WARNING,
+                        "Could not load complete metadata for GUI track " + track.id()
+                                + "; the details page will retry automatically.", error);
             }
-            add(lore, "Storage", temporary ? "Temporary URL import" : "Saved library track");
-            add(lore, "Duration", time(track.durationMs()));
-            add(lore, "Audio format", track.isStreamed() ? "Streamed OGG" : "Segmented OGG");
-            add(lore, "Audio mode", session.isMono() ? "Mono" : "Stereo");
-            add(lore, "Namespace", track.namespace());
-            add(lore, "Pack file", track.packFileName());
-            add(lore, "SHA-1", track.sha1Hex());
-            add(lore, "Pack size", bytes(track.packSizeBytes()));
-            add(lore, "Segment length", track.segmentMs() + " ms");
-            add(lore, "Segment count", Integer.toString(track.segmentCount()));
-            add(lore, "Playback", session.paused() ? "Paused"
-                    : session.resumePreparing() ? "Preparing to resume"
-                    : session.clockStarted() ? "Playing" : "Waiting for listeners");
-            add(lore, "Position", time(session.elapsedMs()) + " / " + time(track.durationMs()));
-            add(lore, "Speed", String.format(java.util.Locale.ROOT, "%.2fx", session.speed()));
-            add(lore, "Executor", session.ownerName());
-            add(lore, "Executor UUID", session.owner() == null ? "Console / system" : session.owner().toString());
-            add(lore, "Session UUID", session.id().toString());
-            add(lore, "Audience", session.isServerWideGlobalSession() ? "Entire server (@a)"
-                    : session.zone().shape().name() + (session.zone().worldId() == null
-                    ? "" : " in " + session.zone().worldId()));
-            add(lore, "Discord broadcast", playback.effectiveDiscordBroadcast(session)
-                    ? "Enabled for current track" : "Disabled for current track");
-            try {
-                add(lore, "YouTube video ID", repository.getYouTubeVideoId(track.id()).orElse("Not available"));
-            } catch (SQLException error) {
-                add(lore, "YouTube video ID", "Not available");
-            }
-            holder.inventory.setItem(22, item(Material.WRITABLE_BOOK, "Track metadata and playback details", lore, false));
+
+            detailCard(holder.inventory, 10, "Track title", track.title());
+            detailCard(holder.inventory, 11, "Artist / uploader", blankAsUnknown(track.artist()));
+            detailCard(holder.inventory, 12, "TrackID", shortId);
+            detailCard(holder.inventory, 13, "Internal track ID", track.id());
+            detailCard(holder.inventory, 14, "Storage", storage);
+            detailCard(holder.inventory, 15, "Duration", time(track.durationMs()));
+            detailCard(holder.inventory, 16, "Audio mode", session.isMono() ? "Mono" : "Stereo");
+            detailCard(holder.inventory, 19, "Audio format", track.isStreamed() ? "Streamed OGG" : "Segmented OGG");
+            detailCard(holder.inventory, 20, "Sound namespace", track.namespace());
+            detailCard(holder.inventory, 21, "Pack file", track.packFileName());
+            detailCard(holder.inventory, 22, "Pack SHA-1", track.sha1Hex());
+            detailCard(holder.inventory, 23, "Pack size", bytes(track.packSizeBytes()));
+            detailCard(holder.inventory, 24, "Segment length", track.segmentMs() + " ms");
+            detailCard(holder.inventory, 25, "Segment count", Integer.toString(track.segmentCount()));
+            detailCard(holder.inventory, 37, "YouTube video ID", youtubeId);
         }
-        holder.inventory.setItem(BACK_SLOT, item(Material.ARROW, "Back to player", List.of(gray("Return to playback controls.")), false));
+        refreshInfoDynamic(holder, session);
+        setItemIfChanged(holder.inventory, BACK_SLOT,
+                item(Material.ARROW, "Back to playback controls",
+                        List.of(gray("Return to the music controls.")), false));
+    }
+
+    private void refreshInfoDynamic(GuiHolder holder, PlaybackSession session) {
+        if (session == null || session.current() == null) {
+            detailCard(holder.inventory, 28, "Playback state", red("No songs playing"));
+            detailCard(holder.inventory, 29, "Position", "Not available");
+            detailCard(holder.inventory, 30, "Speed", "Not available");
+            detailCard(holder.inventory, 31, "Executor", "Not available");
+            detailCard(holder.inventory, 32, "Executor UUID", "Not available");
+            detailCard(holder.inventory, 33, "Session UUID", "Not available");
+            detailCard(holder.inventory, 34, "Audience", "Not available");
+            detailCard(holder.inventory, 35, "Discord broadcast", "Not available");
+            return;
+        }
+        String state = session.paused() ? "Paused"
+                : session.resumePreparing() ? "Preparing to resume"
+                : session.clockStarted() ? "Playing" : "Waiting for listeners";
+        detailCard(holder.inventory, 28, "Playback state", state);
+        detailCard(holder.inventory, 29, "Position",
+                time(session.elapsedMs()) + " / " + time(session.current().durationMs()));
+        detailCard(holder.inventory, 30, "Playback speed",
+                String.format(java.util.Locale.ROOT, "%.2fx", session.speed()));
+        detailCard(holder.inventory, 31, "Executor", session.ownerName());
+        detailCard(holder.inventory, 32, "Executor UUID",
+                session.owner() == null ? "Console / system" : session.owner().toString());
+        detailCard(holder.inventory, 33, "Playback session ID", session.id().toString());
+        detailCard(holder.inventory, 34, "Audience", session.isServerWideGlobalSession()
+                ? "Entire server (@a)"
+                : session.zone().shape().name() + (session.zone().worldId() == null
+                ? "" : " in world " + session.zone().worldId()));
+        detailCard(holder.inventory, 35, "Discord broadcast",
+                playback.effectiveDiscordBroadcast(session) ? green("Enabled") : red("Disabled"));
+    }
+
+    private void detailCard(Inventory inventory, int slot, String label, String value) {
+        String safeValue = value == null || value.isBlank() ? "Not available" : value;
+        setItemIfChanged(inventory, slot, item(Material.PAPER, label,
+                List.of(safeValue), false));
     }
 
     private void refreshOpenInventories() {
         for (Player player : Bukkit.getOnlinePlayers()) {
-            Inventory top = player.getOpenInventory().getTopInventory();
-            if (!(top.getHolder() instanceof GuiHolder holder)) continue;
-            holder.viewerId = player.getUniqueId();
-            if (!holder.details) renderMain(holder);
+            try {
+                Inventory top = player.getOpenInventory().getTopInventory();
+                if (!(top.getHolder() instanceof GuiHolder holder)) continue;
+                holder.viewerId = player.getUniqueId();
+                if (!holder.details) {
+                    renderMain(holder);
+                } else {
+                    PlaybackSession session = holder.sessionId == null ? null
+                            : playback.findSession(holder.sessionId).orElse(null);
+                    String currentTrackId = session == null || session.current() == null
+                            ? null : session.current().id();
+                    if (!java.util.Objects.equals(holder.renderedTrackId, currentTrackId)
+                            || holder.metadataRetryRequired
+                            && System.currentTimeMillis() >= holder.metadataRetryAtMillis) {
+                        renderInfo(holder);
+                    } else {
+                        refreshInfoDynamic(holder, session);
+                    }
+                }
+            } catch (RuntimeException error) {
+                // A single unexpected inventory/metadata failure must not cancel
+                // the repeating task and leave every open Musicolide GUI stale.
+                plugin.getLogger().log(Level.WARNING,
+                        "Could not refresh Musicolide GUI for " + player.getName() + ".", error);
+            }
         }
     }
 
@@ -241,31 +304,35 @@ public final class MusicGui implements Listener {
         if (!(top.getHolder() instanceof GuiHolder holder)) return;
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player) || event.getClickedInventory() != top) return;
-        holder.viewerId = player.getUniqueId();
-        int slot = event.getRawSlot();
-        if (holder.details) {
-            if (slot == BACK_SLOT) {
-                holder.details = false;
-                renderMain(holder);
+        try {
+            holder.viewerId = player.getUniqueId();
+            int slot = event.getRawSlot();
+            if (holder.details) {
+                if (slot == BACK_SLOT) openMain(player, holder.sessionId);
+                return;
             }
-            return;
+            PlaybackSession session = holder.sessionId == null ? null
+                    : playback.findSession(holder.sessionId).orElse(null);
+            if (slot == INFO_SLOT) {
+                openInfo(player, holder);
+                return;
+            } else if (session != null && slot == PAUSE_SLOT) {
+                commands.guiControl(player, session.id(), "pause");
+            } else if (session != null && slot == RESUME_SLOT) {
+                commands.guiControl(player, session.id(), "resume");
+            } else if (session != null && slot == STOP_SLOT) {
+                commands.guiControl(player, session.id(), "stop");
+            } else if (session != null && slot == DISCORD_SLOT) {
+                commands.guiToggleDiscord(player, session.id());
+            } else if (session != null && slot == BROADCAST_SLOT) {
+                commands.guiBroadcast(player, session.id());
+            }
+            renderMain(holder);
+        } catch (RuntimeException error) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not process Musicolide GUI interaction from " + player.getName() + ".", error);
+            player.sendMessage(ChatColor.RED + "Musicolide could not update this menu. Try reopening /music gui.");
         }
-        PlaybackSession session = holder.sessionId == null ? null
-                : playback.findSession(holder.sessionId).orElse(null);
-        if (slot == INFO_SLOT) {
-            openInfo(player, holder);
-        } else if (session != null && slot == PAUSE_SLOT) {
-            commands.guiControl(player, session.id(), "pause");
-        } else if (session != null && slot == RESUME_SLOT) {
-            commands.guiControl(player, session.id(), "resume");
-        } else if (session != null && slot == STOP_SLOT) {
-            commands.guiControl(player, session.id(), "stop");
-        } else if (session != null && slot == DISCORD_SLOT) {
-            commands.guiToggleDiscord(player, session.id());
-        } else if (session != null && slot == BROADCAST_SLOT) {
-            commands.guiBroadcast(player, session.id());
-        }
-        renderMain(holder);
     }
 
     @EventHandler
@@ -273,11 +340,18 @@ public final class MusicGui implements Listener {
         if (event.getView().getTopInventory().getHolder() instanceof GuiHolder) event.setCancelled(true);
     }
 
+    private void setItemIfChanged(Inventory inventory, int slot, ItemStack item) {
+        ItemStack current = inventory.getItem(slot);
+        if (current == null ? item != null : item == null || !current.equals(item)) {
+            inventory.setItem(slot, item);
+        }
+    }
+
     private void fill(Inventory inventory) {
         ItemStack filler = item(Material.GRAY_STAINED_GLASS_PANE, " ", List.of(), false);
         ItemStack border = item(Material.PURPLE_STAINED_GLASS_PANE, " ", List.of(), false);
         for (int slot = 0; slot < SIZE; slot++) {
-            inventory.setItem(slot, slot < 9 || slot >= 45 ? border : filler);
+            setItemIfChanged(inventory, slot, slot < 9 || slot >= 45 ? border : filler);
         }
     }
 
@@ -323,6 +397,9 @@ public final class MusicGui implements Listener {
         private final UUID sessionId;
         private boolean details;
         private UUID viewerId;
+        private String renderedTrackId;
+        private boolean metadataRetryRequired;
+        private long metadataRetryAtMillis;
         private Inventory inventory;
 
         private GuiHolder(UUID sessionId, boolean details) {

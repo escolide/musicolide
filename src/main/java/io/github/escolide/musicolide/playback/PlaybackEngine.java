@@ -716,7 +716,7 @@ public final class PlaybackEngine {
         return !isIgnoredBedrockPlayer(player) && packs.requestLibrary(player, true);
     }
 
-    public enum SpeedChangeResult { NO_SESSION, DEFAULT_SET, APPLIED_NOW, NEXT_TRACK }
+    public enum SpeedChangeResult { NO_SESSION, UNCHANGED, DEFAULT_SET, APPLIED_NOW, NEXT_TRACK }
 
     /** Set the session rate and remember it for the player's future sessions. */
     public SpeedChangeResult setPlaybackSpeed(UUID actor, boolean admin, double speed) {
@@ -724,9 +724,12 @@ public final class PlaybackEngine {
             throw new IllegalArgumentException("Playback speed must be between 0.5x and 2.0x.");
         }
         if (actor == null) return SpeedChangeResult.NO_SESSION;
-        speedDefaults.put(actor, speed);
         PlaybackSession session = findControllable(actor, admin);
-        if (session == null) return SpeedChangeResult.DEFAULT_SET;
+        boolean defaultChanged = Double.compare(speedDefaults.getOrDefault(actor, 1.0), speed) != 0;
+        boolean sessionAlreadyMatches = session == null || session.speedIsCurrentOrPending(speed);
+        if (!defaultChanged && sessionAlreadyMatches) return SpeedChangeResult.UNCHANGED;
+        if (defaultChanged) speedDefaults.put(actor, speed);
+        if (session == null || sessionAlreadyMatches) return SpeedChangeResult.DEFAULT_SET;
         return session.setSpeed(speed) ? SpeedChangeResult.APPLIED_NOW : SpeedChangeResult.NEXT_TRACK;
     }
 

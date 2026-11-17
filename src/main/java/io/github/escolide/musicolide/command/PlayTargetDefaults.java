@@ -8,6 +8,10 @@ package io.github.escolide.musicolide.command;
 public final class PlayTargetDefaults {
     private PlayTargetDefaults() {}
 
+    public static boolean isExplicitCenterOption(String option) {
+        return option != null && option.equalsIgnoreCase("--center");
+    }
+
     public static String defaultSelector(boolean playerSender, boolean spatialOption) {
         if (!playerSender) {
             throw new IllegalArgumentException(
