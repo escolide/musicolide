@@ -504,4 +504,22 @@ class PlaybackSessionTest {
         assertFalse(personal.matchesPlaybackAudienceAndZone(true, List.of(), MusicZone.global()));
     }
 
+    @Test
+    void overlapSuspensionMarkerIsConsumedOnceAndClearedOnAdvance() {
+        PlaybackSession session = new PlaybackSession(UUID.randomUUID(), "tester",
+                MusicZone.global(), false, List.of(UUID.randomUUID()),
+                List.of(sampleTrack("overlap-marker-first"), sampleTrack("overlap-marker-second")), 0);
+        session.startClockIfNeeded();
+        session.suspendClockForOverlap();
+
+        assertTrue(session.consumeOverlapSuspended());
+        assertFalse(session.consumeOverlapSuspended(),
+                "The resumed session must not repeatedly force timeline catch-up.");
+
+        session.startClockIfNeeded();
+        session.advance();
+        assertFalse(session.consumeOverlapSuspended(),
+                "Advancing to the next track clears any previous overlap marker.");
+    }
+
 }
