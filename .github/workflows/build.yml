@@ -14,13 +14,13 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Keep the newest development JAR
+      - name: Remove all previous development JAR artifacts
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const keepCount = 1;
+            const keepCount = 0;
 
             const artifacts = await github.paginate(
               github.rest.actions.listArtifactsForRepo,
@@ -63,6 +63,7 @@ jobs:
       - name: Run tests and build size-limited Java 21 development plugin
         run: bash ./gradlew --no-daemon clean test build
       - name: Upload development build (best effort; tests do not depend on artifact storage)
+        id: upload_development_build
         uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
@@ -70,6 +71,10 @@ jobs:
           path: build/libs/musicolide-*.jar
           if-no-files-found: error
           retention-days: 3
+      - name: Report when the JAR was not uploaded
+        if: steps.upload_development_build.outcome == 'failure'
+        run: |
+          echo "::warning title=Development JAR not uploaded::The Java build succeeded, but GitHub Actions rejected the JAR upload. Check repository and account artifact storage usage; GitHub may take 6–12 hours to recalculate usage after deletions."
 
   native-runtime-smoke:
     name: Real Linux x86_64 native-tool smoke test
