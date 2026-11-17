@@ -9,12 +9,12 @@ on:
 jobs:
   cleanup-old-artifacts:
     name: Clean up old development JAR artifacts
-    if: always() && github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       actions: write
     steps:
-      - name: Keep the two newest development JARs
+      - name: Keep the newest development JAR
         uses: actions/github-script@v7
         with:
           script: |
@@ -51,7 +51,7 @@ jobs:
 
   build:
     needs: cleanup-old-artifacts
-    if: always()
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
