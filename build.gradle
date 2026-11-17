@@ -43,6 +43,8 @@ dependencies {
     implementation 'org.apache.commons:commons-compress:1.28.0'
     implementation 'org.tukaani:xz:1.10'
     implementation 'com.google.code.gson:gson:2.15.0'
+    // Official bStats Bukkit metrics implementation, shaded and relocated below.
+    implementation 'org.bstats:bstats-bukkit:3.2.1'
     // Compile the optional Discord broadcaster without placing its runtime on
     // Musicolide's primary classpath. DiscordRuntimeBundle loads it separately.
     compileOnly 'net.dv8tion:JDA:6.7.0'
@@ -177,6 +179,8 @@ tasks.named('shadowJar', ShadowJar) {
         into 'META-INF/musicolide'
         rename { 'discord-runtime.zip' }
     }
+    // Avoid package collisions with other plugins that also embed bStats.
+    relocate 'org.bstats', 'io.github.escolide.musicolide.libs.bstats'
     mergeServiceFiles()
 }
 
