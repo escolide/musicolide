@@ -2509,7 +2509,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&7Example: /play lo-fi radio circle:60 fade10 mode:mono"));
         sender.sendMessage(msg("&7Stereo is default. fadeN requires mode:mono; mono circle/square zones use configured fade unless overridden."));
         sender.sendMessage(msg("&7Admins using a zone default to @a; ordinary players default to @s when self-zones are enabled."));
-        sender.sendMessage(msg("&7The --center option is mono-only and opt-in; by default each listener uses their own playback-start position."));
+        sender.sendMessage(msg("&7The --center option is mono-only and opt-in; by default mono follows each listener as they move."));
         sender.sendMessage(msg("&dADMIN &8| &7Server configuration and diagnostics"));
         sender.sendMessage(msg("&f/music diagnostics &8• &f/music download &8• &f/music reload"));
         sender.sendMessage(msg("&f/music disable &8• &fenable &8• &funload &8- &7manage your own music packs"));
