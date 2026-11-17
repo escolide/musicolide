@@ -30,7 +30,7 @@ public final class PlaybackSession {
     private long timelineGeneration;
     private boolean clockStarted;
     private boolean repeat;
-    private int queuePendingCount;
+    private boolean queuePending;
     private boolean urlPlaylist;
     private boolean playlistPerTrackDelivery;
     private int priority;
@@ -108,11 +108,8 @@ public final class PlaybackSession {
     /** Original catalogue track or the temporary OGG tail currently being played. */
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
     public synchronized boolean paused() { return paused; }
-    public synchronized boolean queuePending() { return queuePendingCount > 0; }
-    /** Compatibility setter for tests and legacy callers; concurrent producers should use the counter methods. */
-    public synchronized void queuePending(boolean pending) { queuePendingCount = pending ? 1 : 0; }
-    public synchronized void addQueuePending() { queuePendingCount++; }
-    public synchronized void removeQueuePending() { queuePendingCount = Math.max(0, queuePendingCount - 1); }
+    public synchronized boolean queuePending() { return queuePending; }
+    public synchronized void queuePending(boolean pending) { queuePending = pending; }
     /** Marks a yt-dlp URL playlist and its session-scoped Java pack delivery override. */
     public synchronized void configureUrlPlaylist(boolean perTrackDelivery) {
         urlPlaylist = true;
@@ -155,7 +152,7 @@ public final class PlaybackSession {
     }
 
     public void repeat(boolean repeat) { this.repeat = repeat; }
-    public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending(); }
+    public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending; }
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
