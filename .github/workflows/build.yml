@@ -7,29 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: gradle
-      - name: Run tests and build size-limited Java 21 development plugin
-        run: bash ./gradlew --no-daemon clean test build
-      - name: Upload development build (best effort; tests do not depend on artifact storage)
-        uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: musicolide-development-build
-          path: build/libs/musicolide-*.jar
-          if-no-files-found: error
-          retention-days: 3
-
   cleanup-old-artifacts:
     name: Clean up old development JAR artifacts
-    needs: build
     if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -41,7 +20,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const keepCount = 2;
+            const keepCount = 1;
 
             const artifacts = await github.paginate(
               github.rest.actions.listArtifactsForRepo,
@@ -68,6 +47,29 @@ jobs:
             }
 
             core.info(`Found ${developmentBuilds.length} non-expired development artifacts; kept the newest ${Math.min(keepCount, developmentBuilds.length)} and deleted ${staleArtifacts.length} older artifact(s).`);
+
+
+  build:
+    needs: cleanup-old-artifacts
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: Run tests and build size-limited Java 21 development plugin
+        run: bash ./gradlew --no-daemon clean test build
+      - name: Upload development build (best effort; tests do not depend on artifact storage)
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: musicolide-development-build
+          path: build/libs/musicolide-*.jar
+          if-no-files-found: error
+          retention-days: 3
 
   native-runtime-smoke:
     name: Real Linux x86_64 native-tool smoke test
