@@ -80,6 +80,10 @@ audio:
   sample-rate: 44100
   # Used only when audio.playback-mode is 'segmented'.
   segment-duration-ms: 1000
+  mono:
+    # Mono fade gain is sampled again at each segment boundary.
+    # Shorter segments make fades more responsive but add small OGG assets to each track pack.
+    fade-segment-duration-ms: 500
   # Selects the encoder quality used for new imports. Existing tracks are not re-encoded.
   # balanced: a good balance between audio quality and file size.
   # compact: smaller packs and downloads, with a more noticeable quality trade-off.

@@ -137,6 +137,24 @@ class PlaybackSessionTest {
                 10000, 1000, 10, 1000);
         assertEquals("mc_mode_segmented:s_00007", segmented.soundKey(7));
         assertEquals("mc_mode_segmented:m_00007", segmented.soundKey(7, true));
+
+        MusicTrack fadeSegmentedMono = new MusicTrack("mode-fade-segmented", "Fade segmented", "",
+                "ms_mode_fade_segmented", "mode-fade-segmented.zip",
+                "0000000000000000000000000000000000000000", 60000, 500, 120, 2000);
+        assertTrue(fadeSegmentedMono.isStreamed(), "The stereo and Discord assets remain streamed.");
+        assertTrue(fadeSegmentedMono.isStreamed(false));
+        assertFalse(fadeSegmentedMono.isStreamed(true),
+                "Mono Minecraft playback must use short segments to refresh fade gain.");
+        assertEquals(1, fadeSegmentedMono.segmentCount(false));
+        assertEquals(120, fadeSegmentedMono.segmentCount(true));
+        assertEquals("ms_mode_fade_segmented:music", fadeSegmentedMono.soundKey(7, false));
+        assertEquals("ms_mode_fade_segmented:m_00007", fadeSegmentedMono.soundKey(7, true));
+
+        PlaybackSession monoSegmentSession = new PlaybackSession(UUID.randomUUID(), "mono-segment-tester",
+                zone, false, List.of(listener), List.of(fadeSegmentedMono), 0, true);
+        monoSegmentSession.seek(2500);
+        assertEquals(5, monoSegmentSession.segmentIndex(),
+                "Mono seeking should select the matching short segment without regenerating the streamed tail.");
     }
 
     @Test

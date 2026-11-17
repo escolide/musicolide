@@ -35,6 +35,31 @@ public record MusicTrack(
         return namespace != null && (namespace.startsWith("ms_") || namespace.startsWith("mr_"));
     }
 
+    /**
+     * True when a streamed track also contains short mono-only assets for
+     * listener-specific fade updates. The full mono stream remains in the pack
+     * for Discord and clients that do not use segmented mono playback.
+     */
+    public boolean hasMonoSegments() {
+        return isStreamed() && segmentCount > 1 && segmentMs > 0 && segmentMs < durationMs;
+    }
+
+    /** Whether the selected channel layout is delivered as one client stream. */
+    public boolean isStreamed(boolean mono) {
+        return isStreamed() && !(mono && hasMonoSegments());
+    }
+
+    public int segmentCount(boolean mono) {
+        return isStreamed(mono) ? 1 : Math.max(1, segmentCount);
+    }
+
+    public int segmentMs(boolean mono) {
+        if (isStreamed(mono)) {
+            return (int) Math.max(1L, Math.min(Integer.MAX_VALUE, durationMs));
+        }
+        return Math.max(1, segmentMs);
+    }
+
     /** Backwards-compatible default: stereo audio. */
     public String soundKey(int segmentIndex) {
         return soundKey(segmentIndex, false);
@@ -42,12 +67,22 @@ public record MusicTrack(
 
     /** Returns the selected channel layout's sound event. */
     public String soundKey(int segmentIndex, boolean mono) {
-        if (isStreamed()) return namespace + (mono ? ":mono" : ":music");
+        if (isStreamed()) {
+            if (mono && hasMonoSegments()) {
+                return namespace + ":m_" + String.format("%05d", segmentIndex);
+            }
+            return namespace + (mono ? ":mono" : ":music");
+        }
         return namespace + ":" + (mono ? "m_" : "s_") + String.format("%05d", segmentIndex);
     }
 
     public long segmentDurationMs(int segmentIndex) {
-        long start = (long) segmentIndex * segmentMs;
-        return Math.max(0L, Math.min(segmentMs, durationMs - start));
+        return segmentDurationMs(segmentIndex, false);
+    }
+
+    public long segmentDurationMs(int segmentIndex, boolean mono) {
+        int selectedSegmentMs = segmentMs(mono);
+        long start = (long) segmentIndex * selectedSegmentMs;
+        return Math.max(0L, Math.min(selectedSegmentMs, durationMs - start));
     }
 }
