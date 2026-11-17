@@ -7,6 +7,8 @@ import java.lang.reflect.Method;
 
 /** Optional WorldGuard adapter loaded reflectively so the plugin still starts without WorldGuard. */
 public final class WorldGuardBridge {
+    static final String BUKKIT_ADAPTER_CLASS = "com.sk89q.worldedit.bukkit.BukkitAdapter";
+
     private final JavaPlugin plugin;
     private final Method adapt;
     private final Method getRegions;
@@ -16,7 +18,7 @@ public final class WorldGuardBridge {
 
     public WorldGuardBridge(JavaPlugin plugin) throws ReflectiveOperationException {
         this.plugin = plugin;
-        Class<?> adapter = Class.forName("com.sk89q.worldguard.bukkit.BukkitAdapter");
+        Class<?> adapter = Class.forName(BUKKIT_ADAPTER_CLASS);
         this.adapt = adapter.getMethod("adapt", Location.class);
         Class<?> regionQuery = Class.forName("com.sk89q.worldguard.protection.regions.RegionQuery");
         this.getRegions = regionQuery.getMethod("getApplicableRegions",
