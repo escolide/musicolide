@@ -14,6 +14,7 @@ public final class PlaybackSession {
     private final Set<UUID> explicitListeners;
     private volatile boolean allPlayers;
     private final boolean monoAudio;
+    private final PlaybackAudiencePolicy.TargetScope targetScope;
     private final Deque<MusicTrack> queue = new ArrayDeque<>();
     private final List<MusicTrack> repeatSource;
     private MusicTrack current;
@@ -29,7 +30,7 @@ public final class PlaybackSession {
     private long timelineGeneration;
     private boolean clockStarted;
     private boolean repeat;
-    private boolean queuePending;
+    private int queuePendingCount;
     private boolean urlPlaylist;
     private boolean playlistPerTrackDelivery;
     private int priority;
@@ -50,12 +51,25 @@ public final class PlaybackSession {
     public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
                            Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority,
                            boolean monoAudio) {
+        this(owner, ownerName, zone, allPlayers, listeners, tracks, priority, monoAudio,
+                zone != null && zone.shape() != MusicZone.Shape.GLOBAL
+                        ? PlaybackAudiencePolicy.TargetScope.ZONE
+                        : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                        : PlaybackAudiencePolicy.TargetScope.TARGETED);
+    }
+
+    public PlaybackSession(UUID owner, String ownerName, MusicZone zone, boolean allPlayers,
+                           Collection<UUID> listeners, Collection<MusicTrack> tracks, int priority,
+                           boolean monoAudio, PlaybackAudiencePolicy.TargetScope targetScope) {
         this.owner = owner;
         this.ownerName = ownerName;
-        this.zone = zone;
+        this.zone = Objects.requireNonNull(zone, "zone");
         this.allPlayers = allPlayers;
         this.monoAudio = monoAudio;
-        this.explicitListeners = new HashSet<>(listeners);
+        this.targetScope = targetScope == null
+                ? (allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                : PlaybackAudiencePolicy.TargetScope.TARGETED) : targetScope;
+        this.explicitListeners = new HashSet<>(listeners == null ? List.of() : listeners);
         this.queue.addAll(tracks);
         this.repeatSource = List.copyOf(tracks);
         this.startedAt = System.currentTimeMillis();
@@ -94,8 +108,11 @@ public final class PlaybackSession {
     /** Original catalogue track or the temporary OGG tail currently being played. */
     public synchronized MusicTrack playbackTrack() { return playbackTrack == null ? current : playbackTrack; }
     public synchronized boolean paused() { return paused; }
-    public synchronized boolean queuePending() { return queuePending; }
-    public synchronized void queuePending(boolean pending) { queuePending = pending; }
+    public synchronized boolean queuePending() { return queuePendingCount > 0; }
+    /** Compatibility setter for tests and legacy callers; concurrent producers should use the counter methods. */
+    public synchronized void queuePending(boolean pending) { queuePendingCount = pending ? 1 : 0; }
+    public synchronized void addQueuePending() { queuePendingCount++; }
+    public synchronized void removeQueuePending() { queuePendingCount = Math.max(0, queuePendingCount - 1); }
     /** Marks a yt-dlp URL playlist and its session-scoped Java pack delivery override. */
     public synchronized void configureUrlPlaylist(boolean perTrackDelivery) {
         urlPlaylist = true;
@@ -138,14 +155,16 @@ public final class PlaybackSession {
     }
 
     public void repeat(boolean repeat) { this.repeat = repeat; }
-    public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending; }
+    public synchronized boolean isEmpty() { return current == null && queue.isEmpty() && !queuePending(); }
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
     public synchronized boolean allPlayers() { return allPlayers; }
+    public synchronized PlaybackAudiencePolicy.TargetScope targetScope() {
+        return serverWidePromotion ? PlaybackAudiencePolicy.TargetScope.PUBLIC : targetScope;
+    }
     public synchronized boolean isPersonalTarget(UUID player) {
-        return !allPlayers && player != null && explicitListeners.size() == 1
-                && explicitListeners.contains(player);
+        return PlaybackAudiencePolicy.isPersonalTarget(targetScope, allPlayers, explicitListeners, player);
     }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
 
