@@ -221,7 +221,8 @@ playback:
     distance: 10
   mono:
     # Default extra attenuation band for mono circle/square play zones (blocks).
-    # Override per request with fade10; fade0 disables it.
+    # Override per request with fade10 mode:mono; fade0 mode:mono disables it.
+    # Explicit fade options are rejected unless mode:mono is also supplied.
     # WorldGuard polygon regions do not currently support edge-distance fading.
     fade-distance: 10
   synchronization:
