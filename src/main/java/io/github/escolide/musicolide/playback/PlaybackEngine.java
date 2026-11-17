@@ -1886,15 +1886,9 @@ public final class PlaybackEngine {
             if (!session.targets(player.getUniqueId()) || session.current() == null
                     || (!includePaused && (session.paused() || session.resumePreparing()))) continue;
 
-            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
-                if (!geyser.isBedrockPackAvailable()
-                        || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
-            } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
-                    || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
-                warnPackDeclined(player, session.current(), session.playbackTrack());
-                continue;
-            }
-
+            // Resolve actual zone membership before checking pack state. A player
+            // targeted by an @a zone but standing outside it is not an affected
+            // listener and should not receive zone-specific pack warnings.
             MusicZone zone = session.zone();
             if (zone.worldId() != null && !zone.worldId().equals(player.getWorld().getUID())) continue;
             MusicZone.AudioMode mode;
@@ -1906,6 +1900,15 @@ public final class PlaybackEngine {
             }
             if (mode == MusicZone.AudioMode.NONE
                     || playbackVolume(player, session, mode == MusicZone.AudioMode.FADE) <= 0) continue;
+
+            if (geyser != null && geyser.isBedrockPlayer(player.getUniqueId())) {
+                if (!geyser.isBedrockPackAvailable()
+                        || !geyser.hasCurrentPackFor(player.getUniqueId())) continue;
+            } else if (packs.isBaseDeclined(player, perTrackDelivery(session))
+                    || packs.isDeclined(player, session.playbackTrack(), perTrackDelivery(session))) {
+                warnPackDeclined(player, session.current(), session.playbackTrack());
+                continue;
+            }
             candidates.add(new Candidate(session, mode));
         }
         return candidates;
