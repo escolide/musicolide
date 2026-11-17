@@ -1163,7 +1163,13 @@ public final class PlaybackEngine {
             List<String> otherIds = competing.stream().map(UUID::toString).sorted().toList();
             String signature = winner.session.id() + "|" + String.join(",", otherIds);
             String previous = overlapNoticeState.put(playerId, signature);
-            if (!signature.equals(previous)
+            boolean alreadyWarnedAsZoneOwner = plugin.getConfig().getBoolean(
+                    "playback.overlap.warn-session-owner", true)
+                    && suppressed.keySet().stream().anyMatch(session ->
+                            session.owner() != null && session.owner().equals(playerId)
+                                    && session.zone().shape() != MusicZone.Shape.GLOBAL
+                                    && competing.contains(session.id()));
+            if (!alreadyWarnedAsZoneOwner && !signature.equals(previous)
                     && now - manualSelectionTimes.getOrDefault(playerId, 0L) >= 2000L) {
                 player.sendMessage(message("messages.competing-session"));
             }
