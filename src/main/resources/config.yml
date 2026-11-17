@@ -390,7 +390,7 @@ discord:
 # No metrics are sent until a valid plugin ID is configured.
 bstats:
   enabled: true
-  plugin-id: 0
+  plugin-id: 35412
   # Each chart can be disabled separately. Chart IDs must also be added to your
   # Musicolide page on bStats (Edit -> Add chart) to display custom charts.
   charts:
