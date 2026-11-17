@@ -129,10 +129,14 @@ public final class PlaybackEngine {
 
     public synchronized Optional<Boolean> activeSessionMono(UUID owner, String ownerName, MusicZone zone,
                                                             boolean allPlayers, Collection<UUID> listeners) {
-        return sessions.stream()
-                .filter(session -> owner == null
+        java.util.function.Predicate<PlaybackSession> sameOwner =
+                session -> owner == null
                         ? session.owner() == null && session.ownerName().equals(ownerName)
-                        : session.isOwner(owner))
+                        : session.isOwner(owner);
+        return sessions.stream()
+                .filter(session -> sameOwner.test(session)
+                        || (allPlayers && PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                                allPlayers, session.allPlayers(), zone, session.zone())))
                 .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
                 .max(Comparator.comparingLong(PlaybackSession::startedAt))
                 .map(PlaybackSession::isMono);
@@ -181,6 +185,13 @@ public final class PlaybackEngine {
 
     public synchronized Optional<PlaybackSession> findOwned(UUID owner) {
         return sessions.stream().filter(s -> s.isOwner(owner)).max(Comparator.comparingLong(PlaybackSession::startedAt));
+    }
+
+    public synchronized Optional<PlaybackSession> findOwnedMatching(UUID owner, boolean allPlayers,
+                                                                    Collection<UUID> listeners, MusicZone zone) {
+        return sessions.stream().filter(session -> session.isOwner(owner))
+                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
+                .max(Comparator.comparingLong(PlaybackSession::startedAt));
     }
 
     public synchronized List<PlaybackSession> sessions() { return List.copyOf(sessions); }
@@ -966,7 +977,7 @@ public final class PlaybackEngine {
             }
         }
 
-        suspendSessionsWithoutWinningListeners(active, winners, suppressed);
+        suspendSessionsWithoutWinningListeners(winners, suppressed);
 
         // A previous catch-up attempt is valid only while this player remains a
         // winner for that same timeline. Clear it on zone exit or when overlap
@@ -1073,8 +1084,7 @@ public final class PlaybackEngine {
         updateDiscordBroadcastSnapshot(online, winners, active);
     }
 
-    private void suspendSessionsWithoutWinningListeners(Collection<PlaybackSession> active,
-                                                         Map<UUID, Candidate> winners,
+    private void suspendSessionsWithoutWinningListeners(Map<UUID, Candidate> winners,
                                                          Map<PlaybackSession, Set<UUID>> suppressed) {
         Set<PlaybackSession> audibleSessions = new HashSet<>();
         winners.values().forEach(candidate -> audibleSessions.add(candidate.session));
