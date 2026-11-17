@@ -142,6 +142,11 @@ public final class PlaybackSession {
     public int queueSize() { return queue.size(); }
     public List<MusicTrack> upcoming(int count) { return queue.stream().limit(Math.max(0, count)).toList(); }
     public synchronized boolean targets(UUID player) { return allPlayers || explicitListeners.contains(player); }
+    public synchronized boolean allPlayers() { return allPlayers; }
+    public synchronized boolean isPersonalTarget(UUID player) {
+        return !allPlayers && player != null && explicitListeners.size() == 1
+                && explicitListeners.contains(player);
+    }
     public boolean isOwner(UUID player) { return owner != null && owner.equals(player); }
 
     /** Checks whether a new /play request has the same audience and zone. */
