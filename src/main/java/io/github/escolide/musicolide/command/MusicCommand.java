@@ -123,6 +123,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 case "page" -> showNextSearchPage(sender, args);
                 case "play" -> play(sender, args);
                 case "confirm" -> confirm(sender);
+                case "switch" -> switchPlayback(sender);
+                case "force" -> forcePlayback(sender);
                 case "pause", "resume", "skip", "stop" -> control(sender, sub, args);
                 case "gui" -> openGui(sender, args);
                 case "queue" -> queue(sender, args);
@@ -1730,8 +1732,35 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 request.zone, request.all, request.listeners, track, request.priority, mono);
         String mode = mono ? " &7(mono)" : "";
         switch (disposition) {
-            case STARTED -> sender.sendMessage(msg("&aStarted &f" + track.title() + mode + "."));
-            case QUEUED -> sender.sendMessage(msg("&aAdded &f" + track.title() + mode + " &ato your current playback queue."));
+            case STARTED -> {
+                PlaybackSession waiting = null;
+                PlaybackSession current = null;
+                if (sender instanceof Player player
+                        && (request.all || request.listeners.contains(player.getUniqueId()))) {
+                    waiting = playback.findOwned(player.getUniqueId()).orElse(null);
+                    current = playback.sessionAffectingPlayer(player)
+                            .filter(session -> !session.paused() && !session.resumePreparing())
+                            .orElse(null);
+                }
+                if (waiting != null && current != null && !waiting.id().equals(current.id())) {
+                    if (request.all) {
+                        sender.sendMessage(msg("&aStarted &f" + track.title() + mode
+                                + "&a. Your current session remains selected; use &f/music switch"
+                                + " &ato hear the overlapping session."));
+                    } else {
+                        String activeScope = current.isServerWideGlobalSession() ? "public"
+                                : current.zone().shape() == io.github.escolide.musicolide.model.MusicZone.Shape.GLOBAL
+                                ? "personal" : "zone";
+                        sender.sendMessage(msg("&eYour " + activeScope + " session is already active. &f"
+                                + track.title() + " &ewill wait until it has an open slot. Use &f/music force"
+                                + " &eto play your personal session now, or &f/music switch &eto cycle sessions."));
+                    }
+                } else {
+                    sender.sendMessage(msg("&aStarted &f" + track.title() + mode + "."));
+                }
+            }
+            case QUEUED -> sender.sendMessage(msg("&aAdded &f" + track.title() + mode
+                    + " &ato the matching playback queue."));
             case QUEUE_FULL -> sender.sendMessage(msg("&cYour playback queue is full. The new track was not added."));
             case MODE_MISMATCH -> sender.sendMessage(msg("&cAn active session for this target and zone uses another audio mode. Stop it before switching modes."));
         }
@@ -2054,6 +2083,31 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 gui.open(player, playback.findSession(sessionId).orElse(null));
             }
         }
+    }
+
+    private void switchPlayback(CommandSender sender) {
+        if (!(sender instanceof Player player)) throw new IllegalArgumentException("Players only.");
+        Optional<PlaybackSession> selected = playback.switchPlayerSession(player);
+        if (selected.isEmpty()) {
+            sender.sendMessage(msg("&eNo other overlapping music sessions are available to switch to."));
+            return;
+        }
+        MusicTrack track = selected.get().current();
+        sender.sendMessage(msg("&aSwitched to &f" + (track == null ? "the selected session" : track.title())
+                + "&a. Run &f/music switch &ato cycle to the next available session."));
+    }
+
+    private void forcePlayback(CommandSender sender) {
+        if (!(sender instanceof Player player)) throw new IllegalArgumentException("Players only.");
+        Optional<PlaybackSession> selected = playback.forcePlayerSession(player);
+        if (selected.isEmpty()) {
+            sender.sendMessage(msg("&eYou do not have a waiting personal session to force. Start one with &f/play <song> @s&e."));
+            return;
+        }
+        MusicTrack track = selected.get().current();
+        sender.sendMessage(msg("&aYour personal session is now selected"
+                + (track == null ? "." : ": &f" + track.title() + "&a.")
+                + " Other players' music is unchanged. Use &f/music switch &ato return to another available session."));
     }
 
     private void queue(CommandSender sender, String[] args) throws SQLException {
@@ -2418,6 +2472,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(msg("&f/music skip &8• &fqueue &8- &7manage your current playback"));
         sender.sendMessage(msg("&f/music nowplaying &8• &fprogress &8• &fvolume <0-100> &8• &fspeed <0.5-2>"));
         sender.sendMessage(msg("&f/music mute &8• &funmute [player] &8• &f/deafen &8• &f/undeafen"));
+        sender.sendMessage(msg("&f/music switch &8- &7cycle between overlapping sessions for yourself"));
+        sender.sendMessage(msg("&f/music force &8- &7force your waiting personal session ahead of public/zone music"));
         sender.sendMessage(msg("&f/music speed <0.5-2> &8- &7sets a personal default when no session is active"));
         sender.sendMessage(msg("&dLIBRARY &8| &7Search and manage audio"));
         sender.sendMessage(msg("&f/music list [query] &8- &7browse tracks and their short TrackIDs"));
@@ -2491,7 +2547,7 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) return partial(List.of("help", "play", "pause", "resume", "skip", "stop", "gui", "queue",
                 "nowplaying", "progress", "volume", "speed", "mute", "unmute", "seek", "sync",
                 "list", "search", "select", "page", "save", "delete", "playlist", "import", "import-url",
-                "download", "clear", "disable", "enable", "unload", "discord",
+                "download", "clear", "disable", "enable", "unload", "discord", "switch", "force",
                 "link", "unlink", "diagnostics", "alias", "priority", "reload"), args[0]);
         if (args.length >= 3 && args[0].equalsIgnoreCase("play")) {
             String prefix = args[args.length - 1];
