@@ -101,9 +101,22 @@ public final class PlaybackEngine {
                                                        boolean allPlayers, Collection<UUID> listeners,
                                                        Collection<MusicTrack> tracks, int priority,
                                                        boolean mono) {
+        PlaybackAudiencePolicy.TargetScope scope = zone != null
+                && zone.shape() != MusicZone.Shape.GLOBAL
+                ? PlaybackAudiencePolicy.TargetScope.ZONE
+                : allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC
+                : PlaybackAudiencePolicy.TargetScope.TARGETED;
+        return startSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, mono, scope);
+    }
+
+    public synchronized PlaybackSession startSession(UUID owner, String ownerName, MusicZone zone,
+                                                       boolean allPlayers, Collection<UUID> listeners,
+                                                       Collection<MusicTrack> tracks, int priority,
+                                                       boolean mono, PlaybackAudiencePolicy.TargetScope targetScope) {
         int maximum = plugin.getConfig().getInt("limits.max-sessions", 20);
         if (sessions.size() >= maximum) throw new IllegalStateException("Maximum number of music sessions reached.");
-        PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners, tracks, priority, mono);
+        PlaybackSession session = new PlaybackSession(owner, ownerName, zone, allPlayers, listeners,
+                tracks, priority, mono, targetScope);
         if (owner != null) {
             Double defaultSpeed = speedDefaults.get(owner);
             if (defaultSpeed != null) session.setSpeed(defaultSpeed);
@@ -126,24 +139,17 @@ public final class PlaybackEngine {
         return playOrQueue(owner, ownerName, zone, allPlayers, listeners, track, priority, false);
     }
 
-    public synchronized Optional<Boolean> activeSessionMono(UUID owner, String ownerName, MusicZone zone,
-                                                            boolean allPlayers, Collection<UUID> listeners) {
-        java.util.function.Predicate<PlaybackSession> sameOwner =
-                session -> owner == null
-                        ? session.owner() == null && session.ownerName().equals(ownerName)
-                        : session.isOwner(owner);
-        return sessions.stream()
-                .filter(session -> sameOwner.test(session)
-                        || (allPlayers && PlaybackAudiencePolicy.sharesQueueAcrossOwners(
-                                allPlayers, session.allPlayers(), zone, session.zone())))
-                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
-                .max(Comparator.comparingLong(PlaybackSession::startedAt))
-                .map(PlaybackSession::isMono);
-    }
-
     public synchronized PlayDisposition playOrQueue(UUID owner, String ownerName, MusicZone zone,
                                                       boolean allPlayers, Collection<UUID> listeners,
                                                       MusicTrack track, int priority, boolean mono) {
+        return playOrQueueResult(owner, ownerName, zone, allPlayers, listeners, track, priority, mono,
+                defaultTargetScope(allPlayers, zone)).disposition();
+    }
+
+    public synchronized PlayResult playOrQueueResult(UUID owner, String ownerName, MusicZone zone,
+                                                      boolean allPlayers, Collection<UUID> listeners,
+                                                      MusicTrack track, int priority, boolean mono,
+                                                      PlaybackAudiencePolicy.TargetScope targetScope) {
         java.util.function.Predicate<PlaybackSession> sameRequest =
                 session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone);
         java.util.function.Predicate<PlaybackSession> sameOwner =
@@ -159,9 +165,8 @@ public final class PlaybackEngine {
                 .max(Comparator.comparingLong(PlaybackSession::startedAt))
                 .orElse(null);
 
-        // @a is one shared public timeline. A second DJ requesting the same
-        // server-wide audience joins that queue instead of creating a competing
-        // public session. Spatial requests share only an exactly identical zone.
+        // @a is one shared server-wide timeline. Another DJ's matching request
+        // joins this queue instead of creating another competing public session.
         if (existing == null && allPlayers) {
             existing = sessions.stream()
                     .filter(sameRequest)
@@ -172,14 +177,37 @@ public final class PlaybackEngine {
         }
 
         if (existing != null && !existing.isEmpty()) {
-            if (existing.isMono() != mono) return PlayDisposition.MODE_MISMATCH;
+            if (existing.isMono() != mono) return new PlayResult(PlayDisposition.MODE_MISMATCH, existing);
             int maximumQueue = plugin.getConfig().getInt("limits.max-queue-length", 500);
-            if (existing.queueSize() >= maximumQueue) return PlayDisposition.QUEUE_FULL;
+            if (existing.queueSize() >= maximumQueue) return new PlayResult(PlayDisposition.QUEUE_FULL, existing);
             existing.enqueue(track);
-            return PlayDisposition.QUEUED;
+            return new PlayResult(PlayDisposition.QUEUED, existing);
         }
-        startSession(owner, ownerName, zone, allPlayers, listeners, List.of(track), priority, mono);
-        return PlayDisposition.STARTED;
+        PlaybackSession created = startSession(owner, ownerName, zone, allPlayers, listeners,
+                List.of(track), priority, mono, targetScope);
+        return new PlayResult(PlayDisposition.STARTED, created);
+    }
+
+    private PlaybackAudiencePolicy.TargetScope defaultTargetScope(boolean allPlayers, MusicZone zone) {
+        if (zone != null && zone.shape() != MusicZone.Shape.GLOBAL) return PlaybackAudiencePolicy.TargetScope.ZONE;
+        return allPlayers ? PlaybackAudiencePolicy.TargetScope.PUBLIC : PlaybackAudiencePolicy.TargetScope.TARGETED;
+    }
+
+    public record PlayResult(PlayDisposition disposition, PlaybackSession session) {}
+
+    public synchronized Optional<Boolean> activeSessionMono(UUID owner, String ownerName, MusicZone zone,
+                                                            boolean allPlayers, Collection<UUID> listeners) {
+        java.util.function.Predicate<PlaybackSession> sameOwner =
+                session -> owner == null
+                        ? session.owner() == null && session.ownerName().equals(ownerName)
+                        : session.isOwner(owner);
+        return sessions.stream()
+                .filter(session -> sameOwner.test(session)
+                        || (allPlayers && PlaybackAudiencePolicy.sharesQueueAcrossOwners(
+                                allPlayers, session.allPlayers(), zone, session.zone())))
+                .filter(session -> session.matchesPlaybackAudienceAndZone(allPlayers, listeners, zone))
+                .max(Comparator.comparingLong(PlaybackSession::startedAt))
+                .map(PlaybackSession::isMono);
     }
 
     public synchronized Optional<PlaybackSession> findOwned(UUID owner) {
@@ -1773,8 +1801,8 @@ public final class PlaybackEngine {
 
         candidates.sort((first, second) -> {
             int rank = Integer.compare(
-                    PlaybackAudiencePolicy.switchCycleRank(first.session.allPlayers(), first.session.zone()),
-                    PlaybackAudiencePolicy.switchCycleRank(second.session.allPlayers(), second.session.zone()));
+                    PlaybackAudiencePolicy.switchCycleRank(first.session.targetScope()),
+                    PlaybackAudiencePolicy.switchCycleRank(second.session.targetScope()));
             return rank != 0 ? rank : compare(first, second);
         });
 
