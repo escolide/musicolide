@@ -1737,7 +1737,8 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
                 PlaybackSession current = null;
                 if (sender instanceof Player player
                         && (request.all || request.listeners.contains(player.getUniqueId()))) {
-                    waiting = playback.findOwned(player.getUniqueId()).orElse(null);
+                    waiting = playback.findOwnedMatching(player.getUniqueId(), request.all,
+                            request.listeners, request.zone).orElse(null);
                     current = playback.sessionAffectingPlayer(player)
                             .filter(session -> !session.paused() && !session.resumePreparing())
                             .orElse(null);
