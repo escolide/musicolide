@@ -103,7 +103,7 @@ public final class MusicGui implements Listener {
                 ? List.of(ChatColor.WHITE + clean(track.title()),
                         gray(time(session.elapsedMs()) + " / " + time(track.durationMs())))
                 : List.of(gray("No songs playing."));
-        holder.inventory.setItem(PAPER_SLOT, item(Material.PAPER, "Now Playing", paperLore, playing));
+        setItemIfChanged(holder.inventory, PAPER_SLOT, item(Material.PAPER, "Now Playing", paperLore, playing));
 
         setControlItem(holder.inventory, PAUSE_SLOT, Material.RED_BANNER, "Pause playback",
                 hasTrack && !paused && !session.resumePreparing(), canControl,
@@ -128,7 +128,7 @@ public final class MusicGui implements Listener {
         List<String> infoLore = new ArrayList<>();
         infoLore.add(gray(hasTrack ? "View metadata, TrackID and pack details." : "No active track information."));
         infoLore.add(gray("Available to all viewers."));
-        holder.inventory.setItem(INFO_SLOT, item(Material.WRITABLE_BOOK, "Song information", infoLore, false));
+        holder.setItemIfChanged(inventory, INFO_SLOT, item(Material.WRITABLE_BOOK, "Song information", infoLore, false));
 
         boolean discordConfigured = plugin.getConfig().getBoolean("discord.enabled", false);
         boolean discordEnabled = hasTrack && playback.effectiveDiscordBroadcast(session);
@@ -176,27 +176,34 @@ public final class MusicGui implements Listener {
                 : playback.findSession(holder.sessionId).orElse(null);
         MusicTrack track = session == null ? null : session.current();
         holder.renderedTrackId = track == null ? null : track.id();
+        holder.metadataRetryRequired = false;
+        holder.metadataRetryAtMillis = 0L;
 
         if (track == null) {
-            holder.inventory.setItem(22, item(Material.PAPER, "No song information",
+            setItemIfChanged(holder.inventory, 22, item(Material.PAPER, "No song information",
                     List.of(gray("No songs playing in this session.")), false));
         } else {
-            String shortId = shortTrackId(track);
-            boolean temporary = false;
+            String shortId = track.id();
+            String storage = "Not available";
             String youtubeId = "Not available";
             try {
-                temporary = repository.isTemporaryTrack(track.id());
+                shortId = repository.getTrackCode(track.id()).orElse(track.id());
+                boolean temporary = repository.isTemporaryTrack(track.id());
+                storage = temporary ? green("Temporary URL import") : green("Saved library track");
                 youtubeId = repository.getYouTubeVideoId(track.id()).orElse("Not available");
             } catch (SQLException error) {
+                holder.metadataRetryRequired = true;
+                holder.metadataRetryAtMillis = System.currentTimeMillis() + 5_000L;
                 plugin.getLogger().log(Level.WARNING,
-                        "Could not load complete metadata for GUI track " + track.id() + ".", error);
+                        "Could not load complete metadata for GUI track " + track.id()
+                                + "; the details page will retry automatically.", error);
             }
 
             detailCard(holder.inventory, 10, "Track title", track.title());
             detailCard(holder.inventory, 11, "Artist / uploader", blankAsUnknown(track.artist()));
             detailCard(holder.inventory, 12, "TrackID", shortId);
             detailCard(holder.inventory, 13, "Internal track ID", track.id());
-            detailCard(holder.inventory, 14, "Storage", temporary ? green("Temporary URL import") : green("Saved library track"));
+            detailCard(holder.inventory, 14, "Storage", storage);
             detailCard(holder.inventory, 15, "Duration", time(track.durationMs()));
             detailCard(holder.inventory, 16, "Audio mode", session.isMono() ? "Mono" : "Stereo");
             detailCard(holder.inventory, 19, "Audio format", track.isStreamed() ? "Streamed OGG" : "Segmented OGG");
@@ -209,7 +216,7 @@ public final class MusicGui implements Listener {
             detailCard(holder.inventory, 37, "YouTube video ID", youtubeId);
         }
         refreshInfoDynamic(holder, session);
-        holder.inventory.setItem(BACK_SLOT,
+        setItemIfChanged(holder.inventory, BACK_SLOT,
                 item(Material.ARROW, "Back to playback controls",
                         List.of(gray("Return to the music controls.")), false));
     }
@@ -265,7 +272,9 @@ public final class MusicGui implements Listener {
                             : playback.findSession(holder.sessionId).orElse(null);
                     String currentTrackId = session == null || session.current() == null
                             ? null : session.current().id();
-                    if (!java.util.Objects.equals(holder.renderedTrackId, currentTrackId)) {
+                    if (!java.util.Objects.equals(holder.renderedTrackId, currentTrackId)
+                            || holder.metadataRetryRequired
+                            && System.currentTimeMillis() >= holder.metadataRetryAtMillis) {
                         renderInfo(holder);
                     } else {
                         refreshInfoDynamic(holder, session);
@@ -322,6 +331,13 @@ public final class MusicGui implements Listener {
         if (event.getView().getTopInventory().getHolder() instanceof GuiHolder) event.setCancelled(true);
     }
 
+    private void setItemIfChanged(Inventory inventory, int slot, ItemStack item) {
+        ItemStack current = inventory.getItem(slot);
+        if (current == null ? item != null : item == null || !current.equals(item)) {
+            inventory.setItem(slot, item);
+        }
+    }
+
     private void fill(Inventory inventory) {
         ItemStack filler = item(Material.GRAY_STAINED_GLASS_PANE, " ", List.of(), false);
         ItemStack border = item(Material.PURPLE_STAINED_GLASS_PANE, " ", List.of(), false);
@@ -372,7 +388,9 @@ public final class MusicGui implements Listener {
         private final UUID sessionId;
         private boolean details;
         private UUID viewerId;
-        private UUID renderedTrackId;
+        private String renderedTrackId;
+        private boolean metadataRetryRequired;
+        private long metadataRetryAtMillis;
         private Inventory inventory;
 
         private GuiHolder(UUID sessionId, boolean details) {
