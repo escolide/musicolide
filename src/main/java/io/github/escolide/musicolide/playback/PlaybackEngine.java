@@ -569,7 +569,7 @@ public final class PlaybackEngine {
         MusicTrack original = session.current();
         boolean resumableMode = "resumable".equalsIgnoreCase(
                 plugin.getConfig().getString("audio.playback-mode", "resumable"));
-        if (!resumableMode || original == null || !original.isStreamed()) {
+        if (!resumableMode || original == null || !original.isStreamed(session.isMono())) {
             session.resume();
             return ResumeStart.RESUMED;
         }
@@ -605,7 +605,7 @@ public final class PlaybackEngine {
         if (targetMs < 0 || targetMs >= original.durationMs()) {
             throw new IllegalArgumentException("Seek position must be within the track duration.");
         }
-        if (!original.isStreamed()) {
+        if (!original.isStreamed(session.isMono())) {
             session.seek(targetMs);
             stopPlayersInSession(session);
             return SeekStart.SEEKED;
@@ -810,9 +810,9 @@ public final class PlaybackEngine {
 
         if (mode.equals("restart-segment")) {
             MusicTrack track = candidate.session.playbackTrack();
-            if (!track.isStreamed() && state != null && state.sound != null) {
+            if (!track.isStreamed(candidate.session.isMono()) && state != null && state.sound != null) {
                 int segment = candidate.session.segmentIndex();
-                if (segment >= 0 && segment < track.segmentCount()) {
+                if (segment >= 0 && segment < track.segmentCount(candidate.session.isMono())) {
                     stopCurrentSound(player, state);
                     state.baseVolume = playbackBaseVolume(player);
                     state.segment = segment;
@@ -1350,7 +1350,7 @@ public final class PlaybackEngine {
             // have been held with a non-zero timeline. Segmented audio can resume
             // at its segment index; streamed OGG must use the timestamp-aligned
             // private-tail path rather than restarting the entire track at 00:00.
-            if (session.consumeOverlapSuspended() && track.isStreamed()) {
+            if (session.consumeOverlapSuspended() && track.isStreamed(session.isMono())) {
                 for (Map.Entry<UUID, Candidate> entry : winners.entrySet()) {
                     if (entry.getValue().session == session) {
                         barrierExcludedTracks.put(entry.getKey(), trackKey);
@@ -1540,10 +1540,11 @@ public final class PlaybackEngine {
             if (session == null || session.paused() || !session.targets(playerId)
                     || state.syncPreparing || state.syncTrack != null) continue;
             MusicTrack track = session.playbackTrack();
-            if (track == null || !track.id().equals(state.trackId) || track.isStreamed()) continue;
+            if (track == null || !track.id().equals(state.trackId)
+                    || track.isStreamed(session.isMono())) continue;
 
             int segment = session.segmentIndex();
-            if (segment < 0 || segment >= track.segmentCount() || segment == state.segment) continue;
+            if (segment < 0 || segment >= track.segmentCount(session.isMono()) || segment == state.segment) continue;
 
             MusicZone zone = session.zone();
             MusicZone.AudioMode zoneMode = zone.audioMode(player.getWorld().getUID(),
@@ -1750,16 +1751,16 @@ public final class PlaybackEngine {
             sendActionBar(player, message("messages.playback-synchronizing"));
             return;
         }
-        int segment = track.isStreamed() ? 0 : (synchronizedTail ? 0 : session.segmentIndex());
-        if (segment < 0 || segment >= track.segmentCount()) {
+        int segment = track.isStreamed(session.isMono()) ? 0 : (synchronizedTail ? 0 : session.segmentIndex());
+        if (segment < 0 || segment >= track.segmentCount(session.isMono())) {
             stopPlayer(player);
             return;
         }
         boolean fading = candidate.mode == MusicZone.AudioMode.FADE;
         String sound = track.soundKey(segment, session.isMono());
-        // A streamed OGG cannot be restarted just because a listener crossed
-        // the edge of the fade band: that would replay the whole track at 00:00.
-        // Segmented tracks pick up the latest fade factor at their next segment.
+        // Streamed stereo OGG cannot be restarted just because a listener crossed
+        // the fade band. Mono uses short, timestamp-aligned chunks so its per-player
+        // fade factor is sampled again at every chunk boundary.
         boolean changed = !session.id().equals(state.sessionId) || !track.id().equals(state.trackId)
                 || state.timelineGeneration != session.timelineGeneration()
                 || state.segment != segment || state.sound == null;

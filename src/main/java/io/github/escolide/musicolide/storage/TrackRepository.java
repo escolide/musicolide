@@ -439,6 +439,22 @@ public final class TrackRepository implements AutoCloseable {
         }
     }
 
+    /** Updates archive revision and mono segment timing without touching playlist/expiry rows. */
+    public synchronized void updatePackMetadata(String trackId, String sha1Hex, long packSizeBytes,
+                                                int segmentMs, int segmentCount) throws SQLException {
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "UPDATE tracks SET sha1_hex=?, pack_size_bytes=?, segment_ms=?, segment_count=? WHERE id=?")) {
+            ps.setString(1, sha1Hex);
+            ps.setLong(2, packSizeBytes);
+            ps.setInt(3, segmentMs);
+            ps.setInt(4, segmentCount);
+            ps.setString(5, trackId);
+            if (ps.executeUpdate() != 1) {
+                throw new SQLException("Could not update resource-pack metadata for track " + trackId + ".");
+            }
+        }
+    }
+
     public synchronized void addAlias(String aliasKey, String trackId) throws SQLException {
         try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO aliases(alias_key,track_id) VALUES(?,?) ON CONFLICT(alias_key) DO UPDATE SET track_id=excluded.track_id")) {

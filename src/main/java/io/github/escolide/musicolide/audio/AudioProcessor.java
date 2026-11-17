@@ -683,17 +683,22 @@ public final class AudioProcessor implements AutoCloseable {
                 }
                 generatedPack = packBuilder.build(namespace, trackDirectory, segmentCount, segmentMs);
             } else {
-                // Both continuous and resumable modes contain one OGG per channel layout.
+                // Stereo remains one streamed OGG. Mono keeps a full stream for
+                // Discord plus short assets for Minecraft's live zone fade.
                 Path streamedAudio = trackDirectory.resolve("music.ogg");
                 Path monoAudio = trackDirectory.resolve("mono.ogg");
+                Path monoSegments = trackDirectory.resolve("mono-segments");
                 runFfmpegStreamed(ffmpeg, source, streamedAudio, stereoQuality, 2);
                 runFfmpegStreamed(ffmpeg, source, monoAudio, monoQuality, 1);
-                // Base the playback clock on the stereo encoding's actual duration.
+                // Base the shared playback clock on the stereo encoding's duration.
                 durationMs = probeDuration(ffmpeg, streamedAudio, data);
                 if (durationMs <= 0) throw new IOException("The streamed OGG has an invalid duration.");
-                segmentMs = (int) Math.min(Integer.MAX_VALUE, durationMs);
-                segmentCount = 1;
-                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio, monoAudio);
+                MonoFadeLayout monoLayout = monoFadeLayout(durationMs);
+                generateMonoFadeSegments(ffmpeg, source, monoSegments, durationMs, monoLayout, monoQuality);
+                segmentMs = monoLayout.segmentMs();
+                segmentCount = monoLayout.segmentCount();
+                generatedPack = packBuilder.buildStreamed(namespace, streamedAudio, monoAudio,
+                        monoSegments, monoLayout.segmentCount() > 1 ? monoLayout.segmentCount() : 0);
             }
 
             // Audio files are build intermediates; the finished ZIP is retained.
@@ -844,7 +849,15 @@ public final class AudioProcessor implements AutoCloseable {
         if (!toolchain.available(NativeToolchain.Tool.FFMPEG)) {
             return CompletableFuture.failedFuture(new IllegalStateException("FFmpeg is unavailable for mono preparation."));
         }
-        if (monoVariantsReady.contains(track.id())) return CompletableFuture.completedFuture(track);
+        if (monoVariantsReady.contains(track.id())) {
+            // A concurrent/duplicate request may still hold the pre-upgrade object.
+            // Reload the persisted metadata so every mono session sees its chunk layout.
+            try {
+                return CompletableFuture.completedFuture(repository.getTrack(track.id()).orElse(track));
+            } catch (SQLException error) {
+                return CompletableFuture.failedFuture(error);
+            }
+        }
         CompletableFuture<MusicTrack> result = new CompletableFuture<>();
         CompletableFuture<MusicTrack> current = inFlightMonoVariants.putIfAbsent(track.id(), result);
         if (current != null) return current;
@@ -876,11 +889,29 @@ public final class AudioProcessor implements AutoCloseable {
             throw new IOException("The original track resource pack is missing; mono audio cannot be prepared.");
         }
         boolean streamed = track.isStreamed();
+        // Preserve the segment timing already stored with upgraded tracks. The
+        // configured duration is used only when creating mono chunks for the
+        // first time, not to reinterpret older chunk boundaries.
+        MonoFadeLayout monoLayout = streamed
+                ? (track.hasMonoSegments()
+                    ? new MonoFadeLayout(track.segmentMs(), track.segmentCount())
+                    : monoFadeLayout(track.durationMs()))
+                : new MonoFadeLayout(Math.max(1, track.segmentMs()), Math.max(1, track.segmentCount()));
+        int targetSegmentMs = monoLayout.segmentMs();
+        int targetSegmentCount = monoLayout.segmentCount();
+        int streamedMonoSegmentCount = streamed && targetSegmentCount > 1 ? targetSegmentCount : 0;
+
         try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
             boolean complete = true;
             if (streamed) {
                 ZipEntry monoEntry = zip.getEntry("assets/" + track.namespace() + "/sounds/mono.ogg");
                 complete = monoEntry != null && !monoEntry.isDirectory() && monoEntry.getSize() > 0;
+                for (int i = 0; complete && i < streamedMonoSegmentCount; i++) {
+                    String id = String.format(Locale.ROOT, "%05d", i);
+                    ZipEntry segment = zip.getEntry("assets/" + track.namespace() + "/sounds/"
+                            + track.namespace() + "/mono/" + id + ".ogg");
+                    if (segment == null || segment.isDirectory() || segment.getSize() <= 0) complete = false;
+                }
             } else {
                 for (int i = 0; i < track.segmentCount(); i++) {
                     String id = String.format(Locale.ROOT, "%05d", i);
@@ -893,9 +924,7 @@ public final class AudioProcessor implements AutoCloseable {
                 }
             }
             if (complete) {
-                // Normally startup has already incorporated this archive into the
-                // aggregate pack. If the stored checksum is stale, rebuild it once.
-                MusicTrack refreshed = refreshPackMetadata(track, sourcePack);
+                MusicTrack refreshed = refreshPackMetadata(track, sourcePack, targetSegmentMs, targetSegmentCount);
                 if (!refreshed.sha1Hex().equals(track.sha1Hex())
                         || refreshed.packSizeBytes() != track.packSizeBytes()) {
                     publishAudioVariants();
@@ -905,7 +934,7 @@ public final class AudioProcessor implements AutoCloseable {
         }
 
         if (!toolchain.isInitialized() || !toolchain.available(NativeToolchain.Tool.FFMPEG)) {
-            throw new IllegalStateException("FFmpeg is not ready; mono audio cannot be generated yet.");
+            throw new IllegalStateException("FFmpeg is not ready; mono audio cannot be prepared yet.");
         }
         Path temporaryRoot = data.resolve("temp");
         Files.createDirectories(temporaryRoot);
@@ -921,8 +950,18 @@ public final class AudioProcessor implements AutoCloseable {
                 try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
                     copyZipEntry(zip, "assets/" + track.namespace() + "/sounds/music.ogg",
                             stereo, maximumBytes);
+                    ZipEntry existingMono = zip.getEntry("assets/" + track.namespace() + "/sounds/mono.ogg");
+                    if (existingMono != null && !existingMono.isDirectory() && existingMono.getSize() > 0) {
+                        copyZipEntry(zip, "assets/" + track.namespace() + "/sounds/mono.ogg",
+                                monoDirectory.resolve("mono.ogg"), maximumBytes);
+                    }
                 }
-                runFfmpegRechannel(ffmpeg, stereo, monoDirectory.resolve("mono.ogg"), quality, 1);
+                if (!Files.isRegularFile(monoDirectory.resolve("mono.ogg"))
+                        || Files.size(monoDirectory.resolve("mono.ogg")) == 0) {
+                    runFfmpegRechannel(ffmpeg, stereo, monoDirectory.resolve("mono.ogg"), quality, 1);
+                }
+                generateMonoFadeSegments(ffmpeg, stereo, monoDirectory, track.durationMs(),
+                        monoLayout, quality);
             } else {
                 long extractedBytes = 0L;
                 try (ZipFile zip = new ZipFile(sourcePack.toFile())) {
@@ -939,8 +978,9 @@ public final class AudioProcessor implements AutoCloseable {
                     }
                 }
             }
-            packBuilder.addMonoVariant(track.namespace(), sourcePack, monoDirectory, streamed, track.segmentCount());
-            MusicTrack refreshed = refreshPackMetadata(track, sourcePack);
+            packBuilder.addMonoVariant(track.namespace(), sourcePack, monoDirectory, streamed,
+                    streamed ? streamedMonoSegmentCount : targetSegmentCount);
+            MusicTrack refreshed = refreshPackMetadata(track, sourcePack, targetSegmentMs, targetSegmentCount);
             publishAudioVariants();
             return refreshed;
         } finally {
@@ -972,14 +1012,15 @@ public final class AudioProcessor implements AutoCloseable {
         }
     }
 
-    private MusicTrack refreshPackMetadata(MusicTrack track, Path pack) throws Exception {
+    private MusicTrack refreshPackMetadata(MusicTrack track, Path pack, int segmentMs,
+                                           int segmentCount) throws Exception {
         String checksum = sha1(pack);
         long size = Files.size(pack);
-        if (checksum.equals(track.sha1Hex()) && size == track.packSizeBytes()) return track;
+        if (checksum.equals(track.sha1Hex()) && size == track.packSizeBytes()
+                && segmentMs == track.segmentMs() && segmentCount == track.segmentCount()) return track;
         MusicTrack updated = new MusicTrack(track.id(), track.title(), track.artist(), track.namespace(),
-                track.packFileName(), checksum, track.durationMs(), track.segmentMs(),
-                track.segmentCount(), size);
-        repository.updatePackMetadata(track.id(), checksum, size);
+                track.packFileName(), checksum, track.durationMs(), segmentMs, segmentCount, size);
+        repository.updatePackMetadata(track.id(), checksum, size, segmentMs, segmentCount);
         return updated;
     }
 
@@ -1121,15 +1162,24 @@ public final class AudioProcessor implements AutoCloseable {
 
             String token = UUID.randomUUID().toString().replace("-", "");
             String namespace = "mr_" + token;
+            int preferredMonoSegmentMs = sourceTrack.isStreamed() && !sourceTrack.hasMonoSegments()
+                    ? configuredMonoFadeSegmentMs() : Math.max(1, sourceTrack.segmentMs());
+            MonoFadeLayout monoLayout = includeMono
+                    ? monoFadeLayout(durationMs, preferredMonoSegmentMs)
+                    : new MonoFadeLayout((int) Math.max(1L, Math.min(Integer.MAX_VALUE, durationMs)), 1);
+            Path monoSegments = work.resolve("mono-segments");
+            if (includeMono) {
+                generateMonoFadeSegments(ffmpeg, remainder, monoSegments, durationMs, monoLayout, monoQuality);
+            }
             outputPack = includeMono
-                    ? packBuilder.buildStreamed(namespace, remainder, monoRemainder)
+                    ? packBuilder.buildStreamed(namespace, remainder, monoRemainder,
+                            monoSegments, monoLayout.segmentCount() > 1 ? monoLayout.segmentCount() : 0)
                     : packBuilder.buildStreamed(namespace, remainder);
             String id = "resume_" + token;
             String checksum = sha1(outputPack);
-            int remainderDuration = (int) Math.min(Integer.MAX_VALUE, durationMs);
             return new MusicTrack(id, sourceTrack.title(), sourceTrack.artist(), namespace,
                     outputPack.getFileName().toString(), checksum, durationMs,
-                    Math.max(1, remainderDuration), 1, Files.size(outputPack));
+                    monoLayout.segmentMs(), monoLayout.segmentCount(), Files.size(outputPack));
         } catch (Exception ex) {
             deleteQuietly(outputPack);
             throw ex;
@@ -1346,6 +1396,41 @@ public final class AudioProcessor implements AutoCloseable {
         }
         return HexFormat.of().formatHex(digest.digest());
     }
+
+    private int configuredMonoFadeSegmentMs() {
+        return bounded(plugin.getConfig().getInt("audio.mono.fade-segment-duration-ms", 500), 250, 5000);
+    }
+
+    private MonoFadeLayout monoFadeLayout(long durationMs) {
+        return monoFadeLayout(durationMs, configuredMonoFadeSegmentMs());
+    }
+
+    private MonoFadeLayout monoFadeLayout(long durationMs, int segmentDurationMs) {
+        int configuredSegmentMs = Math.max(1, segmentDurationMs);
+        long count = Math.max(1L, (Math.max(1L, durationMs) + configuredSegmentMs - 1L)
+                / configuredSegmentMs);
+        if (count <= 1L) {
+            return new MonoFadeLayout((int) Math.max(1L, Math.min(Integer.MAX_VALUE, durationMs)), 1);
+        }
+        return new MonoFadeLayout(configuredSegmentMs, (int) Math.min(Integer.MAX_VALUE, count));
+    }
+
+    private void generateMonoFadeSegments(String executable, Path source, Path outputDirectory,
+                                          long durationMs, MonoFadeLayout layout, int quality)
+            throws IOException, InterruptedException {
+        if (layout.segmentCount() <= 1) return;
+        Files.createDirectories(outputDirectory);
+        for (int i = 0; i < layout.segmentCount(); i++) {
+            long startMs = (long) i * layout.segmentMs();
+            long lengthMs = Math.min(layout.segmentMs(), durationMs - startMs);
+            if (lengthMs <= 0) break;
+            String id = String.format(Locale.ROOT, "%05d", i);
+            runFfmpeg(executable, source, outputDirectory.resolve(id + ".ogg"),
+                    startMs / 1000.0, lengthMs / 1000.0, quality, 1);
+        }
+    }
+
+    private record MonoFadeLayout(int segmentMs, int segmentCount) {}
 
     private String slug(String value) {
         String slug = value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_")

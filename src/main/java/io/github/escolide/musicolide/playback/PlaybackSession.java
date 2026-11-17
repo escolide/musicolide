@@ -359,7 +359,7 @@ public final class PlaybackSession {
         }
     }
 
-    /** Existing behaviour for legacy segmented and continuous modes. */
+    /** Resumes at the saved timeline position for segmented audio; streamed layouts restart. */
     public synchronized void resume() {
         if (!paused || current == null) return;
         overlapSuspended = false;
@@ -368,7 +368,7 @@ public final class PlaybackSession {
         resumePreparing = false;
         pendingOffsetMs = -1L;
         playbackTrack = current;
-        if (current.isStreamed()) {
+        if (current.isStreamed(monoAudio)) {
             // Plain continuous mode cannot seek a client-side streamed decoder.
             // Restart at zero, then let the playback engine release all ready
             // listeners together through its pack-readiness start barrier.
@@ -389,7 +389,7 @@ public final class PlaybackSession {
      * until FFmpeg and the transient resource pack are ready for the listener set.
      */
     public synchronized long beginResumePreparation() {
-        if (!paused || current == null || !current.isStreamed() || resumePreparing) return -1L;
+        if (!paused || current == null || !current.isStreamed(monoAudio) || resumePreparing) return -1L;
         timelineGeneration++;
         resumePreparing = true;
         pendingOffsetMs = pausedOffsetMs;
@@ -402,7 +402,7 @@ public final class PlaybackSession {
      * immediately; a seek issued while paused remains paused after preparation.
      */
     public synchronized long beginSeekPreparation(long targetMs) {
-        if (current == null || !current.isStreamed() || resumePreparing) return -1L;
+        if (current == null || !current.isStreamed(monoAudio) || resumePreparing) return -1L;
         timelineGeneration++;
         boolean wasPlaying = !paused;
         if (wasPlaying) pausedOffsetMs = elapsedMs();
@@ -447,7 +447,7 @@ public final class PlaybackSession {
     public synchronized void seek(long millis) {
         if (current == null) return;
         timelineGeneration++;
-        if (current.isStreamed()) {
+        if (current.isStreamed(monoAudio)) {
             throw new IllegalArgumentException(
                     "Seeking within continuous streamed tracks requires resumable playback mode.");
         }
@@ -476,8 +476,10 @@ public final class PlaybackSession {
         MusicTrack track = playbackTrack();
         if (track == null) return -1;
         long trackPosition = track == current ? elapsedMs() : Math.max(0, elapsedMs() - elapsedBaseMs);
-        return (int) Math.min(track.segmentCount() - 1,
-                Math.max(0, trackPosition) / Math.max(1, track.segmentMs()));
+        int segmentCount = track.segmentCount(monoAudio);
+        int segmentDuration = track.segmentMs(monoAudio);
+        return (int) Math.min(segmentCount - 1,
+                Math.max(0, trackPosition) / segmentDuration);
     }
 
     public synchronized boolean finished() {

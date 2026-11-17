@@ -210,4 +210,69 @@ class ResourcePackBuilderTest {
         }
     }
 
+
+    @Test
+    void streamedPackKeepsFullMonoStreamAndAddsMonoFadeSegments() throws Exception {
+        Path stereo = writeFadeTestAudio("fade-stereo.ogg");
+        Path mono = writeFadeTestAudio("fade-mono.ogg");
+        Path segments = tempDir.resolve("fade-mono-segments");
+        Files.createDirectories(segments);
+        writeFadeTestAudio(segments.resolve("00000.ogg"));
+        writeFadeTestAudio(segments.resolve("00001.ogg"));
+
+        ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
+                ResourcePackFormat.forMinecraftVersion("1.21.1"));
+        Path pack = builder.buildStreamed("ms_fade_test", stereo, mono, segments, 2);
+        try (ZipFile zip = new ZipFile(pack.toFile())) {
+            String sounds = readSoundDefinitions(zip, "ms_fade_test");
+            assertTrue(sounds.contains("\"music\""), sounds);
+            assertTrue(sounds.contains("\"mono\""), sounds);
+            assertTrue(sounds.contains("\"m_00000\""), sounds);
+            assertTrue(sounds.contains("\"m_00001\""), sounds);
+            assertTrue(sounds.contains("\"stream\":false"), sounds);
+            assertNotNull(zip.getEntry("assets/ms_fade_test/sounds/mono.ogg"));
+            assertNotNull(zip.getEntry("assets/ms_fade_test/sounds/ms_fade_test/mono/00000.ogg"));
+            assertNotNull(zip.getEntry("assets/ms_fade_test/sounds/ms_fade_test/mono/00001.ogg"));
+        }
+    }
+
+    @Test
+    void lazyUpgradeReplacesMonoEventsWithoutDroppingFullStreamOrDuplicatingKeys() throws Exception {
+        Path stereo = writeFadeTestAudio("upgrade-stereo.ogg");
+        Path initialMono = writeFadeTestAudio("upgrade-mono-initial.ogg");
+        Path generatedMono = writeFadeTestAudio("upgrade-mono-generated.ogg");
+        Path monoDirectory = tempDir.resolve("upgrade-mono-segments");
+        Files.createDirectories(monoDirectory);
+        Files.copy(generatedMono, monoDirectory.resolve("mono.ogg"));
+        writeFadeTestAudio(monoDirectory.resolve("00000.ogg"));
+        writeFadeTestAudio(monoDirectory.resolve("00001.ogg"));
+
+        ResourcePackBuilder builder = new ResourcePackBuilder(tempDir,
+                ResourcePackFormat.forMinecraftVersion("1.21.1"));
+        Path pack = builder.buildStreamed("ms_upgrade_test", stereo, initialMono);
+        builder.addMonoVariant("ms_upgrade_test", pack, monoDirectory, true, 2);
+        builder.addMonoVariant("ms_upgrade_test", pack, monoDirectory, true, 2);
+
+        try (ZipFile zip = new ZipFile(pack.toFile())) {
+            String sounds = readSoundDefinitions(zip, "ms_upgrade_test");
+            assertTrue(sounds.contains("\"music\""), sounds);
+            assertEquals(1, sounds.split("\"mono\":", -1).length - 1, sounds);
+            assertEquals(1, sounds.split("\"m_00000\":", -1).length - 1, sounds);
+            assertEquals(1, sounds.split("\"m_00001\":", -1).length - 1, sounds);
+            assertNotNull(zip.getEntry("assets/ms_upgrade_test/sounds/mono.ogg"));
+            assertNotNull(zip.getEntry("assets/ms_upgrade_test/sounds/ms_upgrade_test/mono/00000.ogg"));
+            assertNotNull(zip.getEntry("assets/ms_upgrade_test/sounds/ms_upgrade_test/mono/00001.ogg"));
+        }
+    }
+
+    private Path writeFadeTestAudio(String name) throws Exception {
+        return writeFadeTestAudio(tempDir.resolve(name));
+    }
+
+    private Path writeFadeTestAudio(Path path) throws Exception {
+        Files.createDirectories(path.getParent());
+        Files.write(path, new byte[]{79, 103, 103, 83, 1, 2, 3});
+        return path;
+    }
+
 }
