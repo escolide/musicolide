@@ -966,6 +966,8 @@ public final class PlaybackEngine {
             }
         }
 
+        suspendSessionsWithoutWinningListeners(active, winners, suppressed);
+
         // A previous catch-up attempt is valid only while this player remains a
         // winner for that same timeline. Clear it on zone exit or when overlap
         // arbitration moves the player elsewhere, so re-entry can sync again.
@@ -1069,6 +1071,16 @@ public final class PlaybackEngine {
         // Refresh the Discord view on the server thread after zone arbitration,
         // pack readiness, catch-up state and the shared start barrier are updated.
         updateDiscordBroadcastSnapshot(online, winners, active);
+    }
+
+    private void suspendSessionsWithoutWinningListeners(Collection<PlaybackSession> active,
+                                                         Map<UUID, Candidate> winners,
+                                                         Map<PlaybackSession, Set<UUID>> suppressed) {
+        Set<PlaybackSession> audibleSessions = new HashSet<>();
+        winners.values().forEach(candidate -> audibleSessions.add(candidate.session));
+        for (PlaybackSession session : suppressed.keySet()) {
+            if (!audibleSessions.contains(session)) session.suspendClockForOverlap();
+        }
     }
 
     private void notifyOverlappingPlayers(List<Player> online,
