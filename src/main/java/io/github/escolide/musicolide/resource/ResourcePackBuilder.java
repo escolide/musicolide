@@ -258,20 +258,45 @@ public final class ResourcePackBuilder {
     }
 
     public Path buildStreamed(String namespace, Path audioFile) throws IOException {
-        return buildStreamed(namespace, audioFile, null);
+        return buildStreamed(namespace, audioFile, null, null, 0);
     }
 
     public Path buildStreamed(String namespace, Path audioFile, Path monoAudioFile) throws IOException {
+        return buildStreamed(namespace, audioFile, monoAudioFile, null, 0);
+    }
+
+    /**
+     * Builds streamed stereo and full mono assets, plus short mono-only sounds
+     * for Minecraft's listener-specific fade updates when a segment directory is supplied.
+     */
+    public Path buildStreamed(String namespace, Path audioFile, Path monoAudioFile,
+                              Path monoSegmentsDirectory, int monoSegmentCount) throws IOException {
         requireAudioFile(audioFile, "The streamed stereo OGG file is missing or empty.");
         if (monoAudioFile != null) requireAudioFile(monoAudioFile, "The streamed mono OGG file is missing or empty.");
+        if (monoSegmentCount > 1 && monoAudioFile == null) {
+            throw new IOException("Mono fade segments require the full mono audio asset.");
+        }
+        if (monoSegmentCount > 1 && monoSegmentsDirectory == null) {
+            throw new IOException("The mono fade segment directory is missing.");
+        }
+
+        List<String> definitions = new ArrayList<>();
+        definitions.add("\\"music\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
+                + ":music\\",\\"stream\\":true}]}");
+        if (monoAudioFile != null) {
+            definitions.add("\\"mono\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
+                    + ":mono\\",\\"stream\\":true,\\"attenuation_distance\\":"
+                    + MONO_ATTENUATION_DISTANCE + "}]}");
+            for (int i = 0; i < monoSegmentCount; i++) {
+                String id = String.format(Locale.ROOT, "%05d", i);
+                requireAudioFile(monoSegmentsDirectory.resolve(id + ".ogg"),
+                        "A generated mono fade segment is missing: " + id);
+                definitions.add(monoSegmentDefinition(namespace, id));
+            }
+        }
+        String soundsJson = "{\\n  " + String.join(",\\n  ", definitions) + "\\n}\\n";
+
         Path output = packsDirectory.resolve(namespace + ".zip");
-        String soundsJson = "{\n"
-                + "  \"music\": {\"sounds\":[{\"name\":\"" + namespace
-                + ":music\",\"stream\":true}]}"
-                + (monoAudioFile == null ? "" : ",\n  \"mono\": {\"sounds\":[{\"name\":\""
-                + namespace + ":mono\",\"stream\":true,\"attenuation_distance\":"
-                + MONO_ATTENUATION_DISTANCE + "}]}")
-                + "\n}\n";
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
             zip.setLevel(ZIP_COMPRESSION_LEVEL);
@@ -280,9 +305,20 @@ public final class ResourcePackBuilder {
             addFile(zip, "assets/" + namespace + "/sounds/music.ogg", audioFile);
             if (monoAudioFile != null) {
                 addFile(zip, "assets/" + namespace + "/sounds/mono.ogg", monoAudioFile);
+                for (int i = 0; i < monoSegmentCount; i++) {
+                    String id = String.format(Locale.ROOT, "%05d", i);
+                    addFile(zip, "assets/" + namespace + "/sounds/" + namespace + "/mono/" + id + ".ogg",
+                            monoSegmentsDirectory.resolve(id + ".ogg"));
+                }
             }
         }
         return output;
+    }
+
+    private String monoSegmentDefinition(String namespace, String id) {
+        return "\\"m_" + id + "\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace + ":"
+                + namespace + "/mono/" + id + "\\",\\"stream\\":false,\\"attenuation_distance\\":"
+                + MONO_ATTENUATION_DISTANCE + "}]}";
     }
 
     private void requireAudioFile(Path file, String message) throws IOException {
@@ -298,12 +334,9 @@ public final class ResourcePackBuilder {
         if (!Files.isRegularFile(sourcePack)) throw new IOException("The source track pack is missing.");
         Path temporary = Files.createTempFile(sourcePack.getParent(), ".musicolide-mono-", ".zip");
         String soundsEntry = "assets/" + namespace + "/sounds.json";
-        String monoPrefix = streamed
-                ? "assets/" + namespace + "/sounds/mono.ogg"
-                : "assets/" + namespace + "/sounds/" + namespace + "/mono/";
+        String monoStreamEntry = "assets/" + namespace + "/sounds/mono.ogg";
+        String monoSegmentsPrefix = "assets/" + namespace + "/sounds/" + namespace + "/mono/";
         try {
-            // Finish reading and writing the archive before replacing the source.
-            // This also works on Windows, where an open ZipFile can lock the file.
             try (ZipFile source = new ZipFile(sourcePack.toFile())) {
                 ZipEntry sounds = source.getEntry(soundsEntry);
                 if (sounds == null || sounds.isDirectory()) {
@@ -317,27 +350,30 @@ public final class ResourcePackBuilder {
                 List<String> definitions = new ArrayList<>();
                 if (streamed) {
                     requireAudioFile(monoDirectory.resolve("mono.ogg"), "The generated mono OGG is missing.");
-                    definitions.add("  \"mono\": {\"sounds\":[{\"name\":\"" + namespace
-                            + ":mono\",\"stream\":true,\"attenuation_distance\":"
+                    definitions.add("  \\"mono\\": {\\"sounds\\":[{\\"name\\":\\"" + namespace
+                            + ":mono\\",\\"stream\\":true,\\"attenuation_distance\\":"
                             + MONO_ATTENUATION_DISTANCE + "}]}");
-                } else {
-                    for (int i = 0; i < segmentCount; i++) {
-                        String id = String.format("%05d", i);
-                        requireAudioFile(monoDirectory.resolve(id + ".ogg"),
-                                "A generated mono segment is missing: " + id);
-                        definitions.add("  \"m_" + id + "\": {\"sounds\":[{\"name\":\""
-                                + namespace + ":" + namespace + "/mono/" + id
-                                + "\",\"stream\":false,\"attenuation_distance\":"
-                                + MONO_ATTENUATION_DISTANCE + "}]}");
-                    }
+                }
+                for (int i = 0; i < segmentCount; i++) {
+                    String id = String.format(Locale.ROOT, "%05d", i);
+                    requireAudioFile(monoDirectory.resolve(id + ".ogg"),
+                            "A generated mono segment is missing: " + id);
+                    definitions.add("  \\"m_" + id + "\\": {\\"sounds\\":[{\\"name\\":\\""
+                            + namespace + ":" + namespace + "/mono/" + id
+                            + "\\",\\"stream\\":false,\\"attenuation_distance\\":"
+                            + MONO_ATTENUATION_DISTANCE + "}]}");
                 }
 
-                int finalBrace = oldSounds.lastIndexOf('}');
+                // Replace old m_ entries rather than accumulating duplicate JSON keys
+                // when a partially upgraded archive is retried.
+                String cleanedSounds = oldSounds.replaceAll(
+                        "(?m)^\\\\s*\\\"m_[0-9]{5}\\\"\\\\s*:\\\\s*\\\\{[^\\\\r\\\\n]*\\\\},?\\\\r?\\\\n", "");
+                int finalBrace = cleanedSounds.lastIndexOf('}');
                 if (finalBrace < 0) throw new IOException("The source sounds.json is invalid.");
-                String prefix = oldSounds.substring(0, finalBrace).stripTrailing();
-                String additions = (prefix.endsWith("}") ? ",\n" : "")
-                        + String.join(",\n", definitions) + "\n";
-                String updatedSounds = prefix + additions + "}\n";
+                String prefix = cleanedSounds.substring(0, finalBrace).stripTrailing();
+                while (prefix.endsWith(",")) prefix = prefix.substring(0, prefix.length() - 1).stripTrailing();
+                String updatedSounds = prefix + (prefix.endsWith("{") ? "\\n" : ",\\n")
+                        + String.join(",\\n", definitions) + "\\n}\\n";
 
                 try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(temporary))) {
                     Set<String> written = new HashSet<>();
@@ -345,8 +381,9 @@ public final class ResourcePackBuilder {
                     while (entries.hasMoreElements()) {
                         ZipEntry entry = entries.nextElement();
                         String name = entry.getName();
-                        if (name.equals(soundsEntry) || name.equals(monoPrefix)
-                                || (!streamed && name.startsWith(monoPrefix))) continue;
+                        if (name.equals(soundsEntry)
+                                || (streamed && name.equals(monoStreamEntry))
+                                || name.startsWith(monoSegmentsPrefix)) continue;
                         if (!written.add(name)) {
                             throw new IOException("Duplicate entry in source track pack: " + name);
                         }
@@ -365,14 +402,14 @@ public final class ResourcePackBuilder {
                     }
                     add(output, soundsEntry, updatedSounds.getBytes(StandardCharsets.UTF_8));
                     if (streamed) {
-                        addFile(output, monoPrefix, monoDirectory.resolve("mono.ogg"));
-                    } else {
-                        for (int i = 0; i < segmentCount; i++) {
-                            String id = String.format("%05d", i);
-                            String name = monoPrefix + id + ".ogg";
-                            if (!written.add(name)) throw new IOException("Duplicate mono asset: " + name);
-                            addFile(output, name, monoDirectory.resolve(id + ".ogg"));
-                        }
+                        if (!written.add(monoStreamEntry)) throw new IOException("Duplicate full mono asset.");
+                        addFile(output, monoStreamEntry, monoDirectory.resolve("mono.ogg"));
+                    }
+                    for (int i = 0; i < segmentCount; i++) {
+                        String id = String.format(Locale.ROOT, "%05d", i);
+                        String name = monoSegmentsPrefix + id + ".ogg";
+                        if (!written.add(name)) throw new IOException("Duplicate mono segment: " + id);
+                        addFile(output, name, monoDirectory.resolve(id + ".ogg"));
                     }
                 }
             }
