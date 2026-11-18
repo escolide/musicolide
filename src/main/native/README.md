@@ -54,8 +54,8 @@ the downloaded executables independently.
 
 ## Build outputs
 
-- `musicolide-0.1.0-universal.jar`: recommended for portable installation.
-- `musicolide-0.1.0.jar`: lightweight Linux x86_64 build.
+- `musicolide-1.1-universal.jar`: recommended for portable installation.
+- `musicolide-1.1.jar`: lightweight Linux x86_64 build.
 
 Both builds enforce a strict 30 MiB limit. The universal JAR includes SQLite's
 native driver libraries for all supported platforms and the first-start
