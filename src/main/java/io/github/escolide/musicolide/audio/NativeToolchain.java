@@ -10,6 +10,8 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -52,6 +54,11 @@ public final class NativeToolchain implements AutoCloseable {
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
+    private final ExecutorService initializationExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "Musicolide-NativeTool-Installer");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean initialized;
     private volatile boolean closed;
     private volatile InitializationState initializationState = InitializationState.NOT_STARTED;
@@ -82,7 +89,7 @@ public final class NativeToolchain implements AutoCloseable {
 
         initializationState = InitializationState.INITIALIZING;
         initializationError = "";
-        initializationFuture = CompletableFuture.supplyAsync(this::initialize)
+        initializationFuture = CompletableFuture.supplyAsync(this::initialize, initializationExecutor)
                 .whenComplete((result, error) -> {
                     if (error == null) return;
                     Throwable cause = error;
@@ -142,7 +149,15 @@ public final class NativeToolchain implements AutoCloseable {
             }
         }
 
+        if (closed || Thread.currentThread().isInterrupted()) {
+            initialized = true;
+            initializationState = InitializationState.FAILED;
+            initializationError = "The plugin was disabled before native tools finished initializing.";
+            return List.of();
+        }
+
         for (Tool tool : Tool.values()) {
+            if (closed || Thread.currentThread().isInterrupted()) break;
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
 
@@ -329,6 +344,8 @@ public final class NativeToolchain implements AutoCloseable {
             initializationState = InitializationState.FAILED;
             initializationError = "The plugin was disabled before native tools finished initializing.";
         }
+        downloadInstaller.close();
+        initializationExecutor.shutdownNow();
         for (Process process : new ArrayList<>(processes)) terminate(process);
     }
 }
