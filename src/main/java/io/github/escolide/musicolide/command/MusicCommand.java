@@ -1,6 +1,7 @@
 package io.github.escolide.musicolide.command;
 
 import io.github.escolide.musicolide.audio.AudioProcessor;
+import io.github.escolide.musicolide.audio.NativeToolchain;
 import io.github.escolide.musicolide.audio.YtDlpDownloader;
 import io.github.escolide.musicolide.gui.MusicGui;
 import io.github.escolide.musicolide.model.MusicTrack;
@@ -655,19 +656,39 @@ public final class MusicCommand implements CommandExecutor, TabCompleter {
     private void diagnostics(CommandSender sender) {
         if (!admin(sender)) return;
         sender.sendMessage(msg("&5Musicolide native tool diagnostics:"));
-        if (processor.toolStatuses().isEmpty()) {
-            sender.sendMessage(msg("&eNative tools are still initializing. Run /music diagnostics again shortly."));
-            return;
+
+        NativeToolchain.InitializationState state = processor.toolchainInitializationState();
+        switch (state) {
+            case NOT_STARTED -> sender.sendMessage(msg(
+                    "&eNative tools: not initialized yet."));
+            case INITIALIZING -> sender.sendMessage(msg(
+                    "&eNative tools: downloading, verifying and checking executables in the background."));
+            case READY -> sender.sendMessage(msg(
+                    "&aNative tools: successfully initialized; all required tools are available."));
+            case FAILED -> sender.sendMessage(msg(
+                    "&cNative tools: initialization failed or completed with unavailable tools."));
         }
-        for (var status : processor.toolStatuses()) {
-            if (status.available()) {
-                sender.sendMessage(msg("&a" + status.tool().name().toLowerCase(Locale.ROOT)
-                        + " &7- &f" + status.version() + " &8(" + status.executable() + ")"));
-            } else {
-                sender.sendMessage(msg("&c" + status.tool().name().toLowerCase(Locale.ROOT)
-                        + " unavailable &7- " + status.detail()));
+
+        String initializationError = processor.toolchainInitializationError();
+        if (state == NativeToolchain.InitializationState.FAILED && !initializationError.isBlank()) {
+            sender.sendMessage(msg("&cInitialization details: &7" + initializationError));
+        }
+
+        List<NativeToolchain.ToolStatus> statuses = processor.toolStatuses();
+        if (statuses.isEmpty()) {
+            sender.sendMessage(msg("&7Individual executable checks have not completed yet."));
+        } else {
+            for (var status : statuses) {
+                if (status.available()) {
+                    sender.sendMessage(msg("&a" + status.tool().name().toLowerCase(Locale.ROOT)
+                            + " &7- &f" + status.version() + " &8(" + status.executable() + ")"));
+                } else {
+                    sender.sendMessage(msg("&c" + status.tool().name().toLowerCase(Locale.ROOT)
+                            + " unavailable &7- " + status.detail()));
+                }
             }
         }
+
         boolean remoteEnabled = plugin.getConfig().getBoolean("audio.yt-dlp.enabled", false);
         boolean autoImport = plugin.getConfig().getBoolean("audio.yt-dlp.auto-import-on-play", false);
         List<String> allowedHosts = plugin.getConfig().getStringList("audio.yt-dlp.allowed-hosts");

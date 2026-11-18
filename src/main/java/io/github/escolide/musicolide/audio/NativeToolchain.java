@@ -7,8 +7,13 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -17,6 +22,13 @@ import java.util.concurrent.TimeUnit;
  * executable probes run away from the Bukkit server thread.
  */
 public final class NativeToolchain implements AutoCloseable {
+    public enum InitializationState {
+        NOT_STARTED,
+        INITIALIZING,
+        READY,
+        FAILED
+    }
+
     public enum Tool {
         FFMPEG("ffmpeg", "audio.ffmpeg.executable", "-version"),
         YT_DLP("yt-dlp", "audio.yt-dlp.executable", "--version"),
@@ -44,9 +56,16 @@ public final class NativeToolchain implements AutoCloseable {
     private final Map<Tool, String> executables = new EnumMap<>(Tool.class);
     private final Map<Tool, ToolStatus> statuses = new EnumMap<>(Tool.class);
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
+    private final ExecutorService initializationExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "Musicolide-NativeTool-Installer");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean initialized;
     private volatile boolean closed;
-    private CompletableFuture<List<ToolStatus>> initializationFuture;
+    private volatile InitializationState initializationState = InitializationState.NOT_STARTED;
+    private volatile String initializationError = "";
+    private volatile CompletableFuture<List<ToolStatus>> initializationFuture;
 
     public NativeToolchain(JavaPlugin plugin) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
@@ -59,12 +78,37 @@ public final class NativeToolchain implements AutoCloseable {
 
     /**
      * Runs first-start downloads, installation and executable probes away from
-     * the Bukkit main thread. The common-pool worker is a daemon thread.
+     * the Bukkit main thread on a dedicated daemon worker that can be stopped on shutdown.
      */
     public synchronized CompletableFuture<List<ToolStatus>> initializeAsync() {
         if (initialized) return CompletableFuture.completedFuture(statuses());
+        if (closed) {
+            initializationState = InitializationState.FAILED;
+            initializationError = "The plugin is shutting down.";
+            return CompletableFuture.failedFuture(new IllegalStateException(initializationError));
+        }
         if (initializationFuture != null) return initializationFuture;
-        initializationFuture = CompletableFuture.supplyAsync(this::initialize);
+
+        initializationState = InitializationState.INITIALIZING;
+        initializationError = "";
+        try {
+            initializationFuture = CompletableFuture.supplyAsync(this::initialize, initializationExecutor)
+                    .whenComplete((result, error) -> {
+                        if (error == null) return;
+                        Throwable cause = error;
+                        while (cause instanceof CompletionException && cause.getCause() != null) {
+                            cause = cause.getCause();
+                        }
+                        initializationError = cause.getMessage() == null
+                                ? cause.getClass().getSimpleName() : cause.getMessage();
+                        initializationState = InitializationState.FAILED;
+                        plugin.getLogger().warning("Native-tool initialization failed: " + initializationError);
+                    });
+        } catch (RejectedExecutionException ex) {
+            initializationError = "The native-tool worker was stopped before initialization could start.";
+            initializationState = InitializationState.FAILED;
+            initializationFuture = CompletableFuture.failedFuture(ex);
+        }
         return initializationFuture;
     }
 
@@ -72,11 +116,24 @@ public final class NativeToolchain implements AutoCloseable {
         return initialized;
     }
 
+    public InitializationState initializationState() {
+        return initializationState;
+    }
+
+    public String initializationError() {
+        return initializationError;
+    }
+
     public synchronized List<ToolStatus> initialize() {
         if (closed) {
             initialized = true;
+            initializationState = InitializationState.FAILED;
+            initializationError = "The plugin was disabled before native tools finished initializing.";
             return List.of();
         }
+
+        initializationState = InitializationState.INITIALIZING;
+        initializationError = "";
 
         try {
             Files.createDirectories(binaryDirectory);
@@ -95,12 +152,22 @@ public final class NativeToolchain implements AutoCloseable {
             try {
                 downloadedTools = downloadInstaller.install();
             } catch (IOException ex) {
-                plugin.getLogger().warning("Automatic native-tool setup failed: " + ex.getMessage()
-                        + ". Musicolide will try administrator-configured executables or PATH.");
+                if (!closed && !Thread.currentThread().isInterrupted()) {
+                    plugin.getLogger().warning("Automatic native-tool setup failed: " + ex.getMessage()
+                            + ". Musicolide will try administrator-configured executables or PATH.");
+                }
             }
         }
 
+        if (closed || Thread.currentThread().isInterrupted()) {
+            initialized = true;
+            initializationState = InitializationState.FAILED;
+            initializationError = "The plugin was disabled before native tools finished initializing.";
+            return List.of();
+        }
+
         for (Tool tool : Tool.values()) {
+            if (closed || Thread.currentThread().isInterrupted()) break;
             String configured = plugin.getConfig().getString(tool.configPath, tool.fileName);
             if (configured == null || configured.isBlank()) configured = tool.fileName;
 
@@ -110,7 +177,8 @@ public final class NativeToolchain implements AutoCloseable {
             ToolStatus status = inspect(tool, executable);
 
             // A broken/obsolete installed copy must not prevent a working PATH entry.
-            if (!status.available() && !configured.equals(executable)) {
+            if (!status.available() && !configured.equals(executable)
+                    && !closed && !Thread.currentThread().isInterrupted()) {
                 ToolStatus configuredStatus = inspect(tool, configured);
                 if (configuredStatus.available()) {
                     executable = configured;
@@ -129,7 +197,22 @@ public final class NativeToolchain implements AutoCloseable {
         }
 
         initialized = true;
-        return List.copyOf(statuses.values());
+        List<ToolStatus> result = List.copyOf(statuses.values());
+        List<ToolStatus> unavailable = result.stream().filter(status -> !status.available()).toList();
+        if (closed) {
+            initializationState = InitializationState.FAILED;
+            initializationError = "The plugin was disabled before native tools finished initializing.";
+        } else if (unavailable.isEmpty() && result.size() == Tool.values().length) {
+            initializationState = InitializationState.READY;
+            initializationError = "";
+        } else {
+            initializationState = InitializationState.FAILED;
+            initializationError = unavailable.stream()
+                    .map(status -> status.tool().name().toLowerCase(Locale.ROOT) + ": " + status.detail())
+                    .collect(java.util.stream.Collectors.joining("; "));
+            if (initializationError.isBlank()) initializationError = "One or more native tools were not initialized.";
+        }
+        return result;
     }
 
     public String executable(Tool tool) {
@@ -268,6 +351,15 @@ public final class NativeToolchain implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        if (!initialized) {
+            initializationState = InitializationState.FAILED;
+            initializationError = "The plugin was disabled before native tools finished initializing.";
+            if (initializationFuture != null && !initializationFuture.isDone()) {
+                initializationFuture.completeExceptionally(new CancellationException(initializationError));
+            }
+        }
+        downloadInstaller.close();
+        initializationExecutor.shutdownNow();
         for (Process process : new ArrayList<>(processes)) terminate(process);
     }
 }

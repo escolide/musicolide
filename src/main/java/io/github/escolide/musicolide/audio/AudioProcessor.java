@@ -467,6 +467,14 @@ public final class AudioProcessor implements AutoCloseable {
         return toolchain.statuses();
     }
 
+    public NativeToolchain.InitializationState toolchainInitializationState() {
+        return toolchain.initializationState();
+    }
+
+    public String toolchainInitializationError() {
+        return toolchain.initializationError();
+    }
+
     public CompletableFuture<MusicTrack> saveTrackPermanently(String trackId) {
         try {
             MusicTrack track = repository.getTrack(trackId)

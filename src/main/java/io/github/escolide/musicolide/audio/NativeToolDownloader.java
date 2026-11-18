@@ -73,6 +73,8 @@ final class NativeToolDownloader {
     private final JavaPlugin plugin;
     private final Path nativeRoot;
     private final String platform;
+    private volatile boolean closed;
+    private volatile HttpURLConnection activeConnection;
 
     NativeToolDownloader(JavaPlugin plugin, Path nativeRoot, String platform) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
@@ -80,7 +82,20 @@ final class NativeToolDownloader {
         this.platform = Objects.requireNonNull(platform, "platform");
     }
 
+    void close() {
+        closed = true;
+        HttpURLConnection connection = activeConnection;
+        if (connection != null) connection.disconnect();
+    }
+
+    private void ensureOpen() throws IOException {
+        if (closed || Thread.currentThread().isInterrupted()) {
+            throw new IOException("Native-tool installation was interrupted because the plugin is shutting down.");
+        }
+    }
+
     Map<NativeToolchain.Tool, String> install() throws IOException {
+        ensureOpen();
         PlatformSpec spec = specFor(platform);
         if (spec == null) {
             plugin.getLogger().warning("Automatic native-tool installation is not available for " + platform
@@ -89,6 +104,7 @@ final class NativeToolDownloader {
         }
 
         Map<NativeToolchain.Tool, String> installed = existingInstall(spec);
+        ensureOpen();
         if (!installed.isEmpty()) {
             return installed;
         }
@@ -109,20 +125,25 @@ final class NativeToolDownloader {
 
             Path ffmpegArchive = work.resolve(spec.ffmpeg().fileName());
             download(spec.ffmpeg(), ffmpegArchive);
+            ensureOpen();
             Path ffmpeg = bin.resolve(executableName("ffmpeg"));
             extractFfmpegArchive(ffmpegArchive, ffmpeg, spec.ffmpegFormat());
+            ensureOpen();
             Files.deleteIfExists(ffmpegArchive);
             setExecutable(ffmpeg);
 
             Path ytDlp = bin.resolve(executableName("yt-dlp"));
             download(spec.ytDlp(), ytDlp);
+            ensureOpen();
             setExecutable(ytDlp);
 
             Path quickJs = bin.resolve(executableName("qjs"));
             download(spec.quickJs(), quickJs);
+            ensureOpen();
             setExecutable(quickJs);
 
             writeNotices(licenses, spec);
+            ensureOpen();
             Properties marker = new Properties();
             marker.setProperty("toolchain", spec.id());
             marker.setProperty("platform", platform);
@@ -137,6 +158,7 @@ final class NativeToolDownloader {
                 marker.store(output, "Musicolide verified native toolchain");
             }
             deleteTree(work);
+            ensureOpen();
             replaceDirectory(staging, nativeRoot.resolve(platform));
 
             plugin.getLogger().info("Installed and checksum-verified yt-dlp, FFmpeg and QuickJS for " + platform
@@ -196,11 +218,14 @@ final class NativeToolDownloader {
     }
 
     private void download(Artifact artifact, Path destination) throws IOException {
+        ensureOpen();
         Files.createDirectories(destination.getParent());
         Path partial = destination.resolveSibling(destination.getFileName() + ".part");
         Files.deleteIfExists(partial);
 
+        plugin.getLogger().info("Downloading native tool artifact " + artifact.fileName() + ".");
         HttpURLConnection connection = (HttpURLConnection) artifact.uri().toURL().openConnection();
+        activeConnection = connection;
         connection.setInstanceFollowRedirects(true);
         connection.setConnectTimeout(25_000);
         connection.setReadTimeout(60_000);
@@ -209,6 +234,7 @@ final class NativeToolDownloader {
         connection.setRequestProperty("Accept", "application/octet-stream");
 
         try {
+            ensureOpen();
             int status = connection.getResponseCode();
             if (status != HttpURLConnection.HTTP_OK) {
                 throw new IOException("Download of " + artifact.fileName() + " returned HTTP " + status + ".");
@@ -237,6 +263,7 @@ final class NativeToolDownloader {
                          StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
                 int read;
                 while ((read = body.read(buffer)) != -1) {
+                    ensureOpen();
                     total += read;
                     if (total > artifact.maxBytes()) {
                         throw new IOException("Native-tool download " + artifact.fileName()
@@ -247,6 +274,7 @@ final class NativeToolDownloader {
                 }
             }
 
+            ensureOpen();
             if (total == 0L) throw new IOException("Native-tool download " + artifact.fileName() + " was empty.");
             String actual = HexFormat.of().formatHex(digest.digest());
             if (!actual.equalsIgnoreCase(artifact.sha256())) {
@@ -259,6 +287,7 @@ final class NativeToolDownloader {
             throw ex;
         } finally {
             connection.disconnect();
+            if (activeConnection == connection) activeConnection = null;
         }
     }
 
