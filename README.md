@@ -4,9 +4,6 @@
 
 Musicolide lets a Paper server play music to ordinary, unmodified Java clients. Players do not need a client mod, browser or separate audio application: Musicolide generates Minecraft resource packs on demand and uses the vanilla sound system for playback.
 
-The first public release targets **Java Edition only**. Bedrock/Geyser playback is experimental and is not part of the supported release scope.
-
----
 
 ## Contents
 
@@ -20,7 +17,6 @@ The first public release targets **Java Edition only**. Bedrock/Geyser playback 
 - [Optional integrations](#optional-integrations)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
-- [Build from source](#build-from-source)
 
 ## Features
 
@@ -32,6 +28,7 @@ The first public release targets **Java Edition only**. Bedrock/Geyser playback 
 - **Queues and playlists:** individual queues, looping, private playlists and shared server playlists.
 - **Resource-pack delivery:** automatically generated, version-aware packs with caching and bounded prefetch.
 - **Local and remote search:** search the server catalogue and YouTube metadata.
+- **GUI:** Provides a small GUI to manage music
 - **Optional Discord integration:** linked-account slash commands and a passive voice-channel broadcast.
 - **Optional WorldGuard integration:** use named regions as playback zones.
 - **Usage analytics:** configurable bStats metrics.
@@ -41,10 +38,10 @@ The first public release targets **Java Edition only**. Bedrock/Geyser playback 
 | Component | Support |
 |---|---|
 | Minecraft Java Edition | Paper 1.21.1–26.3 |
-| Server software | Paper (primary target); Purpur is expected to work through Paper compatibility |
+| Server software | Paper and its forks |
 | Java runtime | Java 21 for Minecraft 1.21.x; use the Java version required by newer Minecraft releases (Java 25 for 26.1+) |
-| Spigot | Not supported |
-| Bedrock / Geyser | Experimental; not supported in the first Java-only release |
+| Spigot | Not supported properly |
+| Bedrock / Geyser | not yet supported properly |
 
 Musicolide is compiled against the Paper 1.21.1 API, the oldest supported API in the stated range. It detects the running server version and generates the matching resource-pack metadata.
 
@@ -63,6 +60,40 @@ The same universal JAR is used across the supported operating systems and archit
 
 ### 2. Add music to the library
 
+Music can be imported directly from YouTube or locally.
+
+To import directly from YouTube
+
+```text 
+/import-url <youtube-url> [optional-datas]
+```
+Or you can temporarily play music from YouTube without permanently saving tracks to server storage
+
+```text
+/play <youtube-url> [optional-datas]
+``` 
+this will keep the track on the server for 15 minutes then automatically delete it to save storage
+
+Additionally, you can search music from YouTube 
+
+```text
+/play <youtube_music_title> [optional-datas]
+```
+This will trigger a search in local files then Youtube.
+
+You can then select preferred track.
+```text
+/music select <track number>
+```
+This is temporary import the music and play it the targeted players
+
+You can also save the temporary tracks.
+```text
+/music save <trackID>
+```
+This will permanently save a temporary track to server files.
+
+locally you can,
 Place audio files that you are authorized to use in:
 
 ```text
@@ -112,7 +143,7 @@ A player must accept the required Musicolide resource pack before hearing tracks
 
 ### First-start downloads and server requirements
 
-The universal JAR is intentionally small (the build enforces a size limit below 30 MiB). On first startup, Musicolide detects the operating system and CPU architecture, then downloads pinned, checksum-verified versions of:
+The universal JAR is intentionally small. On first startup, Musicolide detects the operating system and CPU architecture, then downloads pinned, checksum-verified versions of:
 
 - **FFmpeg** for audio probing, encoding and generated resume/synchronization audio.
 - **yt-dlp** for supported YouTube metadata lookup and URL ingestion.
@@ -361,9 +392,9 @@ The custom charts report fixed configuration categories or integration availabil
 
 ### Bedrock / Geyser
 
-Bedrock/Geyser is **not supported in the first Java-only release**. The repository contains an experimental integration, but it has not been validated as a supported release feature. The shipped configuration excludes Geyser-identified Bedrock players from Musicolide output. Do not advertise Bedrock playback as supported until it has a separate release and client acceptance process.
-
-See [docs/GEYSER.md](docs/GEYSER.md) for the experimental implementation and its limitations.
+The main limitation for this plugin as now is that Bedrock/Geyser is **not supported in the first Java-only release**. 
+Due to Bedrock being unable to receive live resources pack. This plugin cant function for Bedrock properly as of now.
+Bedrock player can still join discord VC to listen to server broadcasted music
 
 ## Configuration
 
@@ -394,24 +425,9 @@ Use `/music reload` for settings that support runtime reload. Changes that affec
 | WorldGuard region is not found | Confirm WorldGuard is installed on the same Paper server, enabled in Musicolide's config and that the region ID/world are correct |
 | Discord commands do not register | Check the bot token, `discord.commands.enabled`, trusted guild configuration, bot invitation/application-command permissions and restart after configuration changes |
 
+If you still face issues or have any questions regarding the plugin, you can dm me in discord (@escolide)
+
 The plugin's default shared-port resource-pack handler distinguishes HTTP GET/HEAD requests from Minecraft traffic before Paper's normal packet handling. This uses guarded integration with Paper/Purpur's internal Netty listener layout, which is not a stable Bukkit API. If a hosting provider's proxy or port-forwarding setup does not pass both Minecraft and the pack HTTP requests to the same listener, configure an appropriate public endpoint or use the optional dedicated-port hosting mode if the host provides another public TCP port. The plugin itself does not terminate TLS on the Minecraft listener.
 
-## Build from source
-
-Requirements: JDK 21 or newer and Git.
-
-```bash
-git clone https://github.com/escolide/musicolide.git
-cd musicolide
-./gradlew clean test build
-```
-
-The deployable artifact is:
-
-```text
-build/libs/musicolide-0.1.0-universal.jar
-```
 
 The build runs the test suite and enforces the universal JAR size limit. The JAR contains the plugin, bundled runtime resources and pinned dependency manifests; platform-specific audio and Discord native tools are downloaded and verified at runtime.
-
-For deeper implementation notes, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
