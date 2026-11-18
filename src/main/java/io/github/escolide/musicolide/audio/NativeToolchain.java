@@ -145,8 +145,10 @@ public final class NativeToolchain implements AutoCloseable {
             try {
                 downloadedTools = downloadInstaller.install();
             } catch (IOException ex) {
-                plugin.getLogger().warning("Automatic native-tool setup failed: " + ex.getMessage()
-                        + ". Musicolide will try administrator-configured executables or PATH.");
+                if (!closed && !Thread.currentThread().isInterrupted()) {
+                    plugin.getLogger().warning("Automatic native-tool setup failed: " + ex.getMessage()
+                            + ". Musicolide will try administrator-configured executables or PATH.");
+                }
             }
         }
 
