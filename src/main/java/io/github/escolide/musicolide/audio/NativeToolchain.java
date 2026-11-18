@@ -13,6 +13,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -64,7 +65,7 @@ public final class NativeToolchain implements AutoCloseable {
     private volatile boolean closed;
     private volatile InitializationState initializationState = InitializationState.NOT_STARTED;
     private volatile String initializationError = "";
-    private CompletableFuture<List<ToolStatus>> initializationFuture;
+    private volatile CompletableFuture<List<ToolStatus>> initializationFuture;
 
     public NativeToolchain(JavaPlugin plugin) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
@@ -90,18 +91,24 @@ public final class NativeToolchain implements AutoCloseable {
 
         initializationState = InitializationState.INITIALIZING;
         initializationError = "";
-        initializationFuture = CompletableFuture.supplyAsync(this::initialize, initializationExecutor)
-                .whenComplete((result, error) -> {
-                    if (error == null) return;
-                    Throwable cause = error;
-                    while (cause instanceof CompletionException && cause.getCause() != null) {
-                        cause = cause.getCause();
-                    }
-                    initializationError = cause.getMessage() == null
-                            ? cause.getClass().getSimpleName() : cause.getMessage();
-                    initializationState = InitializationState.FAILED;
-                    plugin.getLogger().warning("Native-tool initialization failed: " + initializationError);
-                });
+        try {
+            initializationFuture = CompletableFuture.supplyAsync(this::initialize, initializationExecutor)
+                    .whenComplete((result, error) -> {
+                        if (error == null) return;
+                        Throwable cause = error;
+                        while (cause instanceof CompletionException && cause.getCause() != null) {
+                            cause = cause.getCause();
+                        }
+                        initializationError = cause.getMessage() == null
+                                ? cause.getClass().getSimpleName() : cause.getMessage();
+                        initializationState = InitializationState.FAILED;
+                        plugin.getLogger().warning("Native-tool initialization failed: " + initializationError);
+                    });
+        } catch (RejectedExecutionException ex) {
+            initializationError = "The native-tool worker was stopped before initialization could start.";
+            initializationState = InitializationState.FAILED;
+            initializationFuture = CompletableFuture.failedFuture(ex);
+        }
         return initializationFuture;
     }
 
