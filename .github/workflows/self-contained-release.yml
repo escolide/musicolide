@@ -1,3 +1,4 @@
+
 name: Portable release build
 
 on:
@@ -24,27 +25,36 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - name: Run tests and build both size-limited JARs
-        run: ./gradlew --no-daemon clean test build
+      - name: Run tests and build size-limited universal JAR
+        run: bash ./gradlew --no-daemon clean test build
 
-      - name: Verify universal JAR contains the first-start installer
+      - name: Resolve version and verify universal JAR
         shell: bash
         run: |
           set -euo pipefail
-          JAR="build/libs/musicolide-0.1.0-universal.jar"
+
+          VERSION="$(sed -n "s/^version = '\([^']*\)'/\1/p" build.gradle | head -n 1)"
+          test -n "$VERSION"
+
+          JAR="build/libs/musicolide-${VERSION}-universal.jar"
           test -s "$JAR"
+
+          echo "JAR_PATH=$JAR" >> "$GITHUB_ENV"
+
           unzip -Z1 "$JAR" | grep -Fx "io/github/escolide/musicolide/audio/NativeToolDownloader.class" >/dev/null
           unzip -Z1 "$JAR" | grep -Fx "org/apache/commons/compress/archivers/tar/TarArchiveInputStream.class" >/dev/null
           unzip -Z1 "$JAR" | grep -Fx "org/tukaani/xz/XZInputStream.class" >/dev/null
+
           SIZE="$(stat -c '%s' "$JAR")"
           LIMIT="$((30 * 1024 * 1024))"
-          test "$SIZE" -le "$LIMIT"
-          printf 'Universal JAR: %s bytes (limit %s bytes)\n' "$SIZE" "$LIMIT"
+          test "$SIZE" -lt "$LIMIT"
+
+          printf 'Universal JAR: %s bytes (limit: below 30 MiB)\n' "$SIZE"
 
       - name: Upload universal plugin
         uses: actions/upload-artifact@v4
         with:
           name: musicolide-universal-under-30MiB
-          path: build/libs/musicolide-0.1.0-universal.jar
+          path: ${{ env.JAR_PATH }}
           if-no-files-found: error
           retention-days: 30
