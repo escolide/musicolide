@@ -1,0 +1,61 @@
+/*
+ * Copyright (C) 2026 escolide
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
+name: Musicolide
+version: 1.1
+main: io.github.escolide.musicolide.MusicolidePlugin
+api-version: '1.21.1'
+description: Server-side music playback using dynamically generated Minecraft resource packs.
+author: escolide
+softdepend:
+  - WorldGuard
+  - Geyser-Spigot
+commands:
+  music:
+    description: Control Musicolide playback, YouTube search and the local music catalogue.
+    usage: /music help
+    aliases: [musicolide, m]
+  play:
+    description: Play a track or import an administrator-allowlisted URL.
+    usage: /play <track-title, search query or YouTube URL>
+    permission: musicolide.dj
+  queue:
+    description: Add, remove or clear upcoming playback tracks.
+    usage: /queue add|remove <TrackID> or /queue clear
+    permission: musicolide.dj
+  link:
+    description: Generate a one-time five-minute Discord account-link code.
+    usage: /link
+    permission: musicolide.use
+  unlink:
+    description: Unlink your Discord account from Minecraft.
+    usage: /unlink
+    permission: musicolide.use
+  deafen:
+    description: Mute Musicolide audio for yourself.
+    usage: /deafen
+    permission: musicolide.use
+  undeafen:
+    description: Unmute Musicolide audio for yourself.
+    usage: /undeafen
+    permission: musicolide.use
+permissions:
+  musicolide.use:
+    description: Allows use of Musicolide playback commands.
+    default: true
+  musicolide.dj:
+    description: Allows starting and controlling music sessions.
+    default: true
+    children:
+      musicolide.use: true
+  musicolide.admin:
+    description: Allows importing tracks and changing Musicolide configuration.
+    default: op
+    children:
+      musicolide.dj: true
