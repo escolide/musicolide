@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -167,7 +168,8 @@ public final class NativeToolchain implements AutoCloseable {
             ToolStatus status = inspect(tool, executable);
 
             // A broken/obsolete installed copy must not prevent a working PATH entry.
-            if (!status.available() && !configured.equals(executable)) {
+            if (!status.available() && !configured.equals(executable)
+                    && !closed && !Thread.currentThread().isInterrupted()) {
                 ToolStatus configuredStatus = inspect(tool, configured);
                 if (configuredStatus.available()) {
                     executable = configured;
@@ -343,6 +345,9 @@ public final class NativeToolchain implements AutoCloseable {
         if (!initialized) {
             initializationState = InitializationState.FAILED;
             initializationError = "The plugin was disabled before native tools finished initializing.";
+            if (initializationFuture != null && !initializationFuture.isDone()) {
+                initializationFuture.completeExceptionally(new CancellationException(initializationError));
+            }
         }
         downloadInstaller.close();
         initializationExecutor.shutdownNow();
