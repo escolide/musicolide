@@ -470,10 +470,13 @@ public final class MusicolidePlugin extends JavaPlugin implements Listener {
                 getLogger().warning("Could not rebuild the Bedrock music library: " + ex.getMessage());
             }
 
-            // Native tools are installed and probed only when a feature first needs them.
-            // Existing catalogue playback does not need yt-dlp, FFmpeg or QuickJS running.
+            // Prepare native tools during startup so the first import/search does not
+            // pay the download cost. This runs on a background worker and never blocks
+            // Bukkit's main thread; existing catalogue playback remains available meanwhile.
             nativeToolchain = new NativeToolchain(this);
             processor = new AudioProcessor(this, repository, builder, nativeToolchain);
+            getLogger().info("Initializing native audio tools in the background.");
+            nativeToolchain.initializeAsync();
             geyserBridge = new GeyserBridge(this, builder.bedrockPackPath());
             initializeGeyserPackIntegration(builder.bedrockPackPath());
 
